@@ -1,34 +1,34 @@
 def get_deployment_manager_hostname():
-    """Function to get the Deployment Manager's hostname"""
+    """Retrieve the hostname of the Deployment Manager"""
     try:
-        # Find the Deployment Manager object in the WebSphere environment
+        # Get the Deployment Manager MBean object
         dmgr_object = AdminControl.completeObjectName('type=DeploymentManager,*')
         if dmgr_object:
-            # Get the hostname attribute of the Deployment Manager
+            # Fetch the hostname attribute
             hostname = AdminControl.getAttribute(dmgr_object, 'host')
-            print("Deployment Manager Hostname: {hostname}")
+            print(f"Deployment Manager Hostname: {hostname}")
         else:
             print("Deployment Manager not found.")
-    except:
-        print("Error retrieving Deployment Manager hostname.")
+    except Exception as e:
+        print("Error retrieving Deployment Manager hostname: {str(e)}")
 
 def get_node_agents_hostnames():
-    """Function to get the hostnames of all Node Agents"""
+    """Retrieve the hostnames of all Node Agents"""
     try:
-        # Find all Node Agent objects in the WebSphere environment
+        # Get the list of Node Agent MBean objects
         node_agents = AdminControl.queryNames('type=NodeAgent,*').splitlines()
         if node_agents:
             for node_agent in node_agents:
-                # Get the node agent's host and node name
+                # Fetch the hostname and node name attributes
                 hostname = AdminControl.getAttribute(node_agent, 'host')
                 node_name = AdminControl.getAttribute(node_agent, 'nodeName')
                 print("Node Agent Hostname for {node_name}: {hostname}")
         else:
             print("No Node Agents found.")
-    except:
-        print("Error retrieving Node Agents hostnames.")
+    except Exception as e:
+        print(f"Error retrieving Node Agents hostnames: {str(e)}")
 
-# Main script execution
+# Main function to execute the script
 if __name__ == '__main__':
     print("Fetching Deployment Manager and Node Agents hostnames...")
     get_deployment_manager_hostname()
