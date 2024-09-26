@@ -6,7 +6,7 @@ def get_deployment_manager_hostname():
         if dmgr_object:
             # Fetch the hostname attribute
             hostname = AdminControl.getAttribute(dmgr_object, 'host')
-            print(f"Deployment Manager Hostname: {hostname}")
+            print("Deployment Manager Hostname: {hostname}")
         else:
             print("Deployment Manager not found.")
     except Exception as e:
@@ -26,7 +26,7 @@ def get_node_agents_hostnames():
         else:
             print("No Node Agents found.")
     except Exception as e:
-        print(f"Error retrieving Node Agents hostnames: {str(e)}")
+        print("Error retrieving Node Agents hostnames: {str(e)}")
 
 # Main function to execute the script
 if __name__ == '__main__':
