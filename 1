@@ -7,3 +7,34 @@ parse regex "^\[(?<timestamp>\d{2}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}:\d{3} [A-Z]{3})
 
 
 parse "[*] * * * *   *   *: *" as timestamp, thread_id, component, severity, error_code, error_message
+
+#!/bin/bash
+
+# Ensure that a file argument is passed
+if [ -z "$1" ]; then
+  echo "Usage: $0 <file>"
+  exit 1
+fi
+
+# Set variables for RabbitMQ API endpoint, credentials, and queue name
+RABBITMQ_API="http://localhost:15672/api/exchanges/%2f/amq.default/publish"
+USER="guest" # RabbitMQ username (default is guest)
+PASSWORD="guest" # RabbitMQ password (default is guest)
+QUEUE_NAME="your_queue_name" # Name of your queue
+
+# Read the content of the file provided as $1
+MESSAGE=$(cat "$1")
+
+# Post the message to the RabbitMQ queue using curl
+curl -u $USER:$PASSWORD \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -d '{
+        "properties": {},
+        "routing_key": "'$QUEUE_NAME'",
+        "payload": "'$MESSAGE'",
+        "payload_encoding": "string"
+      }' \
+  $RABBITMQ_API
+
+echo "Message sent to RabbitMQ queue '$QUEUE_NAME'"
