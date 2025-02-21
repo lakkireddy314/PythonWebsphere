@@ -34,3 +34,23 @@
       ansible.builtin.debug:
         msg: "Certificate successfully downloaded to {{ venafi_output_pfx }}"
       when: cert_file.stat.exists
+
+
+
+
+
+- name: Retrieve Certificate from Venafi
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Retrieve certificate from Venafi
+      venafi.ansible_collection.venafi_certificate_retrieve:
+        venafi_api_url: "https://your-venafi-instance.com"
+        username: "your-username"
+        password: "your-password"
+        certificate_name: "your-certificate-name"
+        folder: "/your-folder-path"
+        certificates:
+          - "certificate"
+          - "certificate_chain"
+        validate_certs: false  # Whether to validate SSL certificates
