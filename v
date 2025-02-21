@@ -54,3 +54,31 @@
           - "certificate"
           - "certificate_chain"
         validate_certs: false  # Whether to validate SSL certificates
+
+
+
+venafi_url: "https://tpp.example.com"
+certificate_dn: "Example/Certificates/MyCert"
+access_token: "your_access_token_here"
+save_to_file: "/path/to/save/downloaded_certificate.pfx"
+certificate_format: "PFX"
+pfx_password: "securePFXPassword123"
+
+
+
+# roles/download_venafi_cert/tasks/main.yml
+---
+- name: Download certificate in PFX format from Venafi TPP
+  venafi.ansible_collection.venafi_certificate:
+    url: "{{ venafi_url }}"
+    certificate_dn: "{{ certificate_dn }}"
+    access_token: "{{ access_token }}"
+    save_to_file: "{{ save_to_file }}"
+    certificate_format: "{{ certificate_format }}"
+    password: "{{ pfx_password }}"
+  delegate_to: localhost
+  register: certificate_download_result
+
+- name: Show certificate download result
+  debug:
+    var: certificate_download_result
