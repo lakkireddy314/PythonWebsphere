@@ -1,0 +1,108 @@
+1. Role Directory Structure
+Ensure your Ansible role is structured as follows:
+
+css
+Copy
+Edit
+roles/
+└── download_venafi_cert/
+    ├── tasks/
+    │   └── main.yml
+    ├── defaults/
+    │   └── main.yml
+    ├── vars/
+    │   └── main.yml
+    ├── README.md
+2. defaults/main.yml (Default Variables)
+Define the default values for the role.
+
+yaml
+Copy
+Edit
+# roles/download_venafi_cert/defaults/main.yml
+---
+venafi_url: "https://tpp.example.com"
+certificate_dn: "Example/Certificates/MyCert"
+access_token: "your_access_token_here"
+cert_name: "my_certificate.pfx"
+cert_directory: "/etc/ssl/certs"
+certificate_format: "PFX"
+pfx_password: "your_secure_pfx_password"
+3. tasks/main.yml (Main Task to Download Certificate)
+This file defines the tasks to:
+
+Ensure the target directory exists.
+Download the certificate using the venafi.machine_identity.venafi_certificate module.
+yaml
+Copy
+Edit
+# roles/download_venafi_cert/tasks/main.yml
+---
+- name: Ensure the target directory exists
+  file:
+    path: "{{ cert_directory }}"
+    state: directory
+    mode: '0755'
+
+- name: Download certificate from Venafi TPP in PFX format
+  venafi.machine_identity.venafi_certificate:
+    url: "{{ venafi_url }}"
+    certificate_dn: "{{ certificate_dn }}"
+    access_token: "{{ access_token }}"
+    save_to_file: "{{ cert_directory }}/{{ cert_name }}"
+    certificate_format: "{{ certificate_format }}"
+    password: "{{ pfx_password }}"
+  delegate_to: localhost
+  register: certificate_download_result
+
+- name: Show certificate download result
+  debug:
+    var: certificate_download_result
+4. Playbook to Call the Role
+Create a playbook that calls the role.
+
+yaml
+Copy
+Edit
+# playbook.yml
+---
+- name: Download Venafi certificate to a directory
+  hosts: localhost
+  roles:
+    - download_venafi_cert
+5. Running the Playbook
+Run the playbook using:
+
+bash
+Copy
+Edit
+ansible-playbook playbook.yml
+If you need to override values, you can pass them as extra variables:
+
+bash
+Copy
+Edit
+ansible-playbook playbook.yml -e "cert_name=my_custom_cert.pfx cert_directory=/custom/path access_token=your_new_access_token"
+6. Explanation of the Role
+Ensures the target directory exists before downloading the certificate.
+Uses the venafi.machine_identity.venafi_certificate module to download a PFX certificate.
+Stores the certificate in the specified directory with the given name.
+Uses an access token for authentication with Venafi Trust Protection Platform (TPP).
+Encrypts the PFX certificate using a password.
+A debug statement outputs the result after downloading.
+This modular role makes it easy to reuse and customize for different certificates. 🚀
+
+
+
+
+
+
+
+
+
+
+
+
+Search
+
+Reason
