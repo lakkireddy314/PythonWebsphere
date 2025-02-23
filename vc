@@ -1,0 +1,75 @@
+Below is an example Ansible role that calls the vcert CLI to enroll (i.e. request and download) a certificate from a Venafi TPP policy folder. In this example the certificate is output in PKCS#12 (PFX) format, and the private key within the PFX file is encrypted with the password “WebAS”. You’ll need to adjust the variables (such as the TPP URL, policy folder/zone, access token, common name, and output file path) for your environment.
+
+A sample role structure might be:
+
+css
+Copy
+Edit
+venafi_cert/
+├── defaults/
+│   └── main.yml
+├── tasks/
+│   └── main.yml
+└── README.md
+defaults/main.yml
+Define your default variables. For example:
+
+yaml
+Copy
+Edit
+# defaults/main.yml
+# Venafi Trust Protection Platform settings
+venafi_tpp_url: "https://tpp.venafi.example/vedsdk"       # The URL for your TPP instance
+venafi_policy_folder: "DevOps\\Certificates"              # Your policy folder (zone); note escaping if needed
+venafi_access_token: "YOUR_ACCESS_TOKEN_HERE"             # Your pre-generated access token
+
+# Certificate request settings
+certificate_common_name: "myserver.example.com"           # The CN to request
+certificate_file: "/tmp/myserver_certificate.pfx"         # Local path to store the PFX file
+
+# Output options
+certificate_format: "pkcs12"                              # Use pkcs12 to get a PFX file
+pfx_password: "WebAS"                                     # Password used to encrypt the private key in the PFX
+tasks/main.yml
+Use the Ansible command module to run the vcert CLI. The command shown below calls “vcert enroll” with the –format pkcs12 option and supplies the required parameters:
+
+yaml
+Copy
+Edit
+# tasks/main.yml
+- name: "Enroll certificate from Venafi TPP in PKCS#12 format"
+  command: >
+    vcert enroll
+    -u "{{ venafi_tpp_url }}"
+    -t "{{ venafi_access_token }}"
+    -z "{{ venafi_policy_folder }}"
+    --cn "{{ certificate_common_name }}"
+    --format "{{ certificate_format }}"
+    --file "{{ certificate_file }}"
+    --key-password "{{ pfx_password }}"
+  register: vcert_enroll_result
+  changed_when: "'Certificate issued' in vcert_enroll_result.stdout"
+
+- name: "Display vcert enrollment output"
+  debug:
+    var: vcert_enroll_result.stdout
+How It Works
+Variables:
+The defaults file specifies the TPP endpoint URL, the policy folder (often called “zone” in Venafi Cloud but here you supply the policy folder for TPP), the access token for authentication, the common name for the certificate request, and the desired output file (a .pfx file). The variable pfx_password is set to “WebAS”, which will be used by vcert to encrypt the private key within the PKCS#12 file.
+
+Task Execution:
+The task runs the vcert CLI enroll command with the following parameters:
+
+-u sets the TPP URL.
+-t supplies the access token.
+-z specifies the policy folder.
+--cn defines the common name for the certificate.
+--format pkcs12 tells vcert to output the certificate in PKCS#12 format.
+--file directs the output to a specific file path.
+--key-password sets the password for encrypting the private key inside the PFX; here it is “WebAS”.
+Idempotence & Debug:
+The task registers the output so that you can inspect the vcert CLI result. You can tweak the “changed_when” condition to better match your output.
+
+This role example provides a baseline that you can extend (for example, by adding error handling or dynamic token generation) to integrate certificate enrollment from Venafi TPP into your automation workflows.
+
+Make sure that vcert is installed on your control node (for example, via pip install vcert), and that the user running the playbook has access to the specified file paths.
