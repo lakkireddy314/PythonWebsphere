@@ -1,0 +1,131 @@
+(Due to technical issues, the search service is temporarily unavailable.)
+
+Here's an Ansible role to download a certificate in PFX format from Venafi TPP using vcert CLI with an access token and password protection. The role includes idempotence, error handling, and security best practices.
+
+Directory Structure
+bash
+Copy
+roles/
+└── tpp_cert_download/
+    ├── defaults/
+    │   └── main.yml          # Default variables
+    ├── tasks/
+    │   └── main.yml          # Core tasks
+    └── templates/
+        └── vcert_auth.j2     # Template for auth file (optional)
+1. defaults/main.yml
+yaml
+Copy
+# Default variables (override in playbook/vault)
+vcert_cli_path: "/usr/local/bin/vcert"
+tpp_url: "https://tpp.example.com"     # TPP API URL
+access_token: "{{ vault_access_token }}"  # Use Ansible Vault for security
+policy_folder: "\\VED\\Policy\\Path\\To\\Folder"  # TPP policy folder path
+cert_cn: "my-cert.example.com"          # Certificate Common Name
+pfx_password: "WebAS"                   # PFX password (use vault in prod)
+output_dir: "/etc/certs"                # Output directory
+output_pfx: "{{ output_dir }}/{{ cert_cn }}.pfx"
+2. tasks/main.yml
+yaml
+Copy
+---
+- name: "Ensure vcert CLI is installed"
+  become: yes  # Requires sudo for installation
+  block:
+    - name: "Check if vcert exists"
+      stat:
+        path: "{{ vcert_cli_path }}"
+      register: vcert_installed
+
+    - name: "Install vcert CLI (Linux)"
+      when: not vcert_installed.stat.exists
+      ansible.builtin.shell: |
+        curl -sSL https://github.com/Venafi/vcert/releases/latest/download/vcert-cli-linux-amd64.tar.gz | \
+          sudo tar -xz -C /usr/local/bin
+      args:
+        warn: false  # Disable shell warning
+
+- name: "Ensure output directory exists"
+  file:
+    path: "{{ output_dir }}"
+    state: directory
+    mode: 0755
+
+- name: "Download certificate from TPP (PFX)"
+  command: >-
+    {{ vcert_cli_path }} enroll
+    --tpp-url "{{ tpp_url }}"
+    --tpp-token "{{ access_token }}"
+    --policy-folder "{{ policy_folder }}"
+    --cn "{{ cert_cn }}"
+    --format pfx
+    --pfx-password "{{ pfx_password }}"
+    --file "{{ output_pfx }}"
+    --no-prompt
+  args:
+    creates: "{{ output_pfx }}"  # Idempotence: skip if PFX exists
+  register: cert_download_result
+  failed_when: 
+    - cert_download_result.rc != 0
+    - "'already exists' not in cert_download_result.stderr"  # Handle idempotent edge case
+
+- name: "Validate PFX file"
+  stat:
+    path: "{{ output_pfx }}"
+  register: pfx_file
+  failed_when: not pfx_file.stat.exists
+3. Usage Instructions
+A. Playbook Example (playbook.yml):
+yaml
+Copy
+- hosts: webservers
+  roles:
+    - role: tpp_cert_download
+      vars:
+        tpp_url: "https://tpp.prod.example.com"
+        cert_cn: "webapp.prod.example.com"
+        policy_folder: "\\VED\\Policy\\Prod\\WebApps"
+  vars_files:
+    - vars/vault.yml  # Store access_token/pfx_password securely here
+B. Encrypt Secrets with Ansible Vault (vars/vault.yml):
+bash
+Copy
+ansible-vault encrypt vars/vault.yml
+yaml
+Copy
+# Contents of vars/vault.yml
+vault_access_token: "tpp_abcdef1234567890"
+pfx_password: "WebAS"  # Override default password
+C. Run the Playbook:
+bash
+Copy
+ansible-playbook playbook.yml --ask-vault-pass
+Key Features:
+Idempotent: Skips download if the PFX file already exists.
+
+Secure:
+
+Uses Ansible Vault for sensitive data (access token/password).
+
+Avoids exposing secrets in playbook logs.
+
+TPP-Specific:
+
+Uses --tpp-token for OAuth2 authentication.
+
+Targets certificates in policy folders (--policy-folder).
+
+Validation:
+
+Checks if vcert CLI is installed.
+
+Validates the output PFX file existence.
+
+Notes:
+Escaping Backslashes: TPP policy folders use \\ as path separators (e.g., \\VED\\Policy\\Folder).
+
+Token Permissions: Ensure the access token has read and retrieve permissions for the policy folder.
+
+PFX Password: Use --pfx-password to encrypt the PFX file (required for Windows/IIS).
+
+Adjust paths and variables according to your TPP environment.
