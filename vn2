@@ -1,1 +1,101 @@
+To create an Ansible role that uses the venafi.machine_identity.venafi_certificate module to download a certificate from a Venafi Trust Protection Platform (TPP) using an access token, follow the steps below:
 
+1. Directory Structure
+First, create the directory structure for your Ansible role:
+
+bash
+Copy
+my_venafi_role/
+├── tasks
+│   └── main.yml
+├── defaults
+│   └── main.yml
+└── vars
+    └── main.yml
+2. defaults/main.yml
+Define default variables for the role:
+
+yaml
+Copy
+# defaults/main.yml
+venafi_access_token: "your_access_token_here"
+venafi_tpp_url: "https://tpp.example.com"
+certificate_name: "my_certificate"
+certificate_directory: "/path/to/save/certificate"
+3. vars/main.yml
+Define any additional variables if needed:
+
+yaml
+Copy
+# vars/main.yml
+# You can override defaults here if necessary
+4. tasks/main.yml
+Create the task to download the certificate using the venafi.machine_identity.venafi_certificate module:
+
+yaml
+Copy
+# tasks/main.yml
+---
+- name: Ensure certificate directory exists
+  ansible.builtin.file:
+    path: "{{ certificate_directory }}"
+    state: directory
+    mode: '0755'
+
+- name: Download certificate from Venafi TPP
+  venafi.machine_identity.venafi_certificate:
+    url: "{{ venafi_tpp_url }}"
+    access_token: "{{ venafi_access_token }}"
+    certificate_name: "{{ certificate_name }}"
+    dest: "{{ certificate_directory }}/{{ certificate_name }}.pem"
+    chain_dest: "{{ certificate_directory }}/{{ certificate_name }}_chain.pem"
+    private_key_dest: "{{ certificate_directory }}/{{ certificate_name }}.key"
+    state: present
+  register: cert_result
+
+- name: Debug certificate download result
+  ansible.builtin.debug:
+    var: cert_result
+5. Usage Example
+To use this role in a playbook:
+
+yaml
+Copy
+# playbook.yml
+---
+- hosts: localhost
+  roles:
+    - my_venafi_role
+  vars:
+    venafi_access_token: "your_access_token_here"
+    venafi_tpp_url: "https://tpp.example.com"
+    certificate_name: "my_certificate"
+    certificate_directory: "/path/to/save/certificate"
+6. Running the Playbook
+Run the playbook with the following command:
+
+bash
+Copy
+ansible-playbook playbook.yml
+Explanation:
+venafi_access_token: The access token for authenticating with the Venafi TPP.
+
+venafi_tpp_url: The URL of the Venafi TPP.
+
+certificate_name: The name of the certificate to download.
+
+certificate_directory: The directory where the certificate and related files will be saved.
+
+venafi.machine_identity.venafi_certificate: The module used to download the certificate, chain, and private key.
+
+Notes:
+Ensure that the venafi.machine_identity collection is installed. You can install it using:
+
+bash
+Copy
+ansible-galaxy collection install venafi.machine_identity
+Replace your_access_token_here with your actual Venafi TPP access token.
+
+Adjust the certificate_directory and certificate_name as per your requirements.
+
+This role will download the specified certificate, its chain, and private key from the Venafi TPP and save them to the specified directory.
