@@ -1,0 +1,180 @@
+Role Directory Structure
+css
+Copy
+Edit
+renew_cert/
+├── defaults/
+│   └── main.yml
+├── templates/
+│   └── vcert_renewal.yml.j2
+├── tasks/
+│   ├── check_cert.yml
+│   ├── renew_cert.yml
+│   ├── update_keydb.yml
+│   ├── restart_webserver.yml
+│   └── main.yml
+└── README.md
+File: defaults/main.yml
+yaml
+Copy
+Edit
+# renew_cert/defaults/main.yml
+
+# Venafi TPP settings
+venafi_tpp_url: "https://tpp.venafi.example/vedsdk"   # TPP API endpoint
+venafi_policy_folder: "DevOps\\Certificates"          # Policy folder (zone); note escaped backslashes
+venafi_access_token: "YOUR_ACCESS_TOKEN_HERE"         # Pre-generated access token
+
+# Certificate request details for renewal
+certificate_common_name: "myserver.example.com"       # CN of the certificate
+certificate_output_file: "/tmp/myserver_cert.pfx"       # File to save renewed certificate
+
+# PKCS#12 (PFX) options
+pfx_password: "WEBAS"                                 # Password for PFX
+
+# Key database (KDB) settings
+kdb_path: "/path/to/key.kdb"                          # Full path to key.kdb file
+kdb_password: "kdbPassword"                           # Password for key.kdb
+cert_alias: "myCertAlias"                             # Alias of the certificate in the KDB
+
+# Validity threshold (days)
+validity_threshold: 90
+File: templates/vcert_renewal.yml.j2
+This template generates a YAML playbook file for vcert to renew the certificate.
+
+yaml
+Copy
+Edit
+---
+action: renew
+url: "{{ venafi_tpp_url }}"
+token: "{{ venafi_access_token }}"
+zone: "{{ venafi_policy_folder }}"
+common_name: "{{ certificate_common_name }}"
+format: pkcs12
+file: "{{ certificate_output_file }}"
+key_password: "{{ pfx_password }}"
+File: tasks/check_cert.yml
+This subtask file checks the certificate in the KDB and sets a flag if renewal is needed.
+
+yaml
+Copy
+Edit
+---
+- name: "Check certificate details from key.kdb"
+  command: >
+    gsk8capicmd_64 -cert -details -db {{ kdb_path }} -pw {{ kdb_password }} -label "{{ cert_alias }}"
+  register: cert_details_output
+
+- name: "Parse certificate expiration date from output"
+  set_fact:
+    cert_expiry_str: "{{ cert_details_output.stdout | regex_search('Not After\\s*:\\s*(.*)', '\\1') }}"
+  when: cert_details_output.stdout is defined
+
+- name: "Calculate days remaining until certificate expiry"
+  set_fact:
+    cert_expiry_date: "{{ cert_expiry_str | to_datetime('%a %b %d %H:%M:%S %Y') }}"
+    current_date: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') }}"
+    days_remaining: "{{ (cert_expiry_date - current_date).days }}"
+  when: cert_expiry_str is defined
+
+- name: "Set renew_needed flag"
+  set_fact:
+    renew_needed: "{{ days_remaining < validity_threshold }}"
+  when: days_remaining is defined
+
+- name: "Display certificate expiry info"
+  debug:
+    msg: "Certificate (alias: {{ cert_alias }}) expires in {{ days_remaining }} days. Renew needed: {{ renew_needed }}"
+  when: days_remaining is defined
+File: tasks/renew_cert.yml
+This subtask generates the vcert YAML file and calls vcert to renew the certificate.
+
+yaml
+Copy
+Edit
+---
+- name: "Generate vcert renewal playbook file"
+  template:
+    src: vcert_renewal.yml.j2
+    dest: /tmp/vcert_renewal.yml
+
+- name: "Run vcert playbook to renew certificate from Venafi"
+  command: vcert playbook -f /tmp/vcert_renewal.yml
+  register: vcert_renewal_result
+  changed_when: "'Certificate issued' in vcert_renewal_result.stdout"
+
+- name: "Display vcert renewal output"
+  debug:
+    var: vcert_renewal_result.stdout
+File: tasks/update_keydb.yml
+This subtask replaces the certificate in the key database.
+
+yaml
+Copy
+Edit
+---
+- name: "Replace certificate in key.kdb with renewed certificate"
+  command: >
+    gsk8capicmd_64 -cert -replace -db {{ kdb_path }} -pw {{ kdb_password }} -label "{{ cert_alias }}" -file "{{ certificate_output_file }}"
+  register: gsk_replace_result
+
+- name: "Display key database update result"
+  debug:
+    var: gsk_replace_result.stdout
+File: tasks/restart_webserver.yml
+This subtask restarts the web server.
+
+yaml
+Copy
+Edit
+---
+- name: "Restart the webserver"
+  command: restart /httpd/
+File: tasks/main.yml
+The main task file includes the above subtasks in sequence. It runs the renewal tasks only if the certificate is found to be expiring in less than the defined threshold.
+
+yaml
+Copy
+Edit
+---
+- name: "Check certificate validity from key.kdb"
+  include_tasks: check_cert.yml
+
+- name: "Renew certificate if it is expiring soon"
+  include_tasks: renew_cert.yml
+  when: renew_needed | bool
+
+- name: "Update certificate in key.kdb with renewed certificate"
+  include_tasks: update_keydb.yml
+  when: renew_needed | bool
+
+- name: "Restart webserver to apply new certificate"
+  include_tasks: restart_webserver.yml
+  when: renew_needed | bool
+Example Playbook
+Create a playbook (e.g. renew_cert.yml) to run the role on your target servers:
+
+yaml
+Copy
+Edit
+- name: "Renew certificate in key.kdb if expiring soon"
+  hosts: your_target_servers
+  become: yes
+  roles:
+    - renew_cert
+Replace your_target_servers with the appropriate host group or host names from your inventory.
+
+Final Remarks
+Make sure GSKit’s utility (gsk8capicmd_64) and the vcert CLI are installed and accessible on your target servers.
+Adjust the date format in the to_datetime filter as needed to match the output from gsk8capicmd_64.
+Enhance error handling and logging as required by your environment.
+This role now splits the process into clear subtasks, which are included in tasks/main.yml, making the workflow modular and easier to maintain.
+
+
+
+
+
+
+
+
