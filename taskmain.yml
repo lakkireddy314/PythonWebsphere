@@ -1,0 +1,32 @@
+- name: "Proceed with certificate renewal and update if needed"
+  block:
+    - name: "Backup key database file (versioned)"
+      include_tasks: backup_kdb.yml
+
+    - name: "Renew certificate using Venafi"
+      include_tasks: renew_cert.yml
+
+    - name: "Update certificate in key.kdb with renewed certificate"
+      include_tasks: update_keydb.yml
+
+    - name: "Download renewed certificate for subsequent tasks"
+      include_tasks: download_cert.yml
+
+    - name: "Restart webserver to apply new certificate"
+      include_tasks: restart_webserver.yml
+  when: renew_needed | bool
+  rescue:
+    - name: "Restore key database file from backup due to failure"
+      include_tasks: restore_kdb.yml
+    - name: "Fail the play due to error in certificate update process"
+      fail:
+        msg: "Certificate update process failed. Restored the original key database from backup."
+  always:
+    - name: "Clean up temporary files"
+      file:
+        path: /tmp/vcert_renewal.yml
+        state: absent
+    - name: "Remove downloaded certificate file"
+      file:
+        path: "{{ certificate_output_file }}"
+        state: absent
