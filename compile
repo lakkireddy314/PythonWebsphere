@@ -1,1 +1,84 @@
+Prerequisites
+AIX System Access: Ensure you have access to an AIX machine (version 7.x recommended).
 
+Go Compiler: Install Go for AIX (version 1.16+ recommended, as older versions may lack AIX support).
+
+Download the AIX ppc64 binary from Go Downloads.
+
+Example:
+
+bash
+Copy
+wget https://go.dev/dl/go1.21.5.aix-ppc64.tar.gz
+tar -C /usr/local -xzf go1.21.5.aix-ppc64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
+C Compiler (Optional): Install GCC or IBM XL C/C++ if the project uses CGO (check with CGO_ENABLED=1 later).
+
+Use IBM AIX Toolbox for Linux Applications for GCC: AIX Toolbox.
+
+Steps to Compile
+Clone the VCERT CLI Repository:
+
+bash
+Copy
+git clone https://github.com/Venafi/vcert.git
+cd vcert
+Build for AIX:
+
+Navigate to the CLI directory:
+
+bash
+Copy
+cd cmd/vcert
+Without CGO (recommended unless C dependencies are required):
+
+bash
+Copy
+CGO_ENABLED=0 GOOS=aix GOARCH=ppc64 go build -o vcert
+With CGO (if required by dependencies):
+
+bash
+Copy
+GOOS=aix GOARCH=ppc64 go build -o vcert
+Verify the Binary:
+
+bash
+Copy
+file vcert  # Should show "64-bit PowerPC executable"
+Troubleshooting
+Dependency Issues:
+
+If go build fails, ensure dependencies are installed with go mod tidy.
+
+Use go get to manually fetch missing packages.
+
+CGO Errors:
+
+Disable CGO with CGO_ENABLED=0 if you encounter linker issues.
+
+Ensure GCC/xlc is installed and in PATH if CGO is required.
+
+AIX-Specific Code:
+
+If the CLI uses Linux/Windows-specific syscalls, modify the code to use AIX equivalents (rare for Go projects).
+
+Post-Compilation
+Copy the vcert binary to a directory in your PATH:
+
+bash
+Copy
+sudo mv vcert /usr/local/bin/
+Test the CLI:
+
+bash
+Copy
+vcert --version
+Notes
+Cross-Compilation: If compiling from Linux/macOS, set GOOS=aix and GOARCH=ppc64, but ensure no C dependencies.
+
+Official Support: Check Venafi’s documentation for AIX compatibility. If unsupported, consider reaching out to Venafi support.
+
+For further details, refer to the VCERT GitHub Repository.
+
+New chat
+==================================================================================================================================
