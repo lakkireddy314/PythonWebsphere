@@ -1,0 +1,299 @@
+Role Directory Structure
+css
+Copy
+Edit
+renew_cert/
+├── defaults/
+│   └── main.yml
+├── templates/
+│   └── vcert_renewal.yml.j2
+├── tasks/
+│   ├── backup_kdb.yml
+│   ├── check_cert.yml
+│   ├── renew_cert.yml
+│   ├── update_keydb.yml
+│   ├── restore_kdb.yml
+│   ├── restart_webserver.yml
+│   └── main.yml
+└── README.md
+File: defaults/main.yml
+Define your default variables. (Note the added variable restore_kdb which by default is false.)
+
+yaml
+Copy
+Edit
+# renew_cert/defaults/main.yml
+
+# Venafi TPP settings
+venafi_tpp_url: "https://tpp.venafi.example/vedsdk"   # TPP API endpoint
+venafi_policy_folder: "DevOps\\Certificates"          # Policy folder (zone); use escaped backslashes as needed
+venafi_access_token: "YOUR_ACCESS_TOKEN_HERE"         # Pre-generated access token
+
+# Certificate request details (for renewal)
+certificate_common_name: "myserver.example.com"       # Certificate common name (CN)
+certificate_output_file: "/tmp/myserver_cert.pfx"       # Path to store the renewed certificate (PFX format)
+
+# PKCS#12 (PFX) options
+pfx_password: "WEBAS"                                 # Password to protect the private key in the PFX file
+
+# Key database (KDB) settings
+kdb_path: "/path/to/key.kdb"                          # Full path to the key database file on the server
+kdb_password: "kdbPassword"                           # Password for the key database
+cert_alias: "myCertAlias"                             # Alias of the certificate within the KDB
+
+# Validity threshold (days)
+validity_threshold: 90
+
+# Restore flag (set to true if you want to revert to backup)
+restore_kdb: false
+File: templates/vcert_renewal.yml.j2
+This template creates a YAML file for vcert in playbook mode to renew the certificate.
+
+yaml
+Copy
+Edit
+---
+action: renew
+url: "{{ venafi_tpp_url }}"
+token: "{{ venafi_access_token }}"
+zone: "{{ venafi_policy_folder }}"
+common_name: "{{ certificate_common_name }}"
+format: pkcs12
+file: "{{ certificate_output_file }}"
+key_password: "{{ pfx_password }}"
+Subtask Files
+File: tasks/backup_kdb.yml
+This task backs up the current KDB file.
+
+yaml
+Copy
+Edit
+---
+- name: "Backup key database file"
+  copy:
+    src: "{{ kdb_path }}"
+    dest: "{{ kdb_path }}.bak"
+    backup: yes
+  register: backup_result
+
+- name: "Set backup file path fact"
+  set_fact:
+    backup_kdb_file: "{{ kdb_path }}.bak"
+
+- name: "Display backup result"
+  debug:
+    msg: "Backup of KDB created at {{ backup_kdb_file }}"
+File: tasks/check_cert.yml
+This file checks the certificate details in the KDB, parses the expiration date, computes days remaining, and sets a flag if renewal is needed.
+
+yaml
+Copy
+Edit
+---
+- name: "Check certificate details from key.kdb"
+  command: >
+    gsk8capicmd_64 -cert -details -db {{ kdb_path }} -pw {{ kdb_password }} -label "{{ cert_alias }}"
+  register: cert_details_output
+
+- name: "Parse certificate expiration date from output"
+  set_fact:
+    cert_expiry_str: "{{ cert_details_output.stdout | regex_search('Not After\\s*:\\s*(.*)', '\\1') }}"
+  when: cert_details_output.stdout is defined
+
+- name: "Calculate days remaining until certificate expiry"
+  set_fact:
+    cert_expiry_date: "{{ cert_expiry_str | to_datetime('%a %b %d %H:%M:%S %Y') }}"
+    current_date: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ') }}"
+    days_remaining: "{{ (cert_expiry_date - current_date).days }}"
+  when: cert_expiry_str is defined
+
+- name: "Set renew_needed flag"
+  set_fact:
+    renew_needed: "{{ days_remaining < validity_threshold }}"
+  when: days_remaining is defined
+
+- name: "Display certificate expiry info"
+  debug:
+    msg: "Certificate (alias: {{ cert_alias }}) expires in {{ days_remaining }} days. Renew needed: {{ renew_needed }}"
+  when: days_remaining is defined
+File: tasks/renew_cert.yml
+This file generates the vcert renewal playbook file and calls vcert in playbook mode to renew the certificate.
+
+yaml
+Copy
+Edit
+---
+- name: "Generate vcert renewal playbook file"
+  template:
+    src: vcert_renewal.yml.j2
+    dest: /tmp/vcert_renewal.yml
+
+- name: "Run vcert playbook to renew certificate from Venafi"
+  command: vcert playbook -f /tmp/vcert_renewal.yml
+  register: vcert_renewal_result
+  changed_when: "'Certificate issued' in vcert_renewal_result.stdout"
+
+- name: "Display vcert renewal output"
+  debug:
+    var: vcert_renewal_result.stdout
+File: tasks/update_keydb.yml
+This file lists the KDB contents before and after the update, verifies the certificate alias, and then replaces the certificate in the KDB with the renewed certificate.
+
+yaml
+Copy
+Edit
+---
+- name: "List certificates in KDB file before update"
+  command: >
+    gsk8capicmd_64 -cert -list -db {{ kdb_path }} -pw {{ kdb_password }}
+  register: kdb_list_before
+  changed_when: false
+
+- name: "Display KDB file contents before update"
+  debug:
+    var: kdb_list_before.stdout
+
+- name: "Verify certificate alias {{ cert_alias }} exists in KDB before update"
+  assert:
+    that:
+      - "'{{ cert_alias }}' in kdb_list_before.stdout"
+    fail_msg: "Certificate alias {{ cert_alias }} not found in KDB before update."
+
+- name: "Replace certificate in key.kdb with renewed certificate"
+  command: >
+    gsk8capicmd_64 -cert -replace -db {{ kdb_path }} -pw {{ kdb_password }} -label "{{ cert_alias }}" -file "{{ certificate_output_file }}"
+  register: gsk_replace_result
+
+- name: "Display key database update result"
+  debug:
+    var: gsk_replace_result.stdout
+
+- name: "List certificates in KDB file after update"
+  command: >
+    gsk8capicmd_64 -cert -list -db {{ kdb_path }} -pw {{ kdb_password }}
+  register: kdb_list_after
+  changed_when: false
+
+- name: "Display KDB file contents after update"
+  debug:
+    var: kdb_list_after.stdout
+
+- name: "Verify certificate alias {{ cert_alias }} exists in KDB after update"
+  assert:
+    that:
+      - "'{{ cert_alias }}' in kdb_list_after.stdout"
+    fail_msg: "Certificate alias {{ cert_alias }} not found in KDB after update."
+File: tasks/restore_kdb.yml
+This file conditionally restores the KDB file from the backup. (You may trigger this by setting the variable restore_kdb to true.)
+
+yaml
+Copy
+Edit
+---
+- name: "Restore key database file from backup"
+  copy:
+    src: "{{ backup_kdb_file }}"
+    dest: "{{ kdb_path }}"
+    owner: root
+    group: root
+    mode: '0600'
+  register: restore_result
+
+- name: "Display key database restoration result"
+  debug:
+    var: restore_result.stdout
+File: tasks/restart_webserver.yml
+This subtask restarts the web server.
+
+yaml
+Copy
+Edit
+---
+- name: "Restart the webserver"
+  command: restart /httpd/
+File: tasks/main.yml
+The main task file includes all the subtask files in sequence. The backup is run first, then the certificate validity check and renewal. Finally, if needed (based on the variable restore_kdb), the backup is restored. In this example, the webserver is restarted only if renewal was performed.
+
+yaml
+Copy
+Edit
+---
+- name: "Check certificate validity from key.kdb"
+  include_tasks: check_cert.yml
+
+- name: "Backup key database file"
+  include_tasks: backup_kdb.yml
+
+- name: "Renew certificate if it is expiring soon"
+  include_tasks: renew_cert.yml
+  when: renew_needed | bool
+
+- name: "Update certificate in key.kdb with renewed certificate"
+  include_tasks: update_keydb.yml
+  when: renew_needed | bool
+
+- name: "Restore key database file from backup if restore_kdb is true"
+  include_tasks: restore_kdb.yml
+  when: restore_kdb | bool
+
+- name: "Restart webserver to apply new certificate"
+  include_tasks: restart_webserver.yml
+  when: renew_needed | bool
+Example Playbook
+Finally, you can invoke this role from a playbook (e.g., renew_cert.yml):
+
+yaml
+Copy
+Edit
+- name: "Renew certificate in key.kdb if expiring soon"
+  hosts: your_target_servers
+  become: yes
+  roles:
+    - renew_cert
+Replace your_target_servers with your target host group. You can set the variable restore_kdb (for example via extra-vars or in your inventory) if you wish to trigger a restoration of the backup KDB file.
+
+Final Remarks
+Ensure that GSKit’s utility (gsk8capicmd_64) and the vcert CLI are installed on your target hosts.
+Adjust the date parsing format in check_cert.yml if needed to match your GSKit output.
+The backup task creates a backup file with a fixed name ({{ kdb_path }}.bak). If you need versioned backups, you can modify the destination with a timestamp.
+The conditional restore is controlled by the restore_kdb variable (default false). Set it to true if you want to roll back the update.
+This role now includes subtasks for backing up the key database, updating the certificate, and conditionally restoring from backup—all integrated into the main task file.
+
+
+
+
+
+
+
+You said:
+add versioned backups for the backup_kdb.yml
+Reasoned for 6 seconds
+Below is an updated backup_kdb.yml that creates a versioned backup file by appending a timestamp to the original KDB file name. This backup filename is then stored in a fact (variable) so it can be used later (for example, for a conditional restore).
+
+yaml
+Copy
+Edit
+---
+- name: "Generate versioned backup filename for the KDB file"
+  set_fact:
+    backup_kdb_file: "{{ kdb_path }}.{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}.bak"
+
+- name: "Backup key database file to versioned backup file"
+  copy:
+    src: "{{ kdb_path }}"
+    dest: "{{ backup_kdb_file }}"
+    backup: no
+  register: backup_result
+
+- name: "Display backup result"
+  debug:
+    msg: "Backup of KDB created at {{ backup_kdb_file }}"
+How It Works
+Generate Backup Filename:
+The first task uses the lookup('pipe', 'date +%Y%m%d%H%M%S') to generate a timestamp in the format YYYYMMDDHHMMSS and appends it to the original kdb_path with a .bak extension. This creates a unique backup filename each time the role runs.
+
+Copy the KDB File:
+The copy module then copies the original KDB file to this versioned backup file.
+
+Display the Backup Path:
+Finally, the backup file’s path is displayed so you know where the backup was stored. This fact, backup_kdb_file, can later be used in a restore task.
