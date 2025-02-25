@@ -1,0 +1,15 @@
+---
+- name: "Generate versioned backup filename for the KDB file"
+  set_fact:
+    backup_kdb_file: "{{ kdb_path }}.{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}.bak"
+
+- name: "Backup key database file to versioned backup file"
+  copy:
+    src: "{{ kdb_path }}"
+    dest: "{{ backup_kdb_file }}"
+    backup: no
+  register: backup_result
+
+- name: "Display backup result"
+  debug:
+    msg: "Backup of KDB created at {{ backup_kdb_file }}"
