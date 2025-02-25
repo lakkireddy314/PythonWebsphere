@@ -1,0 +1,27 @@
+---
+- name: "Check if KDB file exists"
+  stat:
+    path: /path/to/key.kdb
+  register: kdb_file
+
+- name: "Calculate checksum of the current KDB file"
+  command: sha256sum /path/to/key.kdb
+  register: kdb_checksum
+  when: kdb_file.stat.exists
+
+- name: "Find existing backups"
+  find:
+    paths: /path/to/backups/
+    patterns: "key.kdb.*.bak"
+  register: backup_files
+
+- name: "Check if a backup with the current checksum already exists"
+  set_fact:
+    backup_exists: "{{ backup_files.files | selectattr('checksum', 'equalto', kdb_checksum.stdout.split()[0]) | list | length > 0 }}"
+  when: kdb_file.stat.exists
+
+- name: "Create a versioned backup of the KDB file"
+  copy:
+    src: /path/to/key.kdb
+    dest: "/path/to/backups/key.kdb.{{ ansible_date_time.iso8601 }}.bak"
+  when: kdb_file.stat.exists and not backup_exists
