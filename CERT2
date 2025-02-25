@@ -1,0 +1,51 @@
+---
+- name: "Check if KDB file exists"
+  stat:
+    path: "{{ kdb_path }}"
+  register: kdb_file_stat
+
+- name: "Fail if KDB file does not exist"
+  fail:
+    msg: "Key database file {{ kdb_path }} does not exist."
+  when: not kdb_file_stat.stat.exists
+
+- name: "List certificates in KDB file before update"
+  command: >
+    gsk8capicmd_64 -cert -list -db {{ kdb_path }} -pw {{ kdb_password }}
+  register: kdb_list_before
+  changed_when: false
+
+- name: "Display KDB file contents before update"
+  debug:
+    var: kdb_list_before.stdout
+
+- name: "Verify certificate alias {{ cert_alias }} exists in KDB before update"
+  assert:
+    that:
+      - "'{{ cert_alias }}' in kdb_list_before.stdout"
+    fail_msg: "Certificate alias {{ cert_alias }} not found in KDB before update."
+
+- name: "Replace certificate in key.kdb with renewed certificate"
+  command: >
+    gsk8capicmd_64 -cert -replace -db {{ kdb_path }} -pw {{ kdb_password }} -label "{{ cert_alias }}" -file "{{ certificate_output_file }}"
+  register: gsk_replace_result
+
+- name: "Display key database update result"
+  debug:
+    var: gsk_replace_result.stdout
+
+- name: "List certificates in KDB file after update"
+  command: >
+    gsk8capicmd_64 -cert -list -db {{ kdb_path }} -pw {{ kdb_password }}
+  register: kdb_list_after
+  changed_when: false
+
+- name: "Display KDB file contents after update"
+  debug:
+    var: kdb_list_after.stdout
+
+- name: "Verify certificate alias {{ cert_alias }} exists in KDB after update"
+  assert:
+    that:
+      - "'{{ cert_alias }}' in kdb_list_after.stdout"
+    fail_msg: "Certificate alias {{ cert_alias }} not found in KDB after update."
