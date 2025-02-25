@@ -1,0 +1,24 @@
+---
+- name: "Check if the KDB file is valid"
+  command: /path/to/gskcmd -cert -list -db /path/to/key.kdb -stashed
+  register: kdb_check
+  failed_when: kdb_check.rc != 0
+
+- name: "Find the latest backup"
+  find:
+    paths: /path/to/backups/
+    patterns: "key.kdb.*.bak"
+    age: 1d
+    age_stamp: mtime
+  register: recent_backups
+
+- name: "Restore the KDB file from the latest backup"
+  copy:
+    src: "{{ item.path }}"
+    dest: /path/to/key.kdb
+    remote_src: yes
+  with_items: "{{ recent_backups.files | sort(attribute='mtime', reverse=True) }}"
+  when: kdb_check.failed and recent_backups.matched > 0
+  loop_control:
+    loop_var: item
+    max_loops: 1
