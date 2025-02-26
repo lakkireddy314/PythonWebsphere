@@ -1,0 +1,196 @@
+Role Directory Structure
+css
+Copy
+Edit
+roles/
+└── websphere_directories/
+    ├── defaults/
+    │   └── main.yml
+    └── tasks/
+        └── main.yml
+File: roles/websphere_directories/defaults/main.yml
+yaml
+Copy
+Edit
+---
+# Default installation paths (override these in your playbook or inventory if needed)
+websphere_install_path: /opt/IBM/WebSphere
+websphere_plugins_install_path: /opt/IBM/WebSpherePlugins
+websphere_ibm_http_install_path: /opt/IBM/HTTPServer
+File: roles/websphere_directories/tasks/main.yml
+yaml
+Copy
+Edit
+---
+- name: "Find WebSphere installation directories"
+  find:
+    paths: "{{ websphere_install_path }}"
+    file_type: directory
+    recurse: yes
+  register: websphere_dirs
+
+- name: "Set WebSphere installation directories variable"
+  set_fact:
+    websphere_install_dirs: "{{ websphere_dirs.files | map(attribute='path') | list }}"
+
+- name: "Find WebSphere Plugins installation directories"
+  find:
+    paths: "{{ websphere_plugins_install_path }}"
+    file_type: directory
+    recurse: yes
+  register: websphere_plugins_dirs
+
+- name: "Set WebSphere Plugins installation directories variable"
+  set_fact:
+    websphere_plugins_install_dirs: "{{ websphere_plugins_dirs.files | map(attribute='path') | list }}"
+
+- name: "Find IBM HTTP Server (WebSphere IBM HTTP Server) installation directories"
+  find:
+    paths: "{{ websphere_ibm_http_install_path }}"
+    file_type: directory
+    recurse: yes
+  register: httpserver_dirs
+
+- name: "Set IBM HTTP Server installation directories variable"
+  set_fact:
+    httpserver_install_dirs: "{{ httpserver_dirs.files | map(attribute='path') | list }}"
+Sample Playbook Usage
+yaml
+Copy
+Edit
+---
+- name: "List WebSphere related installation directories"
+  hosts: all
+  become: yes
+  roles:
+    - websphere_directories
+
+- name: "Display the discovered directories"
+  hosts: all
+  gather_facts: no
+  tasks:
+    - name: "Show WebSphere install directories"
+      debug:
+        msg: "WebSphere directories: {{ websphere_install_dirs }}"
+
+    - name: "Show WebSphere Plugins install directories"
+      debug:
+        msg: "WebSphere Plugins directories: {{ websphere_plugins_install_dirs }}"
+
+    - name: "Show IBM HTTP Server install directories"
+      debug:
+        msg: "IBM HTTP Server directories: {{ httpserver_install_dirs }}"
+Explanation
+Defaults:
+The defaults/main.yml file sets default paths for each product. You can override these in your inventory or playbook if the installation paths differ.
+
+Tasks:
+
+The role’s tasks/main.yml file uses the find module to search recursively for directories under the specified paths.
+Each search result is registered (e.g., as websphere_dirs) and then processed using set_fact to extract just the path attribute from each found directory.
+The resulting lists are stored in variables (websphere_install_dirs, websphere_plugins_install_dirs, and httpserver_install_dirs) which can be used later in your playbook.
+Usage:
+The sample playbook shows how to include the role and then display the gathered information using the debug module.
+
+This role is modular and easily customizable to suit different installation paths or additional processing as needed.
+
+
+
+
+
+
+
+You said:
+write an ansible role which would list installedDirectories using imcl for websphere , websphere plugins, websphere ibm http server and assign directories to variables.
+Reasoned for 45 seconds
+Below is an example Ansible role that uses the IBM Installation Manager CLI (imcl) to list the installed directories for WebSphere, WebSphere Plugins, and IBM HTTP Server (WebSphere IBM HTTP Server). In this role, we run the imcl command to list all installed packages with detailed information, then use regex filters to extract the “Installation Directory” for each product type and assign them to variables.
+
+You can adjust the regex patterns if your imcl output differs. (For example, the output might use “Installation Directory:” or “Location:”.) Also, ensure that the imcl command is in your PATH or specify its full path in the defaults.
+
+Role Directory Structure
+css
+Copy
+Edit
+roles/
+└── imcl_installed_directories/
+    ├── defaults/
+    │   └── main.yml
+    └── tasks/
+        └── main.yml
+File: roles/imcl_installed_directories/defaults/main.yml
+yaml
+Copy
+Edit
+---
+# Specify the imcl command (override this if imcl is not in your PATH)
+imcl_cmd: "imcl"
+File: roles/imcl_installed_directories/tasks/main.yml
+yaml
+Copy
+Edit
+---
+- name: "List installed packages using imcl"
+  command: "{{ imcl_cmd }} listInstalledPackages -long"
+  register: imcl_output
+  changed_when: false
+
+- name: "Parse WebSphere installation directories"
+  set_fact:
+    websphere_install_dirs: >-
+      {{
+        imcl_output.stdout
+        | regex_findall('(?im)^Package:\\s*(com\\.ibm\\.websphere\\.ND.*?)\\s*.*?Installation Directory:\\s*(\\S+)')
+        | map('last')
+        | list
+      }}
+
+- name: "Parse WebSphere Plugins installation directories"
+  set_fact:
+    websphere_plugins_install_dirs: >-
+      {{
+        imcl_output.stdout
+        | regex_findall('(?im)^Package:\\s*(com\\.ibm\\.websphere\\.plugins.*?)\\s*.*?Installation Directory:\\s*(\\S+)')
+        | map('last')
+        | list
+      }}
+
+- name: "Parse IBM HTTP Server installation directories"
+  set_fact:
+    ibm_http_install_dirs: >-
+      {{
+        imcl_output.stdout
+        | regex_findall('(?im)^Package:\\s*(com\\.ibm\\.websphere\\.HTTPServer.*?)\\s*.*?Installation Directory:\\s*(\\S+)')
+        | map('last')
+        | list
+      }}
+
+- name: "Display extracted directories"
+  debug:
+    msg:
+      - "WebSphere Installation Directories: {{ websphere_install_dirs }}"
+      - "WebSphere Plugins Installation Directories: {{ websphere_plugins_install_dirs }}"
+      - "IBM HTTP Server Installation Directories: {{ ibm_http_install_dirs }}"
+Sample Playbook Usage
+yaml
+Copy
+Edit
+---
+- name: "List IBM Installation Manager packages for WebSphere products"
+  hosts: all
+  become: yes
+  roles:
+    - imcl_installed_directories
+Explanation
+Defaults:
+The defaults/main.yml file defines the imcl_cmd variable. Modify this if the imcl executable isn’t in your PATH.
+
+Tasks:
+
+The role executes the command imcl listInstalledPackages -long and registers its output.
+Three separate set_fact tasks then use a regex (with multiline and case-insensitive flags) to search for package identifiers corresponding to:
+WebSphere (using an identifier like com.ibm.websphere.ND...)
+WebSphere Plugins (using an identifier like com.ibm.websphere.plugins...)
+IBM HTTP Server (using an identifier like com.ibm.websphere.HTTPServer...)
+Each regex captures two groups: the package identifier and the corresponding installation directory. The filter then maps over the matches and extracts only the directory value.
+Finally, a debug task displays the lists of directories.
+This role provides a modular approach to collecting installation directory information via imcl. Adjust the regex expressions as needed to match the actual output from your imcl command.
