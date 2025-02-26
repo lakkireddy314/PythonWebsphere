@@ -1,0 +1,362 @@
+The role directory structure is as follows:
+
+css
+Copy
+Edit
+roles/
+└── imcl_upgrade/
+    ├── tasks/
+    │   ├── main.yml
+    │   ├── pre_upgrade.yml
+    │   ├── available_packages.yml
+    │   ├── websphere_upgrade.yml
+    │   ├── websphere_plugins_upgrade.yml
+    │   ├── ibm_http_upgrade.yml
+    │   ├── post_upgrade.yml
+    │   └── report.yml
+    └── templates/
+        └── upgrade_report.j2
+1. roles/imcl_upgrade/tasks/main.yml
+This file includes the sub‑tasks in order.
+
+yaml
+Copy
+Edit
+---
+# roles/imcl_upgrade/tasks/main.yml
+
+- name: Gather pre-upgrade installed versions
+  include_tasks: pre_upgrade.yml
+
+- name: Gather available packages info (for "to be upgraded" versions)
+  include_tasks: available_packages.yml
+
+- name: Upgrade WebSphere if installed and version change is required
+  include_tasks: websphere_upgrade.yml
+
+- name: Upgrade WebSphere Plugins if installed and version change is required
+  include_tasks: websphere_plugins_upgrade.yml
+
+- name: Upgrade IBM HTTP Server if installed and version change is required
+  include_tasks: ibm_http_upgrade.yml
+
+- name: Gather post-upgrade installed versions
+  include_tasks: post_upgrade.yml
+
+- name: Generate and display upgrade report
+  include_tasks: report.yml
+2. roles/imcl_upgrade/tasks/pre_upgrade.yml
+This file gathers the currently installed package versions ("before" versions).
+
+yaml
+Copy
+Edit
+---
+# roles/imcl_upgrade/tasks/pre_upgrade.yml
+
+- name: Get installed packages info (before upgrade)
+  shell: >
+    /opt/IBM/InstallationManager/eclipse/tools/imcl listInstalledPackages -installationDirectory /opt/IBM/InstallationManager
+  register: imcl_before
+  changed_when: false
+
+- name: Debug imcl output before upgrade
+  debug:
+    var: imcl_before.stdout_lines
+
+- name: Parse WebSphere version before upgrade
+  set_fact:
+    websphere_version_before: >-
+      {{
+        imcl_before.stdout_lines
+        | select('search', 'websphere')
+        | map('regex_replace', '^.*\\s(\\d+\\.\\d+\\.\\d+).*$', '\\1')
+        | list | first
+      }}
+  when: websphere_dir is defined
+
+- name: Parse WebSphere Plugins version before upgrade
+  set_fact:
+    websphere_plugins_version_before: >-
+      {{
+        imcl_before.stdout_lines
+        | select('search', 'plugins')
+        | map('regex_replace', '^.*\\s(\\d+\\.\\d+\\.\\d+).*$', '\\1')
+        | list | first
+      }}
+  when: websphere_plugins_dir is defined
+
+- name: Parse IBM HTTP Server version before upgrade
+  set_fact:
+    ibm_http_server_version_before: >-
+      {{
+        imcl_before.stdout_lines
+        | select('search', 'httpserver')
+        | map('regex_replace', '^.*\\s(\\d+\\.\\d+\\.\\d+).*$', '\\1')
+        | list | first
+      }}
+  when: ibm_http_server_dir is defined
+3. roles/imcl_upgrade/tasks/available_packages.yml
+This file queries the available packages from the repositories and extracts the available ("to be upgraded") version.
+
+yaml
+Copy
+Edit
+---
+# roles/imcl_upgrade/tasks/available_packages.yml
+
+- name: Get available WebSphere packages info from next repo
+  shell: >
+    /opt/IBM/InstallationManager/eclipse/tools/imcl listAvailablePackages -repositories {{ websphere_next_repo }}
+  register: imcl_websphere_available
+  changed_when: false
+  when: websphere_next_repo is defined
+
+- name: Parse WebSphere "to be upgraded" version from available packages
+  set_fact:
+    websphere_to_upgrade_version: >-
+      {{
+        imcl_websphere_available.stdout_lines
+        | select('search', 'websphere')
+        | map('regex_replace', '^.*\\s(\\d+\\.\\d+\\.\\d+).*$', '\\1')
+        | list | first
+      }}
+  when: websphere_next_repo is defined
+
+- name: Get available WebSphere Plugins packages info from next repo
+  shell: >
+    /opt/IBM/InstallationManager/eclipse/tools/imcl listAvailablePackages -repositories {{ websphere_plugins_next_repo }}
+  register: imcl_plugins_available
+  changed_when: false
+  when: websphere_plugins_next_repo is defined
+
+- name: Parse WebSphere Plugins "to be upgraded" version from available packages
+  set_fact:
+    websphere_plugins_to_upgrade_version: >-
+      {{
+        imcl_plugins_available.stdout_lines
+        | select('search', 'plugins')
+        | map('regex_replace', '^.*\\s(\\d+\\.\\d+\\.\\d+).*$', '\\1')
+        | list | first
+      }}
+  when: websphere_plugins_next_repo is defined
+
+- name: Get available IBM HTTP Server packages info from next repo
+  shell: >
+    /opt/IBM/InstallationManager/eclipse/tools/imcl listAvailablePackages -repositories {{ ibm_http_next_repo }}
+  register: imcl_http_available
+  changed_when: false
+  when: ibm_http_next_repo is defined
+
+- name: Parse IBM HTTP Server "to be upgraded" version from available packages
+  set_fact:
+    ibm_http_to_upgrade_version: >-
+      {{
+        imcl_http_available.stdout_lines
+        | select('search', 'httpserver')
+        | map('regex_replace', '^.*\\s(\\d+\\.\\d+\\.\\d+).*$', '\\1')
+        | list | first
+      }}
+  when: ibm_http_next_repo is defined
+4. roles/imcl_upgrade/tasks/websphere_upgrade.yml
+This file upgrades WebSphere only if it is installed and the current version differs from the "to be upgraded" version.
+
+yaml
+Copy
+Edit
+---
+# roles/imcl_upgrade/tasks/websphere_upgrade.yml
+
+- name: Upgrade WebSphere to next version if installed
+  shell: >
+    /opt/IBM/InstallationManager/eclipse/tools/imcl upgrade com.ibm.websphere.ND
+    -repositories /path/to/repo
+    -installationDirectory {{ websphere_dir }}
+  when:
+    - websphere_dir is defined
+    - websphere_to_upgrade_version is defined
+    - websphere_version_before is defined
+    - websphere_version_before != websphere_to_upgrade_version
+  register: upgrade_websphere
+  changed_when: "'Upgrade successful' in upgrade_websphere.stdout"
+5. roles/imcl_upgrade/tasks/websphere_plugins_upgrade.yml
+This file upgrades WebSphere Plugins only if it is installed and the version differs.
+
+yaml
+Copy
+Edit
+---
+# roles/imcl_upgrade/tasks/websphere_plugins_upgrade.yml
+
+- name: Upgrade WebSphere Plugins to next version if installed
+  shell: >
+    /opt/IBM/InstallationManager/eclipse/tools/imcl upgrade com.ibm.websphere.plugins
+    -repositories /path/to/repo
+    -installationDirectory {{ websphere_plugins_dir }}
+  when:
+    - websphere_plugins_dir is defined
+    - websphere_plugins_to_upgrade_version is defined
+    - websphere_plugins_version_before is defined
+    - websphere_plugins_version_before != websphere_plugins_to_upgrade_version
+  register: upgrade_plugins
+  changed_when: "'Upgrade successful' in upgrade_plugins.stdout"
+6. roles/imcl_upgrade/tasks/ibm_http_upgrade.yml
+This file upgrades IBM HTTP Server only if it is installed and the version change is required.
+
+yaml
+Copy
+Edit
+---
+# roles/imcl_upgrade/tasks/ibm_http_upgrade.yml
+
+- name: Upgrade IBM HTTP Server to next version if installed
+  shell: >
+    /opt/IBM/InstallationManager/eclipse/tools/imcl upgrade com.ibm.httpserver
+    -repositories /path/to/repo
+    -installationDirectory {{ ibm_http_server_dir }}
+  when:
+    - ibm_http_server_dir is defined
+    - ibm_http_to_upgrade_version is defined
+    - ibm_http_server_version_before is defined
+    - ibm_http_server_version_before != ibm_http_to_upgrade_version
+  register: upgrade_http
+  changed_when: "'Upgrade successful' in upgrade_http.stdout"
+
+- name: Pause for upgrade completion
+  pause:
+    seconds: 30
+7. roles/imcl_upgrade/tasks/post_upgrade.yml
+This file gathers the post‑upgrade versions for verification.
+
+yaml
+Copy
+Edit
+---
+# roles/imcl_upgrade/tasks/post_upgrade.yml
+
+- name: Get installed packages info (after upgrade)
+  shell: >
+    /opt/IBM/InstallationManager/eclipse/tools/imcl listInstalledPackages -installationDirectory /opt/IBM/InstallationManager
+  register: imcl_after
+  changed_when: false
+
+- name: Debug imcl output after upgrade
+  debug:
+    var: imcl_after.stdout_lines
+
+- name: Parse WebSphere version after upgrade
+  set_fact:
+    websphere_version_after: >-
+      {{
+        imcl_after.stdout_lines
+        | select('search', 'websphere')
+        | map('regex_replace', '^.*\\s(\\d+\\.\\d+\\.\\d+).*$', '\\1')
+        | list | first
+      }}
+  when: websphere_dir is defined
+
+- name: Parse WebSphere Plugins version after upgrade
+  set_fact:
+    websphere_plugins_version_after: >-
+      {{
+        imcl_after.stdout_lines
+        | select('search', 'plugins')
+        | map('regex_replace', '^.*\\s(\\d+\\.\\d+\\.\\d+).*$', '\\1')
+        | list | first
+      }}
+  when: websphere_plugins_dir is defined
+
+- name: Parse IBM HTTP Server version after upgrade
+  set_fact:
+    ibm_http_server_version_after: >-
+      {{
+        imcl_after.stdout_lines
+        | select('search', 'httpserver')
+        | map('regex_replace', '^.*\\s(\\d+\\.\\d+\\.\\d+).*$', '\\1')
+        | list | first
+      }}
+  when: ibm_http_server_dir is defined
+8. roles/imcl_upgrade/tasks/report.yml
+This file uses a template to generate a final upgrade report that includes the before, "to be upgraded," and after versions.
+
+yaml
+Copy
+Edit
+---
+# roles/imcl_upgrade/tasks/report.yml
+
+- name: Generate upgrade report using template
+  template:
+    src: upgrade_report.j2
+    dest: /tmp/upgrade_report.txt
+
+- name: Display upgrade report
+  debug:
+    msg: "{{ lookup('file', '/tmp/upgrade_report.txt') }}"
+9. roles/imcl_upgrade/templates/upgrade_report.j2
+This Jinja2 template formats the upgrade report for each component.
+
+jinja
+Copy
+Edit
+Upgrade Report - {{ ansible_date_time.iso8601 }}
+--------------------------------------------------
+{% if websphere_dir is defined %}
+WebSphere:
+  Installed Directory: {{ websphere_dir }}
+  Version Before: {{ websphere_version_before | default('Not Found') }}
+  Version To Upgrade: {{ websphere_to_upgrade_version | default('Not Found') }}
+  Upgraded Version: {{ websphere_version_after | default('Not Upgraded') }}
+{% else %}
+WebSphere is not installed.
+{% endif %}
+
+{% if websphere_plugins_dir is defined %}
+WebSphere Plugins:
+  Installed Directory: {{ websphere_plugins_dir }}
+  Version Before: {{ websphere_plugins_version_before | default('Not Found') }}
+  Version To Upgrade: {{ websphere_plugins_to_upgrade_version | default('Not Found') }}
+  Upgraded Version: {{ websphere_plugins_version_after | default('Not Upgraded') }}
+{% else %}
+WebSphere Plugins is not installed.
+{% endif %}
+
+{% if ibm_http_server_dir is defined %}
+IBM HTTP Server:
+  Installed Directory: {{ ibm_http_server_dir }}
+  Version Before: {{ ibm_http_server_version_before | default('Not Found') }}
+  Version To Upgrade: {{ ibm_http_to_upgrade_version | default('Not Found') }}
+  Upgraded Version: {{ ibm_http_server_version_after | default('Not Upgraded') }}
+{% else %}
+IBM HTTP Server is not installed.
+{% endif %}
+How to Use This Restructured Role
+Define Required Variables:
+Ensure that variables such as websphere_dir, websphere_next_repo, websphere_plugins_dir, websphere_plugins_next_repo, ibm_http_server_dir, and ibm_http_next_repo are defined (via inventory, group_vars, or extra-vars).
+
+Include the Role in Your Playbook:
+
+yaml
+Copy
+Edit
+- hosts: target_hosts
+  roles:
+    - imcl_upgrade
+With this structure, the upgrade tasks for WebSphere, WebSphere Plugins, and IBM HTTP Server are now in separate sub‑task files. Each upgrade command runs only if its product is installed and its current version differs from the version available in the repository. The final report shows the before, "to be upgraded," and upgraded versions for each component.
+
+
+
+
+
+
+
+
+Use ChatGPT for every search
+Download the Chrome extension to switch your default search engine to ChatGPT, and get instant answers from trusted sources with every search.
+
+Get Extension
+
+
+
+
+
