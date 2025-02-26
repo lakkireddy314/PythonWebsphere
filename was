@@ -1,0 +1,317 @@
+Below is a complete, modular Ansible role that not only upgrades WebSphere, WebSphere Plugins, and IBM HTTP Server using imcl but also includes tasks to back up the current installation directories (by tarring them to a backup directory) and, if needed, restore those backups later. You can enable restoration by setting the variable restore_mode: true.
+
+The role’s directory structure is organized as follows:
+
+css
+Copy
+Edit
+roles/
+└── imcl_upgrade/
+    ├── defaults/
+    │   └── main.yml
+    └── tasks/
+        ├── main.yml
+        ├── pre_upgrade.yml
+        ├── backup.yml
+        ├── upgrade.yml
+        ├── post_upgrade.yml
+        ├── report.yml
+        └── restore.yml
+File: roles/imcl_upgrade/defaults/main.yml
+yaml
+Copy
+Edit
+---
+# Path to the imcl executable (adjust if necessary)
+imcl_cmd: "imcl"
+
+# Repository URLs for the next version (update with your actual repository URLs)
+websphere_next_repo: "http://repo.example.com/websphere"
+websphere_plugins_next_repo: "http://repo.example.com/websphere_plugins"
+ibm_http_next_repo: "http://repo.example.com/ibm_http"
+
+# Fallback installation directories if discovery did not yield a value
+websphere_install_dir: "/opt/IBM/WebSphere"
+websphere_plugins_install_dir: "/opt/IBM/WebSpherePlugins"
+ibm_http_install_dir: "/opt/IBM/HTTPServer"
+
+# Backup directory for tar archives
+backup_dir: "/tmp/imcl_backup"
+
+# Set restore_mode to true to run restoration tasks instead of upgrade tasks
+restore_mode: false
+File: roles/imcl_upgrade/tasks/main.yml
+yaml
+Copy
+Edit
+---
+- include_tasks: pre_upgrade.yml
+- include_tasks: backup.yml
+- include_tasks: upgrade.yml
+- include_tasks: post_upgrade.yml
+- include_tasks: report.yml
+- include_tasks: restore.yml
+File: roles/imcl_upgrade/tasks/pre_upgrade.yml
+yaml
+Copy
+Edit
+---
+# Check that imcl is available
+- name: "Check if imcl command exists"
+  command: "which {{ imcl_cmd }}"
+  register: imcl_cmd_check
+  changed_when: false
+  failed_when: imcl_cmd_check.rc != 0
+
+# Retrieve installed package information before upgrade
+- name: "Gather installed packages info before upgrade"
+  command: "{{ imcl_cmd }} listInstalledPackages -long"
+  register: before_upgrade_output
+  changed_when: false
+  failed_when: before_upgrade_output.stdout is not defined or before_upgrade_output.stdout == ""
+
+# Parse current WebSphere version only if listed
+- name: "Parse current WebSphere version"
+  set_fact:
+    websphere_before_version: "{{ before_upgrade_output.stdout | regex_search('(?im)^Package:\\s*(com\\.ibm\\.websphere\\.ND.*?)\\s.*?Version:\\s*(\\S+)', '\\2') }}"
+  when: before_upgrade_output.stdout is search('com\\.ibm\\.websphere\\.ND')
+
+# Parse current WebSphere Plugins version only if listed
+- name: "Parse current WebSphere Plugins version"
+  set_fact:
+    websphere_plugins_before_version: "{{ before_upgrade_output.stdout | regex_search('(?im)^Package:\\s*(com\\.ibm\\.websphere\\.plugins.*?)\\s.*?Version:\\s*(\\S+)', '\\2') }}"
+  when: before_upgrade_output.stdout is search('com\\.ibm\\.websphere\\.plugins')
+
+# Parse current IBM HTTP Server version only if listed
+- name: "Parse current IBM HTTP Server version"
+  set_fact:
+    ibm_http_before_version: "{{ before_upgrade_output.stdout | regex_search('(?im)^Package:\\s*(com\\.ibm\\.websphere\\.HTTPServer.*?)\\s.*?Version:\\s*(\\S+)', '\\2') }}"
+  when: before_upgrade_output.stdout is search('com\\.ibm\\.websphere\\.HTTPServer')
+File: roles/imcl_upgrade/tasks/backup.yml
+yaml
+Copy
+Edit
+---
+# Ensure backup directory exists
+- name: "Ensure backup directory exists"
+  file:
+    path: "{{ backup_dir }}"
+    state: directory
+    mode: '0755'
+
+# Backup WebSphere installation directory
+- name: "Backup WebSphere installation directory"
+  archive:
+    path: "{{ (websphere_install_dirs[0] if (websphere_install_dirs is defined and websphere_install_dirs|length > 0) else websphere_install_dir) }}"
+    dest: "{{ backup_dir }}/websphere_backup_{{ ansible_date_time.iso8601 }}.tar.gz"
+    format: gz
+  when: ( (websphere_install_dirs is defined and websphere_install_dirs|length > 0) or (websphere_install_dir is defined) )
+
+# Backup WebSphere Plugins installation directory
+- name: "Backup WebSphere Plugins installation directory"
+  archive:
+    path: "{{ (websphere_plugins_install_dirs[0] if (websphere_plugins_install_dirs is defined and websphere_plugins_install_dirs|length > 0) else websphere_plugins_install_dir) }}"
+    dest: "{{ backup_dir }}/websphere_plugins_backup_{{ ansible_date_time.iso8601 }}.tar.gz"
+    format: gz
+  when: ( (websphere_plugins_install_dirs is defined and websphere_plugins_install_dirs|length > 0) or (websphere_plugins_install_dir is defined) )
+
+# Backup IBM HTTP Server installation directory
+- name: "Backup IBM HTTP Server installation directory"
+  archive:
+    path: "{{ (ibm_http_install_dirs[0] if (ibm_http_install_dirs is defined and ibm_http_install_dirs|length > 0) else ibm_http_install_dir) }}"
+    dest: "{{ backup_dir }}/ibm_http_backup_{{ ansible_date_time.iso8601 }}.tar.gz"
+    format: gz
+  when: ( (ibm_http_install_dirs is defined and ibm_http_install_dirs|length > 0) or (ibm_http_install_dir is defined) )
+File: roles/imcl_upgrade/tasks/upgrade.yml
+yaml
+Copy
+Edit
+---
+# Upgrade WebSphere if an installation directory is available
+- name: "Upgrade WebSphere to next version"
+  command: >
+    {{ imcl_cmd }} install com.ibm.websphere.ND
+    -repositories {{ websphere_next_repo }}
+    -installationDirectory {{ (websphere_install_dirs[0] if (websphere_install_dirs is defined and websphere_install_dirs|length > 0) else websphere_install_dir) }}
+    -acceptLicense
+  register: upgrade_websphere
+  changed_when: "'Installation complete' in upgrade_websphere.stdout"
+  when: ( (websphere_install_dirs is defined and websphere_install_dirs|length > 0) or (websphere_install_dir is defined) ) and (not restore_mode)
+
+# Upgrade WebSphere Plugins if an installation directory is available
+- name: "Upgrade WebSphere Plugins to next version"
+  command: >
+    {{ imcl_cmd }} install com.ibm.websphere.plugins
+    -repositories {{ websphere_plugins_next_repo }}
+    -installationDirectory {{ (websphere_plugins_install_dirs[0] if (websphere_plugins_install_dirs is defined and websphere_plugins_install_dirs|length > 0) else websphere_plugins_install_dir) }}
+    -acceptLicense
+  register: upgrade_websphere_plugins
+  changed_when: "'Installation complete' in upgrade_websphere_plugins.stdout"
+  when: ( (websphere_plugins_install_dirs is defined and websphere_plugins_install_dirs|length > 0) or (websphere_plugins_install_dir is defined) ) and (not restore_mode)
+
+# Upgrade IBM HTTP Server if an installation directory is available
+- name: "Upgrade IBM HTTP Server to next version"
+  command: >
+    {{ imcl_cmd }} install com.ibm.websphere.HTTPServer
+    -repositories {{ ibm_http_next_repo }}
+    -installationDirectory {{ (ibm_http_install_dirs[0] if (ibm_http_install_dirs is defined and ibm_http_install_dirs|length > 0) else ibm_http_install_dir) }}
+    -acceptLicense
+  register: upgrade_ibm_http
+  changed_when: "'Installation complete' in upgrade_ibm_http.stdout"
+  when: ( (ibm_http_install_dirs is defined and ibm_http_install_dirs|length > 0) or (ibm_http_install_dir is defined) ) and (not restore_mode)
+
+# Pause briefly to allow processes to settle
+- name: "Pause to ensure upgrade processes settle"
+  pause:
+    seconds: 10
+  when: not restore_mode
+File: roles/imcl_upgrade/tasks/post_upgrade.yml
+yaml
+Copy
+Edit
+---
+# Retrieve installed package information after upgrade
+- name: "Gather installed packages info after upgrade"
+  command: "{{ imcl_cmd }} listInstalledPackages -long"
+  register: after_upgrade_output
+  changed_when: false
+  failed_when: after_upgrade_output.stdout is not defined or after_upgrade_output.stdout == ""
+  when: not restore_mode
+
+# Parse updated WebSphere version only if listed
+- name: "Parse updated WebSphere version"
+  set_fact:
+    websphere_after_version: "{{ after_upgrade_output.stdout | regex_search('(?im)^Package:\\s*(com\\.ibm\\.websphere\\.ND.*?)\\s.*?Version:\\s*(\\S+)', '\\2') }}"
+  when: (not restore_mode) and (after_upgrade_output.stdout is search('com\\.ibm\\.websphere\\.ND'))
+
+# Parse updated WebSphere Plugins version only if listed
+- name: "Parse updated WebSphere Plugins version"
+  set_fact:
+    websphere_plugins_after_version: "{{ after_upgrade_output.stdout | regex_search('(?im)^Package:\\s*(com\\.ibm\\.websphere\\.plugins.*?)\\s.*?Version:\\s*(\\S+)', '\\2') }}"
+  when: (not restore_mode) and (after_upgrade_output.stdout is search('com\\.ibm\\.websphere\\.plugins'))
+
+# Parse updated IBM HTTP Server version only if listed
+- name: "Parse updated IBM HTTP Server version"
+  set_fact:
+    ibm_http_after_version: "{{ after_upgrade_output.stdout | regex_search('(?im)^Package:\\s*(com\\.ibm\\.websphere\\.HTTPServer.*?)\\s.*?Version:\\s*(\\S+)', '\\2') }}"
+  when: (not restore_mode) and (after_upgrade_output.stdout is search('com\\.ibm\\.websphere\\.HTTPServer'))
+File: roles/imcl_upgrade/tasks/report.yml
+yaml
+Copy
+Edit
+---
+# Generate a report comparing pre-upgrade and post-upgrade versions
+- name: "Generate upgrade report"
+  copy:
+    dest: "/tmp/upgrade_report.txt"
+    content: |
+      Upgrade Report:
+      ---------------
+      WebSphere:
+        Before: {{ websphere_before_version | default('Not Listed') }}
+        After:  {{ websphere_after_version | default('Not Listed') }}
+
+      WebSphere Plugins:
+        Before: {{ websphere_plugins_before_version | default('Not Listed') }}
+        After:  {{ websphere_plugins_after_version | default('Not Listed') }}
+
+      IBM HTTP Server:
+        Before: {{ ibm_http_before_version | default('Not Listed') }}
+        After:  {{ ibm_http_after_version | default('Not Listed') }}
+  delegate_to: localhost
+  when: not restore_mode
+
+- name: "Display upgrade report location"
+  debug:
+    msg: "Upgrade report generated at /tmp/upgrade_report.txt"
+  when: not restore_mode
+File: roles/imcl_upgrade/tasks/restore.yml
+yaml
+Copy
+Edit
+---
+# Restore tasks will only run if restore_mode is set to true
+
+- name: "Find latest WebSphere backup file"
+  find:
+    paths: "{{ backup_dir }}"
+    patterns: "websphere_backup_*.tar.gz"
+    recurse: no
+  register: websphere_backup_files
+  when: restore_mode
+
+- name: "Restore WebSphere installation directory from backup"
+  unarchive:
+    src: "{{ (websphere_backup_files.files | sort(attribute='mtime') | last).path }}"
+    dest: "{{ (websphere_install_dirs[0] if (websphere_install_dirs is defined and websphere_install_dirs|length > 0) else websphere_install_dir) }}"
+    remote_src: yes
+  when: restore_mode and websphere_backup_files.matched > 0
+
+- name: "Find latest WebSphere Plugins backup file"
+  find:
+    paths: "{{ backup_dir }}"
+    patterns: "websphere_plugins_backup_*.tar.gz"
+    recurse: no
+  register: websphere_plugins_backup_files
+  when: restore_mode
+
+- name: "Restore WebSphere Plugins installation directory from backup"
+  unarchive:
+    src: "{{ (websphere_plugins_backup_files.files | sort(attribute='mtime') | last).path }}"
+    dest: "{{ (websphere_plugins_install_dirs[0] if (websphere_plugins_install_dirs is defined and websphere_plugins_install_dirs|length > 0) else websphere_plugins_install_dir) }}"
+    remote_src: yes
+  when: restore_mode and websphere_plugins_backup_files.matched > 0
+
+- name: "Find latest IBM HTTP Server backup file"
+  find:
+    paths: "{{ backup_dir }}"
+    patterns: "ibm_http_backup_*.tar.gz"
+    recurse: no
+  register: ibm_http_backup_files
+  when: restore_mode
+
+- name: "Restore IBM HTTP Server installation directory from backup"
+  unarchive:
+    src: "{{ (ibm_http_backup_files.files | sort(attribute='mtime') | last).path }}"
+    dest: "{{ (ibm_http_install_dirs[0] if (ibm_http_install_dirs is defined and ibm_http_install_dirs|length > 0) else ibm_http_install_dir) }}"
+    remote_src: yes
+  when: restore_mode and ibm_http_backup_files.matched > 0
+
+- name: "Display restoration completion message"
+  debug:
+    msg: "Restoration completed from backups in {{ backup_dir }}"
+  when: restore_mode
+How It Works
+Pre-Upgrade Checks:
+The role first confirms that the imcl command is available and collects the pre-upgrade package information, parsing versions only if the products are found.
+
+Backup Tasks:
+The backup tasks ensure that the backup directory exists and then archive each installation directory (using either discovered or default paths) into uniquely named tar.gz files (with an ISO8601 timestamp).
+
+Upgrade Tasks:
+The upgrade tasks perform the imcl install commands only if the installation directories are available and only when restore_mode is false.
+
+Post-Upgrade and Reporting:
+After the upgrade, the role collects the new package versions and generates a text report comparing the before and after versions. These tasks are skipped when in restore mode.
+
+Restore Tasks:
+When restore_mode: true is set (for example, if you need to roll back), the restore tasks find the latest backup tar files in the backup directory and restore them to the appropriate installation directories.
+
+By incorporating these conditional checks, backup, and restore tasks, the role provides a robust mechanism for both safely upgrading your products and rolling back changes if necessary.
+
+
+
+
+
+
+
+
+]
+
+
+
+
+Search
+
+Reason
+
