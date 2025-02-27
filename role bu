@@ -1,0 +1,484 @@
+Git Repository & Branch Structure
+Your Git repository might be structured as follows:
+
+perl
+Copy
+my-ansible-repo/
+├── roles/
+│   └── b_upgrade/
+│       ├── defaults/
+│       │   └── main.yml         # default variables (e.g., backup_dir, upgrade_log_dir, etc.)
+│       ├── tasks/
+│       │   ├── main.yml         # main orchestration file
+│       │   ├── precheck.yml     # pre-upgrade checks (optional)
+│       │   ├── backup.yml
+│       │   ├── pre_upgrade.yml
+│       │   ├── check_installed.yml
+│       │   ├── available_versions.yml
+│       │   ├── upgrade.yml
+│       │   ├── post_upgrade.yml
+│       │   ├── report.yml
+│       │   └── restore.yml
+│       └── templates/
+│           └── upgrade_version_report.j2
+└── playbooks/
+    └── upgrade_websphere.yml   # playbook to execute the b_upgrade role
+Create (or switch to) a dedicated branch in Git:
+
+bash
+Copy
+git checkout -b upgrade_feature
+Commit your role changes to this branch for review.
+
+Role Files
+1. defaults/main.yml
+Define any default variables used by the role.
+
+yaml
+Copy
+---
+# roles/b_upgrade/defaults/main.yml
+backup_dir: "/tmp/im_backup"
+upgrade_log_dir: "/var/log/websphere_upgrade"
+rollback_upgrade: false
+# Set repository URLs or paths for target versions:
+websphere_next_repo: "http://repo.example.com/websphere"
+websphere_plugins_next_repo: "http://repo.example.com/websphere_plugins"
+ibm_http_next_repo: "http://repo.example.com/ibm_http"
+2. tasks/main.yml
+This file orchestrates the role by importing all sub‑tasks.
+
+yaml
+Copy
+---
+# roles/b_upgrade/tasks/main.yml
+
+- import_tasks: precheck.yml         # Optional pre-upgrade validations
+- import_tasks: backup.yml
+- import_tasks: pre_upgrade.yml
+- import_tasks: check_installed.yml
+- import_tasks: available_versions.yml
+
+- name: Execute upgrade block with rollback on failure
+  block:
+    - import_tasks: upgrade.yml
+  rescue:
+    - import_tasks: rollback.yml
+  always:
+    - import_tasks: post_upgrade.yml
+    - import_tasks: report.yml
+    - import_tasks: post_actions.yml   # Logging and service restart (if needed)
+3. tasks/precheck.yml
+(Optional) Pre-upgrade checks that fail fast if prerequisites are not met.
+
+yaml
+Copy
+---
+# roles/b_upgrade/tasks/precheck.yml
+- name: Check available disk space for upgrade
+  ansible.builtin.command: "/usr/bin/check_disk_space.sh"
+  register: disk_check
+  failed_when: disk_check.rc != 0
+  changed_when: false
+
+- name: Fail if disk space is insufficient
+  ansible.builtin.fail:
+    msg: "Upgrade aborted: insufficient disk space ({{ disk_check.stdout }} available)."
+  when: disk_check.rc != 0
+4. tasks/backup.yml
+Back up each installation directory to tar archives.
+
+yaml
+Copy
+---
+# roles/b_upgrade/tasks/backup.yml
+- name: Ensure backup directory exists
+  ansible.builtin.file:
+    path: "{{ backup_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Backup WebSphere Application Server directory
+  ansible.builtin.shell: >
+    tar -czf "{{ backup_dir }}/websphere_dir_backup.tar.gz"
+    -C "{{ websphere_dir | dirname }}" "{{ websphere_dir | basename }}"
+  when: websphere_dir is defined and websphere_dir | length > 0
+
+- name: Backup WebSphere Plugins directory
+  ansible.builtin.shell: >
+    tar -czf "{{ backup_dir }}/websphere_plugins_dir_backup.tar.gz"
+    -C "{{ websphere_plugins_dir | dirname }}" "{{ websphere_plugins_dir | basename }}"
+  when: websphere_plugins_dir is defined and websphere_plugins_dir | length > 0
+
+- name: Backup IBM HTTP Server directory
+  ansible.builtin.shell: >
+    tar -czf "{{ backup_dir }}/ibm_http_dir_backup.tar.gz"
+    -C "{{ ibm_http_dir | dirname }}" "{{ ibm_http_dir | basename }}"
+  when: ibm_http_dir is defined and ibm_http_dir | length > 0
+5. tasks/pre_upgrade.yml
+Capture the pre‑upgrade state and parse installed versions.
+
+yaml
+Copy
+---
+# roles/b_upgrade/tasks/pre_upgrade.yml
+- name: Capture pre-upgrade installed package info
+  ansible.builtin.shell: "{{ imcl_dir }}/tools/imcl listInstalledPackages -long"
+  register: pre_upgrade_info
+  changed_when: false
+
+- name: Parse WebSphere pre-upgrade version
+  ansible.builtin.set_fact:
+    websphere_pre_version: "{{ pre_upgrade_info.stdout | regex_search('WebSphere Application Server.*Version:\\s*(\\S+)', '\\1') }}"
+  when: pre_upgrade_info.stdout is search('WebSphere Application Server')
+
+- name: Parse WebSphere Plugins pre-upgrade version
+  ansible.builtin.set_fact:
+    websphere_plugins_pre_version: "{{ pre_upgrade_info.stdout | regex_search('WebSphere Plugins.*Version:\\s*(\\S+)', '\\1') }}"
+  when: pre_upgrade_info.stdout is search('WebSphere Plugins')
+
+- name: Parse IBM HTTP Server pre-upgrade version
+  ansible.builtin.set_fact:
+    ibm_http_pre_version: "{{ pre_upgrade_info.stdout | regex_search('IBM HTTP Server.*Version:\\s*(\\S+)', '\\1') }}"
+  when: pre_upgrade_info.stdout is search('IBM HTTP Server')
+
+- name: Debug pre-upgrade versions
+  ansible.builtin.debug:
+    msg:
+      - "WebSphere pre-upgrade version: {{ websphere_pre_version | default('Not installed') }}"
+      - "WebSphere Plugins pre-upgrade version: {{ websphere_plugins_pre_version | default('Not installed') }}"
+      - "IBM HTTP Server pre-upgrade version: {{ ibm_http_pre_version | default('Not installed') }}"
+6. tasks/check_installed.yml
+Set Boolean flags to indicate whether each product is installed.
+
+yaml
+Copy
+---
+# roles/b_upgrade/tasks/check_installed.yml
+- name: Check if WebSphere Application Server is installed
+  ansible.builtin.set_fact:
+    websphere_installed: "{{ pre_upgrade_info.stdout is search('WebSphere Application Server') }}"
+
+- name: Check if WebSphere Plugins is installed
+  ansible.builtin.set_fact:
+    websphere_plugins_installed: "{{ pre_upgrade_info.stdout is search('WebSphere Plugins') }}"
+
+- name: Check if IBM HTTP Server is installed
+  ansible.builtin.set_fact:
+    ibm_http_installed: "{{ pre_upgrade_info.stdout is search('IBM HTTP Server') }}"
+7. tasks/available_versions.yml
+Query each repository for the target version.
+
+yaml
+Copy
+---
+# roles/b_upgrade/tasks/available_versions.yml
+- name: List available packages for WebSphere from websphere_next_repo
+  ansible.builtin.shell: "{{ imcl_dir }}/tools/imcl listAvailablePackages -repositories {{ websphere_next_repo }}"
+  register: available_websphere_info
+  changed_when: false
+
+- name: Set target version for WebSphere Application Server
+  ansible.builtin.set_fact:
+    websphere_target_version: "{{ available_websphere_info.stdout | regex_search('WebSphere Application Server.*Version:\\s*(\\S+)', '\\1') }}"
+  when: available_websphere_info.stdout is search('WebSphere Application Server')
+
+- name: List available packages for WebSphere Plugins from websphere_plugins_next_repo
+  ansible.builtin.shell: "{{ imcl_dir }}/tools/imcl listAvailablePackages -repositories {{ websphere_plugins_next_repo }}"
+  register: available_plugins_info
+  changed_when: false
+
+- name: Set target version for WebSphere Plugins
+  ansible.builtin.set_fact:
+    websphere_plugins_target_version: "{{ available_plugins_info.stdout | regex_search('WebSphere Plugins.*Version:\\s*(\\S+)', '\\1') }}"
+  when: available_plugins_info.stdout is search('WebSphere Plugins')
+
+- name: List available packages for IBM HTTP Server from ibm_http_next_repo
+  ansible.builtin.shell: "{{ imcl_dir }}/tools/imcl listAvailablePackages -repositories {{ ibm_http_next_repo }}"
+  register: available_http_info
+  changed_when: false
+
+- name: Set target version for IBM HTTP Server
+  ansible.builtin.set_fact:
+    ibm_http_target_version: "{{ available_http_info.stdout | regex_search('IBM HTTP Server.*Version:\\s*(\\S+)', '\\1') }}"
+  when: available_http_info.stdout is search('IBM HTTP Server')
+
+- name: Debug target versions
+  ansible.builtin.debug:
+    msg:
+      - "WebSphere target version: {{ websphere_target_version | default('Not available') }}"
+      - "WebSphere Plugins target version: {{ websphere_plugins_target_version | default('Not available') }}"
+      - "IBM HTTP Server target version: {{ ibm_http_target_version | default('Not available') }}"
+8. tasks/upgrade.yml
+Run the upgrade commands only if the product is installed and the target version is greater than the current version. Wrap each upgrade in a block so that errors can be caught.
+
+yaml
+Copy
+---
+# roles/b_upgrade/tasks/upgrade.yml
+- name: Upgrade WebSphere Application Server if target > pre
+  block:
+    - name: Stop WebSphere service (pre-upgrade)
+      ansible.builtin.service:
+        name: websphere
+        state: stopped
+
+    - name: Run WebSphere upgrade command
+      ansible.builtin.shell: "{{ imcl_dir }}/tools/imcl upgrade com.ibm.websphere.ND -repositories {{ websphere_next_repo }} -installationDirectory {{ websphere_dir }}"
+      register: upgrade_websphere
+      failed_when: upgrade_websphere.rc != 0
+      args:
+        chdir: "{{ imcl_dir }}/tools"
+    - name: Verify new WebSphere version
+      ansible.builtin.shell: "/opt/IBM/WebSphere/AppServer/bin/versionInfo.sh | grep Version"
+      register: new_ws_version
+      changed_when: false
+    - name: Assert upgrade completed
+      ansible.builtin.assert:
+        that:
+          - new_ws_version.stdout is version(websphere_target_version, "==")
+        fail_msg: "WebSphere upgrade failed. Current version is {{ new_ws_version.stdout }}."
+  when: websphere_installed | bool and websphere_pre_version is defined and websphere_target_version is defined and (websphere_pre_version | version(websphere_target_version, '<'))
+
+- name: Upgrade WebSphere Plugins if target > pre
+  block:
+    - name: Stop WebSphere Plugins service (pre-upgrade)
+      ansible.builtin.service:
+        name: websphere_plugins
+        state: stopped
+
+    - name: Run WebSphere Plugins upgrade command
+      ansible.builtin.shell: "{{ imcl_dir }}/tools/imcl upgrade com.ibm.websphere.plugins -repositories {{ websphere_plugins_next_repo }} -installationDirectory {{ websphere_plugins_dir }}"
+      register: upgrade_plugins
+      failed_when: upgrade_plugins.rc != 0
+      args:
+        chdir: "{{ imcl_dir }}/tools"
+    - name: Verify new WebSphere Plugins version
+      ansible.builtin.shell: "/opt/IBM/WebSphere/Plugins/bin/versionInfo.sh | grep Version"
+      register: new_plugins_version
+      changed_when: false
+    - name: Assert Plugins upgrade completed
+      ansible.builtin.assert:
+        that:
+          - new_plugins_version.stdout is version(websphere_plugins_target_version, "==")
+        fail_msg: "WebSphere Plugins upgrade failed. Current version is {{ new_plugins_version.stdout }}."
+  when: websphere_plugins_installed | bool and websphere_plugins_pre_version is defined and websphere_plugins_target_version is defined and (websphere_plugins_pre_version | version(websphere_plugins_target_version, '<'))
+
+- name: Upgrade IBM HTTP Server if target > pre
+  block:
+    - name: Stop IBM HTTP Server service (pre-upgrade)
+      ansible.builtin.service:
+        name: ibm_http
+        state: stopped
+
+    - name: Run IBM HTTP Server upgrade command
+      ansible.builtin.shell: "{{ imcl_dir }}/tools/imcl upgrade com.ibm.httpserver -repositories {{ ibm_http_next_repo }} -installationDirectory {{ ibm_http_dir }}"
+      register: upgrade_http
+      failed_when: upgrade_http.rc != 0
+      args:
+        chdir: "{{ imcl_dir }}/tools"
+    - name: Verify new IBM HTTP Server version
+      ansible.builtin.shell: "/opt/IBM/HTTPServer/bin/versionInfo.sh | grep Version"
+      register: new_http_version
+      changed_when: false
+    - name: Assert HTTP Server upgrade completed
+      ansible.builtin.assert:
+        that:
+          - new_http_version.stdout is version(ibm_http_target_version, "==")
+        fail_msg: "IBM HTTP Server upgrade failed. Current version is {{ new_http_version.stdout }}."
+  when: ibm_http_installed | bool and ibm_http_pre_version is defined and ibm_http_target_version is defined and (ibm_http_pre_version | version(ibm_http_target_version, '<'))
+
+- name: Debug upgrade outputs
+  ansible.builtin.debug:
+    msg:
+      - "WebSphere upgrade output: {{ upgrade_websphere.stdout | default('Not executed') }}"
+      - "WebSphere Plugins upgrade output: {{ upgrade_plugins.stdout | default('Not executed') }}"
+      - "IBM HTTP Server upgrade output: {{ upgrade_http.stdout | default('Not executed') }}"
+9. tasks/post_upgrade.yml
+Capture and parse the post‑upgrade version information.
+
+yaml
+Copy
+---
+# roles/b_upgrade/tasks/post_upgrade.yml
+- name: Capture post-upgrade installed package info
+  ansible.builtin.shell: "{{ imcl_dir }}/tools/imcl listInstalledPackages -long"
+  register: post_upgrade_info
+  changed_when: false
+
+- name: Parse WebSphere post-upgrade version
+  ansible.builtin.set_fact:
+    websphere_post_version: "{{ post_upgrade_info.stdout | regex_search('WebSphere Application Server.*Version:\\s*(\\S+)', '\\1') }}"
+  when: post_upgrade_info.stdout is search('WebSphere Application Server')
+
+- name: Parse WebSphere Plugins post-upgrade version
+  ansible.builtin.set_fact:
+    websphere_plugins_post_version: "{{ post_upgrade_info.stdout | regex_search('WebSphere Plugins.*Version:\\s*(\\S+)', '\\1') }}"
+  when: post_upgrade_info.stdout is search('WebSphere Plugins')
+
+- name: Parse IBM HTTP Server post-upgrade version
+  ansible.builtin.set_fact:
+    ibm_http_post_version: "{{ post_upgrade_info.stdout | regex_search('IBM HTTP Server.*Version:\\s*(\\S+)', '\\1') }}"
+  when: post_upgrade_info.stdout is search('IBM HTTP Server')
+
+- name: Debug post-upgrade versions
+  ansible.builtin.debug:
+    msg:
+      - "WebSphere post-upgrade version: {{ websphere_post_version | default('Not installed') }}"
+      - "WebSphere Plugins post-upgrade version: {{ websphere_plugins_post_version | default('Not installed') }}"
+      - "IBM HTTP Server post-upgrade version: {{ ibm_http_post_version | default('Not installed') }}"
+10. tasks/report.yml
+Generate a comprehensive upgrade report that summarizes pre‑upgrade, target, and post‑upgrade versions.
+
+yaml
+Copy
+---
+# roles/b_upgrade/tasks/report.yml
+- name: Generate upgrade version report
+  ansible.builtin.template:
+    src: upgrade_version_report.j2
+    dest: "{{ playbook_dir }}/upgrade_version_report.txt"
+  vars:
+    ws_pre: "{{ websphere_pre_version | default('N/A') }}"
+    ws_target: "{{ websphere_target_version | default('N/A') }}"
+    ws_post: "{{ websphere_post_version | default('N/A') }}"
+    plugins_pre: "{{ websphere_plugins_pre_version | default('N/A') }}"
+    plugins_target: "{{ websphere_plugins_target_version | default('N/A') }}"
+    plugins_post: "{{ websphere_plugins_post_version | default('N/A') }}"
+    http_pre: "{{ ibm_http_pre_version | default('N/A') }}"
+    http_target: "{{ ibm_http_target_version | default('N/A') }}"
+    http_post: "{{ ibm_http_post_version | default('N/A') }}"
+11. templates/upgrade_version_report.j2
+A Jinja2 template that produces a human‑readable report.
+
+jinja
+Copy
+Upgrade Version Report
+======================
+Date: {{ ansible_date_time.iso8601 }}
+
+WebSphere Application Server:
+-----------------------------
+Pre-upgrade version: {{ ws_pre }}
+Target version: {{ ws_target }}
+Post-upgrade version: {{ ws_post }}
+
+WebSphere Plugins:
+------------------
+Pre-upgrade version: {{ plugins_pre }}
+Target version: {{ plugins_target }}
+Post-upgrade version: {{ plugins_post }}
+
+IBM HTTP Server:
+----------------
+Pre-upgrade version: {{ http_pre }}
+Target version: {{ http_target }}
+Post-upgrade version: {{ http_post }}
+12. tasks/rollback.yml
+The rollback tasks are executed in the rescue block if any upgrade fails (or if a manual rollback is triggered with rollback_upgrade: true). These tasks remove the failed installation directory and extract the backup tar file.
+
+yaml
+Copy
+---
+# roles/b_upgrade/tasks/rollback.yml
+- name: Rollback WebSphere Application Server
+  block:
+    - name: Remove current WebSphere directory
+      ansible.builtin.file:
+        path: "{{ websphere_dir }}"
+        state: absent
+    - name: Restore WebSphere from backup
+      ansible.builtin.shell: >
+        tar -xzf "{{ backup_dir }}/websphere_dir_backup.tar.gz"
+        -C "{{ websphere_dir | dirname }}"
+  when: (upgrade_websphere is defined and (upgrade_websphere.failed or upgrade_websphere.rc != 0)) or (rollback_upgrade | default(false) | bool)
+       and websphere_dir is defined
+
+- name: Rollback WebSphere Plugins
+  block:
+    - name: Remove current WebSphere Plugins directory
+      ansible.builtin.file:
+        path: "{{ websphere_plugins_dir }}"
+        state: absent
+    - name: Restore WebSphere Plugins from backup
+      ansible.builtin.shell: >
+        tar -xzf "{{ backup_dir }}/websphere_plugins_dir_backup.tar.gz"
+        -C "{{ websphere_plugins_dir | dirname }}"
+  when: (upgrade_plugins is defined and (upgrade_plugins.failed or upgrade_plugins.rc != 0)) or (rollback_upgrade | default(false) | bool)
+       and websphere_plugins_dir is defined
+
+- name: Rollback IBM HTTP Server
+  block:
+    - name: Remove current IBM HTTP Server directory
+      ansible.builtin.file:
+        path: "{{ ibm_http_dir }}"
+        state: absent
+    - name: Restore IBM HTTP Server from backup
+      ansible.builtin.shell: >
+        tar -xzf "{{ backup_dir }}/ibm_http_dir_backup.tar.gz"
+        -C "{{ ibm_http_dir | dirname }}"
+  when: (upgrade_http is defined and (upgrade_http.failed or upgrade_http.rc != 0)) or (rollback_upgrade | default(false) | bool)
+       and ibm_http_dir is defined
+13. tasks/post_actions.yml
+(Optional) Additional actions such as logging and service restarts can be performed here.
+
+yaml
+Copy
+---
+# roles/b_upgrade/tasks/post_actions.yml
+- name: Ensure upgrade log directory exists
+  ansible.builtin.file:
+    path: "{{ upgrade_log_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Save upgrade output log (WebSphere)
+  ansible.builtin.copy:
+    content: "[{{ '%Y%m%d_%H%M%S' | strftime }}] Host {{ inventory_hostname }} - WebSphere upgrade output:\n{{ upgrade_websphere.stdout | default('') }}"
+    dest: "{{ upgrade_log_dir }}/upgrade_{{ inventory_hostname }}_websphere.log"
+  when: upgrade_websphere is defined
+
+- name: Save rollback output log (if any)
+  ansible.builtin.copy:
+    content: "[{{ '%Y%m%d_%H%M%S' | strftime }}] Host {{ inventory_hostname }} - Rollback output:\n{{ rollback_result.stdout | default('') }}"
+    dest: "{{ upgrade_log_dir }}/rollback_{{ inventory_hostname }}.log"
+  when: rollback_result is defined
+
+- name: Start WebSphere service after upgrade (if upgrade succeeded)
+  ansible.builtin.service:
+    name: websphere
+    state: started
+  when: (upgrade_websphere is defined and not upgrade_websphere.failed) or (not rollback_upgrade | default(false) | bool)
+Sample Playbook
+Place this playbook (e.g. in playbooks/upgrade_websphere.yml) to execute the role:
+
+yaml
+Copy
+---
+- name: Upgrade WebSphere, Plugins, and IBM HTTP Server
+  hosts: all
+  become: yes
+  vars:
+    imcl_dir: "/opt/IBM/InstallationManager"         # Adjust as needed
+    websphere_dir: "/opt/IBM/WebSphere/AppServer"      # Current WebSphere installation
+    websphere_plugins_dir: "/opt/IBM/WebSphere/Plugins"  # Current Plugins installation
+    ibm_http_dir: "/opt/IBM/HTTPServer"                # Current IBM HTTP Server installation
+    websphere_next_repo: "http://repo.example.com/websphere"
+    websphere_plugins_next_repo: "http://repo.example.com/websphere_plugins"
+    ibm_http_next_repo: "http://repo.example.com/ibm_http"
+    rollback_upgrade: false   # Set to true to force rollback
+  roles:
+    - b_upgrade
+Summary
+This final role structure:
+
+Uses pre-checks to fail early if prerequisites aren’t met.
+Backs up current installations.
+Captures pre‑upgrade versions and available target versions.
+Runs upgrades only if needed (with version comparisons).
+Wraps upgrade tasks in blocks with rescue (rollback) on failure.
+Captures post‑upgrade versions and generates a comprehensive report.
+Provides detailed logging and service restart steps.
+Is structured for maintainability and idempotency.
+Can be executed via a playbook that supplies the required variables.
+You can now commit this role on your Git branch (e.g. “upgrade_feature”) and run the playbook to perform your WebSphere upgrade with a robust rollback scenario.
