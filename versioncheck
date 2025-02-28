@@ -1,0 +1,95 @@
+you can add a task in your role to capture the version (i.e. “8.5.5.23”) with a regular expression. Here’s an example snippet:
+
+yaml
+Copy
+- name: Extract version number from string
+  hosts: localhost
+  gather_facts: false
+  vars:
+    version_info: "C:\Program Files\IBM\WebSphere\AppServer : com.ibm.websphere.ND.v85 : IBM Websphere : 8.5.5.23"
+  tasks:
+    - name: Extract version using regex_search
+      set_fact:
+        extracted_version: "{{ version_info | regex_search('([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)') }}"
+        
+    - name: Display the extracted version
+      debug:
+        msg: "Extracted version is: {{ extracted_version }}"
+Explanation
+Regex Pattern:
+The pattern ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) matches a sequence of four groups of digits separated by periods.
+regex_search Filter:
+This filter applies the regex to the variable version_info and returns the first matching substring, which in this case is the version number.
+set_fact Module:
+It creates a new variable (extracted_version) which you can then use in subsequent tasks.
+This approach lets you extract the version number from your string within an Ansible role.
+
+
+
+
+
+
+You said:
+
+C:\Program Files\IBM\WebSphere\AppServer : com.ibm.websphere.ND.v85 : IBM Websphere : 8.5.5.23
+C:\Program Files\IBM\IHS\ : com.ibm.ihs.ND.v85 : IBM HHTP SERVER : 8.5.5.23
+
+Extract IBM Websphere as product installed and 8.5.5.23 as version for it using anisble and set it to variables and do the same for ibm hhtp server
+Reasoned for 13 seconds
+Below is an example of an Ansible task snippet (which you could put into your role’s tasks file) that splits the multiline output into lines, then extracts the product name and version for IBM Websphere and IBM HHTP SERVER separately:
+
+yaml
+Copy
+- name: Set package data variable
+  set_fact:
+    package_data: |
+      C:\Program Files\IBM\WebSphere\AppServer : com.ibm.websphere.ND.v85 : IBM Websphere : 8.5.5.23
+      C:\Program Files\IBM\IHS\ : com.ibm.ihs.ND.v85 : IBM HHTP SERVER : 8.5.5.23
+
+- name: Convert package data into a list of lines
+  set_fact:
+    package_lines: "{{ package_data.splitlines() }}"
+
+- name: Extract IBM Websphere details
+  set_fact:
+    websphere_product: "{{ item.split(' : ')[2] | trim }}"
+    websphere_version: "{{ item.split(' : ')[3] | trim }}"
+  loop: "{{ package_lines }}"
+  when: "'IBM Websphere' in item"
+
+- name: Extract IBM HHTP SERVER details
+  set_fact:
+    ihs_product: "{{ item.split(' : ')[2] | trim }}"
+    ihs_version: "{{ item.split(' : ')[3] | trim }}"
+  loop: "{{ package_lines }}"
+  when: "'IBM HHTP SERVER' in item"
+
+- name: Show extracted IBM Websphere details
+  debug:
+    msg: "IBM Websphere Product: {{ websphere_product }}, Version: {{ websphere_version }}"
+
+- name: Show extracted IBM HHTP SERVER details
+  debug:
+    msg: "IBM HHTP SERVER Product: {{ ihs_product }}, Version: {{ ihs_version }}"
+How It Works
+Set the Data:
+The package_data variable holds the multiline string with your output.
+
+Split into Lines:
+The splitlines() filter converts the string into a list of lines.
+
+Extract Details:
+The tasks loop over each line and use the split(' : ') filter to break the line into its four parts.
+
+The third element (index 2) is the product name.
+The fourth element (index 3) is the version. The when condition ensures each task only processes the line containing the relevant product name.
+Display the Variables:
+Finally, the debug tasks print the extracted values.
+
+You can include this snippet within your Ansible role to set and use the variables websphere_product, websphere_version, ihs_product, and ihs_version as needed.
+
+
+
+
+
+
