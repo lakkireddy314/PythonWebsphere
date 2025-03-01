@@ -1,0 +1,28 @@
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: Retrieve the current product version
+      command: /path/to/product --version
+      register: current_version_output
+
+    - name: Extract the current version number
+      set_fact:
+        current_version: "{{ current_version_output.stdout | regex_search('([0-9.]+)', '\\1') }}"
+
+    - name: Define the desired version
+      set_fact:
+        desired_version: '8.5.5.27'
+
+    - name: Abort if attempting to install a lower version
+      fail:
+        msg: "Cannot install a lower version. Please check the desired version."
+      when: desired_version is version(current_version, '<')
+
+    - name: Abort if the same version is already installed
+      debug:
+        msg: "The same version is already installed."
+      when: desired_version is version(current_version, '=')
+
+    - name: Proceed with installation if the desired version is newer
+      command: /path/to/install_script --version {{ desired_version }}
+      when: desired_version is version(current_version, '>')
