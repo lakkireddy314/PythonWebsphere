@@ -16,3 +16,46 @@
 - name: Set no_upgrade_needed to true if all components do not require upgrade
   ansible.builtin.set_fact:
     no_upgrade_needed: "{{ websphere_no_upgrade_needed | default(true) and websphere_plugins_no_upgrade_needed | default(true) and ibm_http_no_upgrade_needed | default(true) }}"
+
+
+
+
+ roles/upgrade/tasks/main.yml
+
+- name: Ensure necessary variables are defined
+  assert:
+    that:
+      - websphere_installed is defined
+      - websphere_pre_version is defined
+      - websphere_target_version is defined
+      - websphere_plugins_installed is defined
+      - websphere_plugins_pre_version is defined
+      - websphere_plugins_target_version is defined
+      - ibm_http_installed is defined
+      - ibm_http_pre_version is defined
+      - ibm_http_target_version is defined
+  fail_msg: "One or more required variables are undefined."
+
+- name: Determine if WebSphere upgrade is needed
+  ansible.builtin.set_fact:
+    websphere_upgrade_needed: "{{ websphere_installed and (websphere_pre_version | version(websphere_target_version, '<')) }}"
+
+- name: Determine if WebSphere Plugins upgrade is needed
+  ansible.builtin.set_fact:
+    websphere_plugins_upgrade_needed: "{{ websphere_plugins_installed and (websphere_plugins_pre_version | version(websphere_plugins_target_version, '<')) }}"
+
+- name: Determine if IBM HTTP Server upgrade is needed
+  ansible.builtin.set_fact:
+    ibm_http_upgrade_needed: "{{ ibm_http_installed and (ibm_http_pre_version | version(ibm_http_target_version, '<')) }}"
+
+- name: Upgrade WebSphere Application Server
+  include_tasks: was_upgrade.yml
+  when: websphere_upgrade_needed
+
+- name: Upgrade WebSphere Plugins
+  include_tasks: websphere_plugins_upgrade.yml
+  when: websphere_plugins_upgrade_needed
+
+- name: Upgrade IBM HTTP Server
+  include_tasks: ibm_http_upgrade.yml
+  when: ibm_http_upgrade_needed
