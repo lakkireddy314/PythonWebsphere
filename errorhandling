@@ -26,3 +26,40 @@
     - name: Fail role execution because upgrade failed
       fail:
         msg: "Upgrade failed, aborting role execution."
+
+
+
+- name: Attempt WebSphere upgrade using IMCL
+  block:
+    - name: Run the WebSphere upgrade command
+      command: >
+        ./imcl install com.ibm.websphere.BASE.v85_8.5.5013.20180112_1418
+        -repositories /data/repo/repository.config
+        -installationDirectory /appl/IBM/WebSphere/AppServer/
+        -acceptLicense -showProgress
+      register: upgrade_result
+      failed_when: upgrade_result.rc != 0
+
+  rescue:
+    - name: Debug upgrade error output
+      debug:
+        msg: |
+          Upgrade failed!
+          Return code: {{ upgrade_result.rc }}
+          Stdout: {{ upgrade_result.stdout }}
+          Stderr: {{ upgrade_result.stderr }}
+    - name: Fail role execution due to upgrade failure
+      fail:
+        msg: "Upgrade failed: Missing required installation files. Check repository integrity."
+Explanation
+Block Section:
+
+The command module runs the imcl install command.
+The output is registered as upgrade_result.
+The task is forced to fail if the return code is not zero (i.e. failed_when: upgrade_result.rc != 0).
+Rescue Section:
+
+If the upgrade command fails, the rescue block is executed.
+A debug task prints the return code, stdout, and stderr so you can see the detailed error message (including the missing plug-in details).
+Finally, the fail task marks the role as failed with a custom message.
+This structure ensures that if the upgrade fails (e.g. due to missing required installation files), the error output is displayed and the role stops execution as expected.
