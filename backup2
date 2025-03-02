@@ -1,3 +1,11 @@
+- name: Set feature variable based on environment
+  set_fact:
+    feature: "{{ prodfeature if env[:3] == 'prd' else nonprodFeature }}"
+
+- name: Install feature using imcl
+  command: "imcl install {{ feature }}"
+
+
 Below is a complete example of the restore.yml task file (plus supporting variables) for an IBM WebServer/WebSphere upgrade role. This version has been restructured to use host‐specific backup directories (by incorporating the ansible_hostname fact) and an aggregated components list. It then loops over each component and its defined source directories, restoring only backups from the current host. At the end, you'll find an explanation of the features and design decisions.
 
 upgrade_ibm/vars/main.yml
