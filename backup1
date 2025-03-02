@@ -1,1 +1,396 @@
+Below is an updated version of the role for an IBM WebServer/WebSphere upgrade. In this version, the role supports two distinct modes via a new variable called mode. When mode is set to "upgrade" (the default), the role will run (optionally) a pre‐upgrade backup and then perform the upgrade steps wrapped in a block/rescue so that any failure automatically triggers a rollback via the restore tasks. When mode is set to "restore", only the restore tasks are executed. (We’ve removed the post-upgrade restore option.)
+
+The folder structure is:
+
+css
+Copy
+upgrade_ibm/
+├── tasks
+│   ├── main.yml
+│   ├── backup.yml
+│   ├── upgrade.yml
+│   └── restore.yml
+└── vars
+    └── main.yml
+File: upgrade_ibm/vars/main.yml
+yaml
+Copy
+---
+# Base backup directory where archives are stored.
+backup_dir: "/install/BAW/backups"
+
+# Environment (e.g., production, staging).
+env: "production"
+
+# User used in directory paths.
+baw_user: "bawuser"
+
+# --- Source directories to be backed up (lists of directories) ---
+
+# For IBM WebServer – these directories will be backed up if either ihs_installed or plugin_installed is true.
+webserver_backup_dir:
+  - /opt/ihs/85
+  - /opt/websphere/85
+  - /home/{{ baw_user }}/var
+  - /home/{{ baw_user }}/etc
+
+# For IBM WebSphere – these directories will be backed up if either websphere_installed or baw_installed is true.
+websphere_backup_dir:
+  - /opt/wps8/websphere/
+  - /home/{{ baw_user }}/var
+  - /home/{{ baw_user }}/etc
+
+# --- Derived target directories where backup archives will be stored ---
+webserver_backup_target: "{{ backup_dir }}/{{ env }}/WebServer"
+websphere_backup_target: "{{ backup_dir }}/{{ env }}/WebSphere"
+
+# --- Retention and control variables ---
+# How many backup archives to retain (older ones will be deleted).
+backup_retain: 3
+
+# Installation flags (set true if the component is installed).
+websphere_installed: true
+baw_installed: false
+ihs_installed: false
+plugin_installed: true
+
+# Upgrade control:
+# If true, perform a pre-upgrade backup.
+pre_upgrade_backup: true
+
+# Mode control:
+# Set mode to "upgrade" to run upgrade tasks (with backup and block/rescue rollback on failure),
+# or set mode to "restore" to run only the restore tasks.
+mode: "upgrade"
+File: upgrade_ibm/tasks/main.yml
+yaml
+Copy
+---
+# Main tasks file for the upgrade_ibm role.
+# When mode is "upgrade":
+#   1. Run pre-upgrade backup tasks (if enabled).
+#   2. Run upgrade tasks inside a block/rescue; on failure, automatically call the restore tasks.
+#
+# When mode is "restore", only the restore tasks are executed.
+
+- name: Execute only restore tasks when mode is "restore"
+  import_tasks: restore.yml
+  when: mode == "restore"
+
+- name: Execute upgrade process when mode is "upgrade"
+  block:
+    - name: Run pre-upgrade backup tasks
+      import_tasks: backup.yml
+      when: pre_upgrade_backup | default(false)
+
+    - name: Run upgrade tasks for IBM WebServer and WebSphere
+      import_tasks: upgrade.yml
+  rescue:
+    - name: Upgrade failed; executing restore tasks for rollback
+      import_tasks: restore.yml
+  when: mode == "upgrade"
+File: upgrade_ibm/tasks/backup.yml
+yaml
+Copy
+---
+# Backup tasks – for each component, process each source directory:
+# 1. Check that the source exists.
+# 2. Ensure the target backup subdirectory exists (based on the source basename).
+# 3. Archive the source into a timestamped tar file.
+# 4. Remove older archives exceeding the retention count.
+
+- name: Backup WebServer directories
+  block:
+    - name: Process WebServer source directory {{ item }} for backup
+      block:
+        - name: Check if source directory {{ item }} exists (WebServer)
+          stat:
+            path: "{{ item }}"
+          register: ws_source_stat
+
+        - name: Ensure target backup directory exists for {{ item | basename }} (WebServer)
+          file:
+            path: "{{ webserver_backup_target }}/{{ item | basename }}"
+            state: directory
+            mode: '0755'
+          when: ws_source_stat.stat.exists
+
+        - name: Archive {{ item }} (WebServer)
+          archive:
+            path: "{{ item }}"
+            dest: "{{ webserver_backup_target }}/{{ item | basename }}/{{ item | basename }}_{{ ansible_date_time.iso8601_basic }}.tar"
+            format: tar
+          when: ws_source_stat.stat.exists
+
+        - name: Find existing backups for {{ item | basename }} (WebServer)
+          find:
+            paths: "{{ webserver_backup_target }}/{{ item | basename }}"
+            patterns: "{{ item | basename }}_*.tar"
+            file_type: file
+          register: ws_existing_backups
+          when: ws_source_stat.stat.exists
+
+        - name: Remove old WebServer backups for {{ item | basename }} (retain {{ backup_retain }})
+          file:
+            path: "{{ old_backup.path }}"
+            state: absent
+          loop: "{{ ws_existing_backups.files | sort(attribute='mtime') | list | slice(0, ws_existing_backups.files|length - backup_retain) }}"
+          loop_control:
+            loop_var: old_backup
+          when: ws_source_stat.stat.exists and ws_existing_backups.files|length > backup_retain
+      loop: "{{ webserver_backup_dir }}"
+  when: (ihs_installed | default(false)) or (plugin_installed | default(false))
+
+- name: Backup WebSphere directories
+  block:
+    - name: Process WebSphere source directory {{ item }} for backup
+      block:
+        - name: Check if source directory {{ item }} exists (WebSphere)
+          stat:
+            path: "{{ item }}"
+          register: wsphere_source_stat
+
+        - name: Ensure target backup directory exists for {{ item | basename }} (WebSphere)
+          file:
+            path: "{{ websphere_backup_target }}/{{ item | basename }}"
+            state: directory
+            mode: '0755'
+          when: wsphere_source_stat.stat.exists
+
+        - name: Archive {{ item }} (WebSphere)
+          archive:
+            path: "{{ item }}"
+            dest: "{{ websphere_backup_target }}/{{ item | basename }}/{{ item | basename }}_{{ ansible_date_time.iso8601_basic }}.tar"
+            format: tar
+          when: wsphere_source_stat.stat.exists
+
+        - name: Find existing backups for {{ item | basename }} (WebSphere)
+          find:
+            paths: "{{ websphere_backup_target }}/{{ item | basename }}"
+            patterns: "{{ item | basename }}_*.tar"
+            file_type: file
+          register: wsphere_existing_backups
+          when: wsphere_source_stat.stat.exists
+
+        - name: Remove old WebSphere backups for {{ item | basename }} (retain {{ backup_retain }})
+          file:
+            path: "{{ old_backup.path }}"
+            state: absent
+          loop: "{{ wsphere_existing_backups.files | sort(attribute='mtime') | list | slice(0, wsphere_existing_backups.files|length - backup_retain) }}"
+          loop_control:
+            loop_var: old_backup
+          when: wsphere_source_stat.stat.exists and wsphere_existing_backups.files|length > backup_retain
+      loop: "{{ websphere_backup_dir }}"
+  when: (websphere_installed | default(false)) or (baw_installed | default(false))
+File: upgrade_ibm/tasks/upgrade.yml
+yaml
+Copy
+---
+# Upgrade tasks for IBM WebServer and IBM WebSphere.
+# Replace the debug messages with the actual upgrade installer commands or scripts.
+
+- name: Upgrade IBM WebServer Block
+  block:
+    - name: Execute upgrade commands for WebServer (example)
+      debug:
+        msg: "Upgrading IBM WebServer..."
+    - name: Execute post-upgrade configuration for WebServer
+      debug:
+        msg: "Running WebServer post-upgrade configuration..."
+  when: (ihs_installed | default(false)) or (plugin_installed | default(false))
+
+- name: Upgrade IBM WebSphere Block
+  block:
+    - name: Execute upgrade commands for WebSphere (example)
+      debug:
+        msg: "Upgrading IBM WebSphere..."
+    - name: Execute post-upgrade configuration for WebSphere
+      debug:
+        msg: "Running WebSphere post-upgrade configuration..."
+  when: (websphere_installed | default(false)) or (baw_installed | default(false))
+File: upgrade_ibm/tasks/restore.yml
+yaml
+Copy
+---
+# Restore tasks – for each component, find the latest backup archive and restore it.
+# For each source directory:
+# 1. Check if the corresponding backup target exists.
+# 2. Find and sort backup archives.
+# 3. Remove the current source directory, recreate it, and unarchive the latest backup.
+# 4. Clean up older backup archives.
+
+- name: Restore WebServer directories
+  block:
+    - name: Check if backup target exists for {{ item | basename }} (WebServer)
+      stat:
+        path: "{{ webserver_backup_target }}/{{ item | basename }}"
+      register: ws_backup_target_stat
+
+    - name: Skip restore for {{ item }} (WebServer) if no backup available
+      debug:
+        msg: "No backup archive available for {{ item }} (WebServer)."
+      when: not ws_backup_target_stat.stat.exists
+
+    - name: Find backup files for {{ item | basename }} (WebServer)
+      find:
+        paths: "{{ webserver_backup_target }}/{{ item | basename }}"
+        patterns: "{{ item | basename }}_*.tar"
+        file_type: file
+      register: ws_backup_files
+      when: ws_backup_target_stat.stat.exists
+
+    - name: Set latest backup file for {{ item | basename }} (WebServer)
+      set_fact:
+        latest_ws_backup: "{{ (ws_backup_files.files | sort(attribute='mtime') | list | last).path }}"
+      when: ws_backup_files.files | length > 0
+
+    - name: Remove current {{ item }} directory (WebServer)
+      file:
+        path: "{{ item }}"
+        state: absent
+      when: latest_ws_backup is defined
+
+    - name: Recreate {{ item }} directory (WebServer)
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      when: latest_ws_backup is defined
+
+    - name: Restore from latest backup for {{ item | basename }} (WebServer)
+      unarchive:
+        src: "{{ latest_ws_backup }}"
+        dest: "{{ item }}"
+        remote_src: yes
+      when: latest_ws_backup is defined
+
+    - name: Clean up older WebServer backups for {{ item | basename }} (keep latest only)
+      file:
+        path: "{{ old_backup.path }}"
+        state: absent
+      loop: "{{ ws_backup_files.files | sort(attribute='mtime') | list | slice(0, -1) }}"
+      loop_control:
+        loop_var: old_backup
+      when: ws_backup_files.files | length > 1
+  loop: "{{ webserver_backup_dir }}"
+  when: (ihs_installed | default(false)) or (plugin_installed | default(false))
+
+- name: Restore WebSphere directories
+  block:
+    - name: Check if backup target exists for {{ item | basename }} (WebSphere)
+      stat:
+        path: "{{ websphere_backup_target }}/{{ item | basename }}"
+      register: wsphere_backup_target_stat
+
+    - name: Skip restore for {{ item }} (WebSphere) if no backup available
+      debug:
+        msg: "No backup archive available for {{ item }} (WebSphere)."
+      when: not wsphere_backup_target_stat.stat.exists
+
+    - name: Find backup files for {{ item | basename }} (WebSphere)
+      find:
+        paths: "{{ websphere_backup_target }}/{{ item | basename }}"
+        patterns: "{{ item | basename }}_*.tar"
+        file_type: file
+      register: wsphere_backup_files
+      when: wsphere_backup_target_stat.stat.exists
+
+    - name: Set latest backup file for {{ item | basename }} (WebSphere)
+      set_fact:
+        latest_wsphere_backup: "{{ (wsphere_backup_files.files | sort(attribute='mtime') | list | last).path }}"
+      when: wsphere_backup_files.files | length > 0
+
+    - name: Remove current {{ item }} directory (WebSphere)
+      file:
+        path: "{{ item }}"
+        state: absent
+      when: latest_wsphere_backup is defined
+
+    - name: Recreate {{ item }} directory (WebSphere)
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      when: latest_wsphere_backup is defined
+
+    - name: Restore from latest backup for {{ item | basename }} (WebSphere)
+      unarchive:
+        src: "{{ latest_wsphere_backup }}"
+        dest: "{{ item }}"
+        remote_src: yes
+      when: latest_wsphere_backup is defined
+
+    - name: Clean up older WebSphere backups for {{ item | basename }} (keep latest only)
+      file:
+        path: "{{ old_backup.path }}"
+        state: absent
+      loop: "{{ wsphere_backup_files.files | sort(attribute='mtime') | list | slice(0, -1) }}"
+      loop_control:
+        loop_var: old_backup
+      when: wsphere_backup_files.files | length > 1
+  loop: "{{ websphere_backup_dir }}"
+  when: (websphere_installed | default(false)) or (baw_installed | default(false))
+File: upgrade_ibm_playbook.yml
+yaml
+Copy
+---
+- name: Upgrade IBM WebServer and WebSphere with Backup/Restore and Rollback on Failure
+  hosts: aix_servers
+  gather_facts: yes
+  vars:
+    # Override variables if needed.
+    backup_dir: "/install/BAW/backups"
+    env: "production"
+    baw_user: "bawuser"
+    webserver_backup_dir:
+      - /opt/ihs/85
+      - /opt/websphere/85
+      - /home/{{ baw_user }}/var
+      - /home/{{ baw_user }}/etc
+    websphere_backup_dir:
+      - /opt/wps8/websphere/
+      - /home/{{ baw_user }}/var
+      - /home/{{ baw_user }}/etc
+
+    # Installation flags.
+    websphere_installed: true
+    baw_installed: false
+    ihs_installed: false
+    plugin_installed: true
+
+    # Upgrade control.
+    pre_upgrade_backup: true
+
+    # Set mode to "upgrade" to perform upgrade (with block/rescue rollback)
+    # or "restore" to run only the restore tasks.
+    mode: "upgrade"
+  roles:
+    - upgrade_ibm
+Explanation
+Mode Variable:
+The new mode variable (defaulting to "upgrade") controls the operation. When set to "upgrade", the role runs pre-upgrade backup (if enabled) and then the upgrade tasks inside a block/rescue. On failure, the rescue section automatically runs the restore tasks. When mode is set to "restore", only the restore tasks run.
+
+Removed post-upgrade restore:
+The previous post-upgrade restore option has been removed. Rollback on failure is now handled by the rescue section in the upgrade block.
+
+Block/Rescue Structure:
+The upgrade tasks are wrapped in a block so that if any step fails, the rescue section executes the restore tasks.
+
+Role Structure:
+Tasks are modularized into separate files for backup, upgrade, and restore. This enhances maintainability and allows you to run a restore-only operation by setting mode to "restore" in your playbook.
+
+This refactored role now supports both an upgrade workflow (with automatic rollback on failure) and an independent restore operation.
+
+
+
+
+
+
+
+
+
+
+Search
+
+Deep research
 
