@@ -1,0 +1,14 @@
+- name: Run the WebSphere upgrade command
+  command: >
+    ./imcl install com.ibm.websphere.BASE.v85_8.5.5013.20180112_1418
+    -repositories /data/repo/repository.config
+    -installationDirectory /appl/IBM/WebSphere/AppServer/
+    -acceptLicense -showProgress
+  register: upgrade_result
+  failed_when: >
+    upgrade_result.rc != 0 and
+    ('ERROR:' in upgrade_result.stderr) and
+    ('CRIMA1161E' in upgrade_result.stderr)
+  changed_when:
+    - "'Installed ' ~ desired_version ~ ' to directory ' ~ was_install_root in upgrade_result.stdout"
+    - "upgrade_result.stdout is defined"
