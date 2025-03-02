@@ -1,0 +1,187 @@
+Below is a comprehensive overview of an Ansible role designed to update WebSphere global security custom properties via a wsadmin Jython script. This example role is structured to:
+
+Define default variables (such as the WebSphere installation root).
+Include the Jython script under the files directory.
+Store the properties file under the properties directory.
+Execute tasks that copy the necessary files, run the wsadmin command, and then perform cleanup by removing temporary files through subtasks.
+Role Directory Structure
+bash
+Copy
+roles/
+└── websphere_custom_properties/
+    ├── defaults/
+    │   └── main.yml                # Default variable definitions (e.g., websphere_install_root)
+    ├── files/
+    │   └── updateGlobalSecurityCustomProperties.py  # wsadmin Jython script
+    ├── properties/
+    │   └── globalCustom.properties # Custom properties file in key=value format
+    └── tasks/
+        ├── main.yml              # Main tasks: copying files, executing wsadmin, and calling cleanup
+        └── cleanup.yml           # Subtasks for cleaning up temporary files
+File Details and Explanations
+1. defaults/main.yml
+This file defines default variables for the role. Here, you can specify the websphere_install_root, which is the root directory where WebSphere is installed. This variable is used to build the path to the wsadmin executable.
+
+yaml
+Copy
+---
+websphere_install_root: /opt/IBM/WebSphere/AppServer
+Explanation:
+This default sets the WebSphere installation root to /opt/IBM/WebSphere/AppServer. Adjust this path as needed for your environment.
+
+2. files/updateGlobalSecurityCustomProperties.py
+This Jython script is executed by the wsadmin tool. It reads a properties file, checks if each property already exists under the Global Security custom properties, and adds any missing ones.
+
+python
+Copy
+# updateGlobalSecurityCustomProperties.py
+import sys
+
+if len(sys.argv) != 2:
+    print "Usage: wsadmin.sh -lang jython -f updateGlobalSecurityCustomProperties.py <globalCustom.properties>"
+    sys.exit(1)
+
+propertiesFile = sys.argv[1]
+
+def loadProperties(filename):
+    """
+    Load properties from a file into a dictionary.
+    Lines starting with '#' or empty lines are skipped.
+    """
+    props = {}
+    try:
+        with open(filename, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if '=' not in line:
+                    print "Skipping invalid property line: %s" % line
+                    continue
+                key, value = line.split('=', 1)
+                props[key.strip()] = value.strip()
+    except Exception, e:
+        print "Error reading file: %s" % e
+    return props
+
+# Load properties from the provided file.
+properties = loadProperties(propertiesFile)
+
+# Retrieve the global security configuration object.
+security = AdminConfig.getid("/Security:/")
+if not security:
+    print "Global Security configuration not found. Exiting."
+    sys.exit(1)
+
+# Retrieve existing global security custom properties.
+existingProps = {}
+customProps = AdminConfig.list("CustomProperty", security)
+if customProps:
+    for cp in customProps.splitlines():
+        name = AdminConfig.showAttribute(cp, "name")
+        existingProps[name] = cp
+
+# Iterate through each property from the file.
+for key, value in properties.iteritems():
+    if key in existingProps:
+        print "Property '%s' already exists. Skipping." % key
+    else:
+        params = [['name', key], ['value', value]]
+        newProp = AdminConfig.create("CustomProperty", security, params)
+        print "Created global security property '%s' with value '%s'" % (key, value)
+        AdminConfig.save()
+Explanation:
+
+Loading Properties: The script reads the provided properties file, ignoring comments and blank lines.
+Retrieving Configuration: It locates the global security configuration using AdminConfig.getid("/Security:/").
+Property Processing: The script checks if each property exists and creates it only if it’s not present.
+Saving Changes: After adding a property, it calls AdminConfig.save() to persist the changes.
+3. properties/globalCustom.properties
+This file contains the custom properties in a key=value format. You can add any number of properties here that you want to ensure are present in the global security configuration.
+
+properties
+Copy
+# Global Custom Properties for WebSphere Global Security
+myProperty1=value1
+myProperty2=value2
+Explanation:
+This is a sample properties file. Lines beginning with # are treated as comments. Each property is defined in the format key=value.
+
+4. tasks/main.yml
+The main task file handles copying the Jython script and properties file to the target host, executing the wsadmin command, and then including the cleanup tasks.
+
+yaml
+Copy
+---
+- name: Copy wsadmin Jython script to remote host
+  copy:
+    src: updateGlobalSecurityCustomProperties.py
+    dest: /tmp/updateGlobalSecurityCustomProperties.py
+    mode: '0755'
+
+- name: Copy global custom properties file to remote host
+  copy:
+    src: "{{ role_path }}/properties/globalCustom.properties"
+    dest: /tmp/globalCustom.properties
+    mode: '0644'
+
+- name: Run wsadmin script to update global security custom properties
+  command: "{{ websphere_install_root }}/bin/wsadmin.sh -lang jython -f /tmp/updateGlobalSecurityCustomProperties.py /tmp/globalCustom.properties"
+  register: wsadmin_result
+
+- name: Display wsadmin output
+  debug:
+    var: wsadmin_result.stdout_lines
+
+- name: Run cleanup tasks
+  include_tasks: cleanup.yml
+Explanation:
+
+Copy Tasks: The script and properties file are copied from the role directories to the /tmp directory on the remote host.
+Execution: The wsadmin command is executed using the provided WebSphere installation path. The output is registered for debugging.
+Cleanup Inclusion: Finally, the role includes the cleanup tasks defined in cleanup.yml.
+5. tasks/cleanup.yml
+This subtask file is dedicated to cleaning up the temporary files that were copied to the remote host.
+
+yaml
+Copy
+---
+- name: Cleanup temporary wsadmin script file
+  file:
+    path: /tmp/updateGlobalSecurityCustomProperties.py
+    state: absent
+
+- name: Cleanup temporary properties file
+  file:
+    path: /tmp/globalCustom.properties
+    state: absent
+Explanation:
+
+Cleanup Tasks: These tasks remove the temporary files from the /tmp directory, ensuring that the system does not retain these files after the role execution.
+How to Use This Role
+Define Variables:
+Ensure that websphere_install_root is correctly defined (either in defaults/main.yml or overridden via inventory/group_vars).
+
+Include the Role in Your Playbook:
+Reference this role in your playbook so that the tasks are executed on the target host.
+
+Execution Example:
+Run your playbook with a command like:
+
+bash
+Copy
+ansible-playbook -i inventory playbook.yml
+where playbook.yml includes:
+
+yaml
+Copy
+- hosts: your_websphere_hosts
+  roles:
+    - websphere_custom_properties
+This complete role setup ensures that your WebSphere environment is updated with the specified global security custom properties and that any temporary files are cleaned up afterward, keeping your system tidy and secure.
+
+
+
+
+
+
