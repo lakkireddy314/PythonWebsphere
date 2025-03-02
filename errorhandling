@@ -1,0 +1,28 @@
+- name: Perform WebSphere upgrade
+  command: /path/to/imcl install com.ibm.websphere.ND.v85_8.5.5.27
+  register: upgrade_result
+  failed_when:
+    - upgrade_result.rc != 0
+    - "'ERROR' in upgrade_result.stderr"
+
+    ---
+- name: Attempt WebSphere upgrade
+  block:
+    - name: Run the WebSphere upgrade command
+      command: /path/to/imcl install com.ibm.websphere.ND.v85_8.5.5.27
+      register: upgrade_result
+      # The task will fail if the command does not return exit code 0.
+      failed_when: upgrade_result.rc != 0
+
+  rescue:
+    - name: Debug upgrade error output
+      debug:
+        msg: |
+          Upgrade failed!
+          Return code: {{ upgrade_result.rc }}
+          Stdout: {{ upgrade_result.stdout }}
+          Stderr: {{ upgrade_result.stderr }}
+
+    - name: Fail role execution because upgrade failed
+      fail:
+        msg: "Upgrade failed, aborting role execution."
