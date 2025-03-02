@@ -1,0 +1,340 @@
+Below is a refactored version of the role that uses the variables you provided. In this version, the lists defined for webserver_backup_dir and websphere_backup_dir represent the source directories to back up. In addition, we derive target (storage) directories for each component from the base backup_dir and the environment (via env). This separation lets us back up the source directories (from the lists) and store the archives in a dedicated target folder. We also include conditional checks (using stat) and use loops to reduce redundancy.
+
+The role’s folder structure is:
+
+css
+Copy
+backup_restore/
+├── tasks
+│   ├── main.yml
+│   ├── backup.yml
+│   └── restore.yml
+└── vars
+    └── main.yml
+Below are the complete files:
+
+File: roles/backup_restore/vars/main.yml
+yaml
+Copy
+---
+# Base directory where backup archives are stored.
+backup_dir: "/install/BAW/backups"
+
+# Environment variable (e.g., production, staging).
+env: "production"
+
+# User used in directory paths.
+baw_user: "bawuser"
+
+# Source directories for backup.
+webserver_backup_dir:
+  - /opt/ihs/85
+  - /opt/websphere/85
+  - /home/{{ baw_user }}/var
+  - /home/{{ baw_user }}/etc
+
+websphere_backup_dir:
+  - /opt/wps8/websphere/
+  - /home/{{ baw_user }}/var
+  - /home/{{ baw_user }}/etc
+
+# Derived target directories where backup archives will be stored.
+# These are computed from backup_dir, env and the component name.
+webserver_backup_target: "{{ backup_dir }}/{{ env }}/WebServer"
+websphere_backup_target: "{{ backup_dir }}/{{ env }}/WebSphere"
+
+# Retain only the latest N archives (older ones will be removed).
+backup_retain: 3
+
+# Installation flags – set to true if that component is installed.
+# For backup operations, the task will run only if its flag is true.
+websphere_installed: true
+baw_installed: false
+ihs_installed: false
+plugin_installed: true
+
+# Control the role operation. Set to "backup" to perform a backup
+# or "restore" to perform a restore.
+backup_action: "backup"
+File: roles/backup_restore/tasks/main.yml
+yaml
+Copy
+---
+# Main tasks file that decides whether to run backup or restore tasks
+# based on the value of backup_action.
+- name: Run backup tasks
+  import_tasks: backup.yml
+  when: backup_action == "backup"
+
+- name: Run restore tasks
+  import_tasks: restore.yml
+  when: backup_action == "restore"
+File: roles/backup_restore/tasks/backup.yml
+yaml
+Copy
+---
+# Backup tasks for AIX.
+# For each source directory in the lists, we:
+#   - Check if the directory exists.
+#   - Ensure the target backup subdirectory exists.
+#   - Archive the source directory into a timestamped file stored in the target.
+#   - Remove older archives exceeding the retention count.
+
+- name: Backup WebServer directories
+  block:
+    - name: Process WebServer directory {{ item }} for backup
+      block:
+        - name: Check if source directory {{ item }} exists (WebServer)
+          stat:
+            path: "{{ item }}"
+          register: ws_source_stat
+
+        - name: Ensure target backup subdirectory exists for {{ item | basename }} (WebServer)
+          file:
+            path: "{{ webserver_backup_target }}/{{ item | basename }}"
+            state: directory
+            mode: '0755'
+          when: ws_source_stat.stat.exists
+
+        - name: Archive {{ item }} (WebServer)
+          archive:
+            path: "{{ item }}"
+            dest: "{{ webserver_backup_target }}/{{ item | basename }}/{{ item | basename }}_{{ ansible_date_time.iso8601_basic }}.tar"
+            format: tar
+          when: ws_source_stat.stat.exists
+
+        - name: Find existing WebServer backups for {{ item | basename }}
+          find:
+            paths: "{{ webserver_backup_target }}/{{ item | basename }}"
+            patterns: "{{ item | basename }}_*.tar"
+            file_type: file
+          register: ws_existing_backups
+          when: ws_source_stat.stat.exists
+
+        - name: Remove old WebServer backups for {{ item | basename }} (retain {{ backup_retain }})
+          file:
+            path: "{{ old_backup.path }}"
+            state: absent
+          loop: "{{ ws_existing_backups.files | sort(attribute='mtime') | list | slice(0, ws_existing_backups.files|length - backup_retain) }}"
+          loop_control:
+            loop_var: old_backup
+          when: ws_source_stat.stat.exists and ws_existing_backups.files|length > backup_retain
+      loop: "{{ webserver_backup_dir }}"
+  when: (ihs_installed | default(false)) or (plugin_installed | default(false))
+
+- name: Backup WebSphere directories
+  block:
+    - name: Process WebSphere directory {{ item }} for backup
+      block:
+        - name: Check if source directory {{ item }} exists (WebSphere)
+          stat:
+            path: "{{ item }}"
+          register: wsphere_source_stat
+
+        - name: Ensure target backup subdirectory exists for {{ item | basename }} (WebSphere)
+          file:
+            path: "{{ websphere_backup_target }}/{{ item | basename }}"
+            state: directory
+            mode: '0755'
+          when: wsphere_source_stat.stat.exists
+
+        - name: Archive {{ item }} (WebSphere)
+          archive:
+            path: "{{ item }}"
+            dest: "{{ websphere_backup_target }}/{{ item | basename }}/{{ item | basename }}_{{ ansible_date_time.iso8601_basic }}.tar"
+            format: tar
+          when: wsphere_source_stat.stat.exists
+
+        - name: Find existing WebSphere backups for {{ item | basename }}
+          find:
+            paths: "{{ websphere_backup_target }}/{{ item | basename }}"
+            patterns: "{{ item | basename }}_*.tar"
+            file_type: file
+          register: wsphere_existing_backups
+          when: wsphere_source_stat.stat.exists
+
+        - name: Remove old WebSphere backups for {{ item | basename }} (retain {{ backup_retain }})
+          file:
+            path: "{{ old_backup.path }}"
+            state: absent
+          loop: "{{ wsphere_existing_backups.files | sort(attribute='mtime') | list | slice(0, wsphere_existing_backups.files|length - backup_retain) }}"
+          loop_control:
+            loop_var: old_backup
+          when: wsphere_source_stat.stat.exists and wsphere_existing_backups.files|length > backup_retain
+      loop: "{{ websphere_backup_dir }}"
+  when: (websphere_installed | default(false)) or (baw_installed | default(false))
+File: roles/backup_restore/tasks/restore.yml
+yaml
+Copy
+---
+# Restore tasks for AIX.
+# For each source directory (as defined in the lists), we:
+#   - Check if a corresponding target backup subdirectory exists.
+#   - Find the backup files and sort by modification time.
+#   - Remove the current source directory, recreate it,
+#   - Extract the latest archive into the source location,
+#   - And remove older archives beyond the latest one.
+
+- name: Restore WebServer directories
+  block:
+    - name: Check if target backup subdirectory exists for {{ item | basename }} (WebServer)
+      stat:
+        path: "{{ webserver_backup_target }}/{{ item | basename }}"
+      register: ws_backup_target_stat
+
+    - name: Skip restore for {{ item }} (WebServer) if no backup target found
+      debug:
+        msg: "No backup archive available for {{ item }} (WebServer)."
+      when: not ws_backup_target_stat.stat.exists
+
+    - name: Find backup files for {{ item | basename }} (WebServer)
+      find:
+        paths: "{{ webserver_backup_target }}/{{ item | basename }}"
+        patterns: "{{ item | basename }}_*.tar"
+        file_type: file
+      register: ws_backup_files
+      when: ws_backup_target_stat.stat.exists
+
+    - name: Set latest WebServer backup file for {{ item | basename }}
+      set_fact:
+        latest_ws_backup: "{{ (ws_backup_files.files | sort(attribute='mtime') | list | last).path }}"
+      when: ws_backup_files.files | length > 0
+
+    - name: Remove current {{ item }} directory (WebServer)
+      file:
+        path: "{{ item }}"
+        state: absent
+      when: latest_ws_backup is defined
+
+    - name: Recreate {{ item }} directory (WebServer)
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      when: latest_ws_backup is defined
+
+    - name: Restore from latest backup for {{ item | basename }} (WebServer)
+      unarchive:
+        src: "{{ latest_ws_backup }}"
+        dest: "{{ item }}"
+        remote_src: yes
+      when: latest_ws_backup is defined
+
+    - name: Clean up older WebServer backups for {{ item | basename }} (keep latest only)
+      file:
+        path: "{{ old_backup.path }}"
+        state: absent
+      loop: "{{ ws_backup_files.files | sort(attribute='mtime') | list | slice(0, -1) }}"
+      loop_control:
+        loop_var: old_backup
+      when: ws_backup_files.files | length > 1
+  loop: "{{ webserver_backup_dir }}"
+  when: (ihs_installed | default(false)) or (plugin_installed | default(false))
+
+- name: Restore WebSphere directories
+  block:
+    - name: Check if target backup subdirectory exists for {{ item | basename }} (WebSphere)
+      stat:
+        path: "{{ websphere_backup_target }}/{{ item | basename }}"
+      register: wsphere_backup_target_stat
+
+    - name: Skip restore for {{ item }} (WebSphere) if no backup target found
+      debug:
+        msg: "No backup archive available for {{ item }} (WebSphere)."
+      when: not wsphere_backup_target_stat.stat.exists
+
+    - name: Find backup files for {{ item | basename }} (WebSphere)
+      find:
+        paths: "{{ websphere_backup_target }}/{{ item | basename }}"
+        patterns: "{{ item | basename }}_*.tar"
+        file_type: file
+      register: wsphere_backup_files
+      when: wsphere_backup_target_stat.stat.exists
+
+    - name: Set latest WebSphere backup file for {{ item | basename }}
+      set_fact:
+        latest_wsphere_backup: "{{ (wsphere_backup_files.files | sort(attribute='mtime') | list | last).path }}"
+      when: wsphere_backup_files.files | length > 0
+
+    - name: Remove current {{ item }} directory (WebSphere)
+      file:
+        path: "{{ item }}"
+        state: absent
+      when: latest_wsphere_backup is defined
+
+    - name: Recreate {{ item }} directory (WebSphere)
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      when: latest_wsphere_backup is defined
+
+    - name: Restore from latest backup for {{ item | basename }} (WebSphere)
+      unarchive:
+        src: "{{ latest_wsphere_backup }}"
+        dest: "{{ item }}"
+        remote_src: yes
+      when: latest_wsphere_backup is defined
+
+    - name: Clean up older WebSphere backups for {{ item | basename }} (keep latest only)
+      file:
+        path: "{{ old_backup.path }}"
+        state: absent
+      loop: "{{ wsphere_backup_files.files | sort(attribute='mtime') | list | slice(0, -1) }}"
+      loop_control:
+        loop_var: old_backup
+      when: wsphere_backup_files.files | length > 1
+  loop: "{{ websphere_backup_dir }}"
+  when: (websphere_installed | default(false)) or (baw_installed | default(false))
+Example Playbook: backup_restore_playbook.yml
+yaml
+Copy
+---
+- name: Run Backup/Restore Role on AIX
+  hosts: aix_servers
+  gather_facts: yes
+  vars:
+    # Override variables if needed.
+    backup_dir: "/install/BAW/backups"
+    env: "production"
+    baw_user: "bawuser"
+    webserver_backup_dir:
+      - /opt/ihs/85
+      - /opt/websphere/85
+      - /home/{{ baw_user }}/var
+      - /home/{{ baw_user }}/etc
+    websphere_backup_dir:
+      - /opt/wps8/websphere/
+      - /home/{{ baw_user }}/var
+      - /home/{{ baw_user }}/etc
+
+    # Installation flags.
+    websphere_installed: true
+    baw_installed: false
+    ihs_installed: false
+    plugin_installed: true
+
+    # Set action: "backup" or "restore"
+    backup_action: "backup"
+  roles:
+    - backup_restore
+Explanation
+Variables:
+• The lists for webserver_backup_dir and websphere_backup_dir now represent source directories to be backed up.
+• New target variables (e.g. webserver_backup_target) are derived from backup_dir and env to hold the archives.
+• The retention count is set via backup_retain.
+
+Backup Tasks:
+• For each directory in the source list, the role checks if it exists.
+• It creates a corresponding target subfolder (using the source’s basename) and archives the source into that folder with a timestamped filename.
+• Old archives beyond the retention count are removed.
+
+Restore Tasks:
+• For each source directory, the role checks the target backup folder for available archives.
+• If found, it removes the current source directory, recreates it, and extracts the latest archive directly into that location.
+• Older backups are cleaned up.
+
+Playbook:
+The playbook shows how to override the variables if needed and set the action (backup or restore).
+
+This refactored role now uses your provided variables and clearly separates source directories (the lists) from their corresponding backup targets while maintaining efficient, conditional, and maintainable tasks.
