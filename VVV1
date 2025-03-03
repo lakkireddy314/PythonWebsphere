@@ -1,0 +1,520 @@
+Directory Structure
+python
+Copy
+venafi_cert_renew/
+├── defaults
+│   └── main.yml
+├── group_vars
+│   └── prod.yml         # Example group vars file for the prod environment
+├── handlers
+│   └── main.yml         # (Optional) Handlers if needed
+├── tasks
+│   ├── backup_and_replace.yml
+│   ├── check_cert_expiry.yml
+│   ├── cleanup.yml
+│   ├── extract_values.yml
+│   ├── locate_configs.yml
+│   ├── main.yml
+│   ├── renew_cert.yml
+│   ├── restore_cert.yml
+│   └── send_report.yml
+└── vars
+    └── main.yml
+└── README.md
+File Contents
+1. defaults/main.yml
+yaml
+Copy
+---
+# General defaults for certificate renewal
+cert_renew_threshold: 90            # Renewal threshold in days
+vcert_download_url: "https://localhost/Certs/vcert.zip"
+vcert_install_dir: "/tmp/vcert"
+vcert_password: "WEBASCh@ngeit"
+2. group_vars/prod.yml
+yaml
+Copy
+---
+# Group variables for the production environment
+
+# List of HTTPD configuration files for prod.
+# These files should contain the Keyfile and SSLServerCert entries.
+httpd_confs:
+  - "/path/to/test1.conf"
+  - "/path/to/test2.conf"
+3. vars/main.yml
+yaml
+Copy
+---
+# Environment-specific overrides and Venafi credentials
+
+env: "prod"
+venafi_access_token: "REPLACE_WITH_ACCESS_TOKEN"   # Replace with your actual access token
+venafi_pickupid: "REPLACE_WITH_PICKUP_ID"           # Replace with your actual pickup ID
+4. handlers/main.yml
+(Optional – include handlers if you need to restart services or send notifications.)
+
+yaml
+Copy
+---
+# Example handler (uncomment and adjust as needed)
+
+# - name: Restart IBM HTTP Server
+#   service:
+#     name: httpd
+#     state: restarted
+5. tasks/main.yml
+yaml
+Copy
+---
+# Main task file: orchestrates the role by including all sub-tasks
+
+- include_tasks: locate_configs.yml
+
+- include_tasks: extract_values.yml
+
+- include_tasks: check_cert_expiry.yml
+
+- name: "Filter certificates needing renewal"
+  set_fact:
+    renewal_configs: "{{ cert_configs | rejectattr('days_until_expiry', 'undefined') 
+                           | selectattr('days_until_expiry', 'le', cert_renew_threshold) | list }}"
+
+- name: "Determine unique certificate aliases that require renewal"
+  set_fact:
+    renewal_aliases: "{{ renewal_configs | map(attribute='cert_alias') | unique | list }}"
+
+- debug:
+    msg: >
+      Found {{ cert_configs | length }} certificate entries;
+      {{ renewal_configs | length }} require renewal (aliases: {{ renewal_aliases }}).
+
+- include_tasks: renew_cert.yml
+  when: renewal_aliases | length > 0
+
+- include_tasks: backup_and_replace.yml
+  when: renewal_configs | length > 0
+
+- include_tasks: restore_cert.yml
+  when: renewal_configs | length > 0
+
+- include_tasks: cleanup.yml
+  run_once: true
+  delegate_to: localhost
+
+- include_tasks: send_report.yml
+  run_once: true
+  delegate_to: localhost
+6. tasks/locate_configs.yml
+yaml
+Copy
+---
+- name: "Ensure httpd configuration file list is provided via group vars"
+  assert:
+    that:
+      - httpd_confs is defined
+      - httpd_confs | length > 0
+    fail_msg: "No HTTPD configuration files provided in group vars (httpd_confs variable is empty)."
+
+- name: "Build config file list"
+  set_fact:
+    bpm_conf_files: "{{ httpd_confs | map('community.general.dict', path=_) | list }}"
+7. tasks/extract_values.yml
+yaml
+Copy
+---
+- name: "Initialize certificate configuration list"
+  set_fact:
+    cert_configs: []
+
+- name: "Process each HTTPD config file for certificate entries"
+  block:
+    - name: "Read and decode config file {{ item.path }}"
+      slurp:
+        src: "{{ item.path }}"
+      register: conf_raw
+      loop: "{{ bpm_conf_files }}"
+      loop_control:
+        loop_var: item
+
+    - name: "Process file content for {{ item.path }}"
+      set_fact:
+        file_content: "{{ (conf_raw.results[loop.index0].content | b64decode) }}"
+      loop: "{{ bpm_conf_files }}"
+      loop_control:
+        loop_var: item
+
+    - name: "Extract non-commented Keyfile entries from {{ item.path }}"
+      set_fact:
+        current_keyfiles: >-
+          {{
+            file_content.splitlines() 
+            | reject('match','^\\s*#')
+            | map('regex_search','Keyfile\\s*=\\s*(\\S+)')
+            | reject('equalto', None)
+            | list
+          }}
+      loop: "{{ bpm_conf_files }}"
+      loop_control:
+        loop_var: item
+
+    - name: "Extract non-commented SSLServerCert entries from {{ item.path }}"
+      set_fact:
+        current_cert_aliases: >-
+          {{
+            file_content.splitlines() 
+            | reject('match','^\\s*#')
+            | map('regex_search','SSLServerCert\\s*=\\s*(\\S+)')
+            | reject('equalto', None)
+            | list
+          }}
+      loop: "{{ bpm_conf_files }}"
+      loop_control:
+        loop_var: item
+
+    - name: "Validate matching counts in {{ item.path }}"
+      assert:
+        that:
+          - current_keyfiles | length == current_cert_aliases | length
+        fail_msg: "Mismatch in number of Keyfile and SSLServerCert entries in {{ item.path }}."
+      loop: "{{ bpm_conf_files }}"
+      loop_control:
+        loop_var: item
+
+    - name: "Append certificate entries from {{ item.path }} to cert_configs"
+      set_fact:
+        cert_configs: "{{ cert_configs + new_entries }}"
+      vars:
+        new_entries: >
+          {{
+            current_keyfiles | zip(current_cert_aliases)
+              | map('list')
+              | map('community.general.dict', 
+                  config_file=item.path, kdb_file=item0, cert_alias=item1) | list
+          }}
+      loop: "{{ bpm_conf_files }}"
+      loop_control:
+        loop_var: item
+  rescue:
+    - debug:
+        msg: "Error processing file {{ item.path }}. Skipping."
+8. tasks/check_cert_expiry.yml
+yaml
+Copy
+---
+- name: "Check certificate expiry for each configuration entry"
+  vars:
+    expiry_pattern: 'Expiry Date:\s*(\S+\s+\S+\s+\S+)'
+  block:
+    - name: "Loop over each certificate entry to check expiry"
+      block:
+        - name: "Run gsk8capicmd for cert alias {{ item.cert_alias }} in kdb {{ item.kdb_file }}"
+          command: "/usr/bin/gsk8capicmd -cert -view -db {{ item.kdb_file }} -label {{ item.cert_alias }} -stashed"
+          register: cert_info
+          failed_when: cert_info.rc != 0
+          changed_when: false
+
+        - name: "Extract expiry date for cert alias {{ item.cert_alias }}"
+          set_fact:
+            cert_expiry_date_str: "{{ cert_info.stdout | regex_search(expiry_pattern, '\\1') }}"
+          when: cert_info.stdout is search(expiry_pattern)
+
+        - name: "Calculate days until expiry for cert alias {{ item.cert_alias }}"
+          set_fact:
+            days_until_expiry: >-
+              {{
+                 ((cert_expiry_date_str | to_datetime('%b %d %Y')).timestamp() -
+                  (ansible_date_time.iso8601 | to_datetime).timestamp()) | round(0, 'floor') | int / 86400 | int
+              }}
+          when: cert_expiry_date_str is defined
+
+        - name: "Augment current entry with expiry details"
+          set_fact:
+            cert_configs: >-
+              {{
+                cert_configs | map('combine',
+                item.cert_alias == cert_alias and {'cert_expiry_date_str': cert_expiry_date_str, 'days_until_expiry': days_until_expiry} or {}) | list
+              }}
+          vars:
+            cert_alias: "{{ item.cert_alias }}"
+          delegate_to: localhost
+      loop: "{{ cert_configs }}"
+      loop_control:
+        label: "{{ item.cert_alias }}"
+  rescue:
+    - debug:
+        msg: "Error checking certificate expiry for one or more entries; please review output."
+9. tasks/renew_cert.yml
+yaml
+Copy
+---
+- name: "Ensure vcert directory exists on control node"
+  file:
+    path: "{{ vcert_install_dir }}"
+    state: directory
+  delegate_to: localhost
+  run_once: true
+
+- name: "Download vcert CLI zip to control node"
+  get_url:
+    url: "{{ vcert_download_url }}"
+    dest: "{{ vcert_install_dir }}/vcert.zip"
+  delegate_to: localhost
+  run_once: true
+
+- name: "Unarchive vcert CLI on control node"
+  unarchive:
+    src: "{{ vcert_install_dir }}/vcert.zip"
+    dest: "{{ vcert_install_dir }}/"
+    remote_src: yes
+  delegate_to: localhost
+  run_once: true
+
+- name: "Renew certificates for each unique alias"
+  loop: "{{ renewal_aliases }}"
+  loop_control:
+    label: "{{ item }}"
+  block:
+    - name: "Renew certificate using vcert CLI for alias {{ item }}"
+      command: >
+        {{ vcert_install_dir }}/vcert renew
+          --alias {{ item }}
+          --format pfx
+          --password {{ vcert_password }}
+          --chain full
+          --output {{ vcert_install_dir }}/{{ item }}.pfx
+          --access_token {{ venafi_access_token }}
+          --pickupid {{ venafi_pickupid }}
+      delegate_to: localhost
+      run_once: true
+      register: vcert_renew_result
+
+    - debug:
+        msg: "Renewal result for alias {{ item }}: {{ vcert_renew_result }}"
+10. tasks/backup_and_replace.yml
+yaml
+Copy
+---
+- name: "Backup and update kdb files for each certificate entry needing renewal"
+  loop: "{{ renewal_configs }}"
+  loop_control:
+    label: "Alias {{ item.cert_alias }} on kdb {{ item.kdb_file }}"
+  block:
+    - name: "Backup existing kdb file"
+      copy:
+        src: "{{ item.kdb_file }}"
+        dest: "/install/MWVenafi/{{ env }}/{{ ansible_hostname }}/{{ item.kdb_file | basename }}"
+        backup: yes
+
+    - name: "Distribute renewed cert file to target host for alias {{ item.cert_alias }}"
+      copy:
+        src: "{{ vcert_install_dir }}/{{ item.cert_alias }}.pfx"
+        dest: "/tmp/vcert/{{ item.cert_alias }}.pfx"
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Replace certificate in kdb for alias {{ item.cert_alias }}"
+      command: >
+        {{ vcert_install_dir }}/vcert replace
+          --alias {{ item.cert_alias }}
+          --pfx /tmp/vcert/{{ item.cert_alias }}.pfx
+          --db {{ item.kdb_file }}
+          --password {{ vcert_password }}
+      register: replace_cert_result
+
+    - debug:
+        msg: "Replacement result for alias {{ item.cert_alias }} in kdb {{ item.kdb_file }}: {{ replace_cert_result }}"
+11. tasks/restore_cert.yml
+yaml
+Copy
+---
+- name: "Validate new certificate expiry after replacement for each entry"
+  loop: "{{ renewal_configs }}"
+  loop_control:
+    label: "{{ item.cert_alias }}"
+  block:
+    - name: "Retrieve new certificate details for alias {{ item.cert_alias }}"
+      command: "/usr/bin/gsk8capicmd -cert -view -db {{ item.kdb_file }} -label {{ item.cert_alias }} -stashed"
+      register: new_cert_info
+
+    - name: "Extract new certificate expiry date"
+      set_fact:
+        new_cert_expiry_date_str: "{{ new_cert_info.stdout | regex_search('Expiry Date:\\s*(\\S+\\s+\\S+\\s+\\S+)', '\\1') }}"
+      when: new_cert_info.stdout is search('Expiry Date:')
+
+    - name: "Determine if validation failed for alias {{ item.cert_alias }}"
+      set_fact:
+        restore_needed: >-
+          {{
+             new_cert_expiry_date_str is not defined or
+             (new_cert_expiry_date_str | to_datetime('%b %d %Y')) < (ansible_date_time.iso8601 | to_datetime)
+          }}
+
+    - name: "Restore original kdb file if validation failed for alias {{ item.cert_alias }}"
+      copy:
+        src: "/install/MWVenafi/{{ env }}/{{ ansible_hostname }}/{{ item.kdb_file | basename }}"
+        dest: "{{ item.kdb_file }}"
+      when: restore_needed | bool
+      ignore_errors: yes
+
+    - name: "Fail if certificate renewal validation failed for alias {{ item.cert_alias }}"
+      fail:
+        msg: "Certificate renewal validation failed for alias {{ item.cert_alias }}; original kdb restored."
+      when: restore_needed | bool
+12. tasks/cleanup.yml
+yaml
+Copy
+---
+- name: "Cleanup: Remove downloaded vcert files on control node"
+  file:
+    path: "{{ vcert_install_dir }}"
+    state: absent
+  delegate_to: localhost
+  run_once: true
+13. tasks/send_report.yml
+This task aggregates renewal details across all hosts (using hostvars) and sends a comprehensive email report.
+
+yaml
+Copy
+---
+- name: "Aggregate comprehensive certificate renewal report"
+  set_fact:
+    comprehensive_report: |
+      Comprehensive Venafi Certificate Renewal Report
+      ===================================================
+      Total hosts processed: {{ groups['all'] | length }}
+      
+      {% for host in groups['all'] %}
+      Host: {{ host }}
+      {% set host_cert_configs = hostvars[host].cert_configs | default([]) %}
+      {% set host_renewals = hostvars[host].renewal_configs | default([]) %}
+        Total certificate entries: {{ host_cert_configs | length }}
+        Certificates renewed: {{ host_renewals | length }}
+      {% if host_renewals | length > 0 %}
+        Renewal Details:
+        {% for cert in host_renewals %}
+          - Alias: {{ cert.cert_alias }}
+            Config File: {{ cert.config_file }}
+            KDB File: {{ cert.kdb_file }}
+            Days until expiry (at check time): {{ cert.days_until_expiry }}
+        {% endfor %}
+      {% endif %}
+      
+      {% endfor %}
+
+- name: "Send renewal report email"
+  mail:
+    host: "localhost"
+    port: 25
+    subject: "Comprehensive Venafi Certificate Renewal Report"
+    to: "web@test.com"
+    body: "{{ comprehensive_report }}"
+14. README.md
+markdown
+Copy
+# Venafi Cert Renewal Ansible Role
+
+## Overview
+
+The **venafi_cert_renew** role automates the process of renewing certificates managed by IBM HTTP Server. It processes one or more HTTPD configuration files (provided via group variables), extracts certificate details, checks for expiry, and if necessary, renews certificates using the Venafi vcert CLI. The role also backs up the existing kdb files, replaces certificates, validates the update, and restores backups if needed. After a successful run, it sends a comprehensive email report aggregating details from all hosts.
+
+## Features
+
+- **Multi-File & Multi-Cert Support:**  
+  Processes a list of HTTPD configuration files (e.g., `test1.conf`, `test2.conf`) provided via group variables. Each file may contain multiple certificate definitions.
+
+- **Comment Filtering:**  
+  Ignores commented lines (lines starting with `#`) in configuration files so that only active configuration entries are processed.
+
+- **Certificate Expiry Check & Conditional Renewal:**  
+  Uses the `gsk8capicmd` tool to check the expiry date of certificates in the kdb file and calculates the remaining days. Certificates within the configurable threshold (`cert_renew_threshold`) are renewed.
+
+- **Single Renewal per Unique Alias:**  
+  If a certificate (alias) is used on multiple servers, the role ensures that the renewal occurs only once.
+
+- **Venafi Integration:**  
+  Uses the Venafi vcert CLI for certificate renewal. The role passes the Venafi access token and pickup ID (defined in `vars/main.yml`) to the CLI for proper authentication and configuration.
+
+- **Backup, Replace, and Validation:**  
+  Backs up the current kdb file before replacing the certificate. After replacement, it validates the new certificate and restores the backup if the validation fails.
+
+- **Cleanup:**  
+  Removes all temporary files (vcert CLI downloads and extracted files) from the control node after the run.
+
+- **Comprehensive Email Report:**  
+  If any certificate renewals occur, the role aggregates renewal details from all hosts and sends a comprehensive email report to `web@test.com`.
+
+## Directory Structure
+
+venafi_cert_renew/ ├── defaults/ │ └── main.yml # Default variables ├── group_vars/ │ └── prod.yml # Environment-specific configuration files ├── handlers/ │ └── main.yml # (Optional) Handlers for notifications ├── tasks/ │ ├── backup_and_replace.yml # Backup and replace certificates │ ├── check_cert_expiry.yml # Check certificate expiry dates │ ├── cleanup.yml # Cleanup temporary files │ ├── extract_values.yml # Extract certificate details from HTTPD configs │ ├── locate_configs.yml # Load and validate HTTPD config file list │ ├── main.yml # Main orchestration file │ ├── renew_cert.yml # Renew certificates using the vcert CLI │ ├── restore_cert.yml # Validate and restore kdb if needed │ └── send_report.yml # Send a comprehensive report email └── vars/ └── main.yml # Environment overrides and Venafi credentials └── README.md # Documentation of the role
+
+markdown
+Copy
+
+## Variables
+
+### Defaults (`defaults/main.yml`)
+- **cert_renew_threshold:** Days before expiry when renewal should trigger.
+- **vcert_download_url:** URL for downloading the Venafi vcert CLI.
+- **vcert_install_dir:** Directory on the control node where the vcert CLI is installed.
+- **vcert_password:** Password used in kdb file operations.
+
+### Environment & Venafi Credentials (`vars/main.yml`)
+- **env:** Environment name (e.g., prod).
+- **venafi_access_token:** Venafi API access token.
+- **venafi_pickupid:** Venafi pickup ID.
+
+### Group Variables (`group_vars/prod.yml`)
+- **httpd_confs:** List of HTTPD configuration file paths (e.g., `/path/to/test1.conf`).
+
+## How It Works
+
+1. **Configuration File Processing:**  
+   The role reads each HTTPD config file specified in `httpd_confs`. It skips commented lines and extracts the `Keyfile` and `SSLServerCert` entries.
+
+2. **Certificate Expiry Check:**  
+   It uses `gsk8capicmd` to determine the expiry date of each certificate and calculates the days remaining.
+
+3. **Renewal Decision:**  
+   Certificates with fewer days remaining than `cert_renew_threshold` trigger a renewal. Unique certificate aliases are determined to avoid duplicate renewals.
+
+4. **Venafi Renewal:**  
+   The role downloads and unarchives the vcert CLI (if necessary) and renews certificates by passing the required credentials (`venafi_access_token` and `venafi_pickupid`).
+
+5. **Backup & Replace:**  
+   A backup of the kdb file is taken before the certificate is replaced. After the renewal, the new certificate is validated; if validation fails, the backup is restored.
+
+6. **Cleanup:**  
+   Temporary files (e.g., the vcert CLI and its download) are removed from the control node.
+
+7. **Comprehensive Report:**  
+   The role aggregates renewal details across all hosts and sends a detailed email report to `web@test.com`.
+
+## Prerequisites
+
+- Ansible (version 2.9 or later recommended).
+- Access to an SMTP server (or a configured local MTA) for email reports.
+- `gsk8capicmd` installed on target hosts.
+- Venafi vcert CLI available via the provided URL.
+
+## Usage
+
+Include the role in your playbook:
+
+```yaml
+- hosts: all
+  roles:
+    - venafi_cert_renew
+Ensure your inventory contains the appropriate group vars (e.g., in group_vars/prod.yml).
+
+Conclusion
+The venafi_cert_renew role is a robust, modular solution for automating certificate renewals. It supports multi-file configurations, integrates with Venafi, and provides a comprehensive aggregated report when run against many servers.
+
+For further customization or enhancements, please refer to the inline comments in the role files.
+
+yaml
+Copy
+
+---
+
+This complete role now sends a comprehensive, aggregated report via email when certificate renewals 
