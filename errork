@@ -1,65 +1,62 @@
-Below is an updated snippet for the backup removal tasks. In this revision, we first calculate the number of backups to remove using a separate set_fact task. This avoids embedding the arithmetic directly in the slice filter and ensures that if the computed value is less than or equal to zero the removal task is skipped. Apply similar changes in both WebServer and WebSphere backup files.
-
-For example, in process_webserver_backup.yml, update the removal tasks as follows:
+In process_webserver_backup.yml
+Replace the removal task with:
 
 yaml
 Copy
 - name: Set remove_count for WebServer backups for {{ ws_src | basename }}
   set_fact:
-    remove_count: "{{ (ws_existing_backups.files | default([]) | length) - backup_retain }}"
+    remove_count: "{{ (ws_existing_backups.files | default([]) | length | int) - (backup_retain | int) }}"
   when: ws_source_stat.stat.exists
 
 - name: Remove old WebServer backups for {{ ws_src | basename }} (retain {{ backup_retain }})
   file:
     path: "{{ item.path }}"
     state: absent
-  loop: "{{ ws_existing_backups.files | sort(attribute='mtime') | list | slice(0, remove_count) }}"
+  loop: >
+    {{
+      (ws_existing_backups.files | sort(attribute='mtime') | list)
+      [:remove_count] if (remove_count | int) > 0 else []
+    }}
   loop_control:
     loop_var: item
-  when: ws_source_stat.stat.exists and
-        (ws_existing_backups.files | default([]) | length) > backup_retain and
-        (remove_count | int) > 0
-And similarly in process_websphere_backup.yml:
+  when: ws_source_stat.stat.exists and ((ws_existing_backups.files | default([]) | length | int) > (backup_retain | int))
+In process_websphere_backup.yml
+Replace the removal task with:
 
 yaml
 Copy
 - name: Set remove_count for WebSphere backups for {{ wsphere_src | basename }}
   set_fact:
-    remove_count: "{{ (wsphere_existing_backups.files | default([]) | length) - backup_retain }}"
+    remove_count: "{{ (wsphere_existing_backups.files | default([]) | length | int) - (backup_retain | int) }}"
   when: wsphere_source_stat.stat.exists
 
 - name: Remove old WebSphere backups for {{ wsphere_src | basename }} (retain {{ backup_retain }})
   file:
     path: "{{ item.path }}"
     state: absent
-  loop: "{{ wsphere_existing_backups.files | sort(attribute='mtime') | list | slice(0, remove_count) }}"
+  loop: >
+    {{
+      (wsphere_existing_backups.files | sort(attribute='mtime') | list)
+      [:remove_count] if (remove_count | int) > 0 else []
+    }}
   loop_control:
     loop_var: item
-  when: wsphere_source_stat.stat.exists and
-        (wsphere_existing_backups.files | default([]) | length) > backup_retain and
-        (remove_count | int) > 0
+  when: wsphere_source_stat.stat.exists and ((wsphere_existing_backups.files | default([]) | length | int) > (backup_retain | int))
 Explanation & Features
-Separate Calculation of remove_count:
-We use a set_fact task to calculate the number of backups to remove as:
+Separate Calculation with set_fact:
+We compute remove_count as the number of backup files minus backup_retain, ensuring both values are cast to integers.
 
-ini
+Conditional Slicing with Python Slicing Syntax:
+The loop uses a Jinja2 expression:
+
+jinja
 Copy
-remove_count = (number of backup files) - backup_retain
-This ensures that if there aren’t more files than the retention count, the variable will be ≤ 0.
+(ws_existing_backups.files | sort(attribute='mtime') | list)[:remove_count] if (remove_count | int) > 0 else []
+This means:
 
-Conditional Check:
-The removal task is executed only when:
+If remove_count is greater than zero, we slice the sorted list to get that many items.
+Otherwise, we use an empty list, so the loop never runs.
+When Conditions:
+The task runs only if the source directory exists and if the number of backup files exceeds the retention count.
 
-The source directory exists.
-The number of backup files is greater than backup_retain.
-remove_count is greater than zero.
-Avoiding ZeroDivision/Modulo Errors:
-By moving the arithmetic to a separate variable and checking that it’s positive before slicing, we avoid issues with the slice filter.
-
-Apply these changes to both the WebServer and WebSphere backup removal tasks. This should resolve the ZeroDivisionError you are encountering.
-
-
-
-
-
-
+Using this approach should prevent the ZeroDivisionError and allow the role to remove old backups as intended.
