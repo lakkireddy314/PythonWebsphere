@@ -1,6 +1,6 @@
-Below is an updated snippet for the removal task in the backup file that ensures a division‐or modulo‐by‑zero error won’t occur. In this example, we add an extra condition to check that the value of backup_retain is greater than zero before performing the slice. This prevents a scenario where backup_retain is zero (or not defined as a positive integer), which would cause the error.
+Below is an updated version of the removal task in both the WebServer and WebSphere backup files. In this version, we add a default value for the list of files and explicitly calculate the number of files to remove. This ensures that the expression never attempts an integer division or modulo by zero.
 
-For example, update the WebServer backup removal task in process_webserver_backup.yml as follows:
+For example, in process_webserver_backup.yml, replace the removal task with:
 
 yaml
 Copy
@@ -8,11 +8,17 @@ Copy
   file:
     path: "{{ item.path }}"
     state: absent
-  loop: "{{ ws_existing_backups.files | sort(attribute='mtime') | list | slice(0, ws_existing_backups.files | length - backup_retain) }}"
+  loop: >-
+    {{
+      (ws_existing_backups.files | default([]) 
+      | sort(attribute='mtime') 
+      | list)
+      | slice(0, ((ws_existing_backups.files | default([]) | length) - backup_retain) | int)
+    }}
   loop_control:
     loop_var: item
-  when: ws_source_stat.stat.exists and (ws_existing_backups.files | length > backup_retain) and (backup_retain | int > 0)
-Similarly, update the removal task in process_websphere_backup.yml:
+  when: ws_source_stat.stat.exists and ((ws_existing_backups.files | default([]) | length) > backup_retain)
+And similarly in process_websphere_backup.yml:
 
 yaml
 Copy
@@ -20,24 +26,29 @@ Copy
   file:
     path: "{{ item.path }}"
     state: absent
-  loop: "{{ wsphere_existing_backups.files | sort(attribute='mtime') | list | slice(0, wsphere_existing_backups.files | length - backup_retain) }}"
+  loop: >-
+    {{
+      (wsphere_existing_backups.files | default([]) 
+      | sort(attribute='mtime') 
+      | list)
+      | slice(0, ((wsphere_existing_backups.files | default([]) | length) - backup_retain) | int)
+    }}
   loop_control:
     loop_var: item
-  when: wsphere_source_stat.stat.exists and (wsphere_existing_backups.files | length > backup_retain) and (backup_retain | int > 0)
+  when: wsphere_source_stat.stat.exists and ((wsphere_existing_backups.files | default([]) | length) > backup_retain)
 Explanation & Features
-Conditional Check for Retention:
-The additional condition and (backup_retain | int > 0) ensures that the task runs only when backup_retain is a positive integer. This avoids an attempt to perform a slice with a negative or zero value that might lead to division/modulo errors internally in Ansible’s filters.
+Using default([]) on Files List:
+We now use | default([]) when accessing ws_existing_backups.files (and similarly for WebSphere). This ensures that if no files are found, the expression defaults to an empty list instead of None.
 
-Existing Conditions:
-The task already checks if the source exists and if the number of existing backup files is greater than the retention count.
+Explicit Calculation for Slice End:
+We calculate the number of items to remove as:
 
-No Change to Other Logic:
-The rest of the role remains unchanged. This update only affects the cleanup (removal) tasks to ensure robustness.
+csharp
+Copy
+(ws_existing_backups.files | default([]) | length) - backup_retain
+and cast that result to an integer. If the number of backup files is less than or equal to backup_retain, the condition in when: prevents the task from running.
 
-If you set backup_retain to 0 or leave it unset, the task won’t execute the removal action, preventing the error. Adjust backup_retain as needed to retain at least one backup, and the error should no longer occur.
+Prevents ZeroDivisionError:
+By using the default value and ensuring the slice is only performed when the number of backups is greater than backup_retain, we avoid any situation where a division or modulo by zero might occur.
 
-
-
-
-
-
+Apply the same changes in both backup processing files (for WebServer and WebSphere), and this should resolve the error.
