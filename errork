@@ -1,6 +1,6 @@
-In process_webserver_backup.yml
-Replace the removal task with:
+Below is an updated version of the removal tasks in both the WebServer and WebSphere backup processing files. In these snippets, we explicitly cast the calculated remove_count to an integer and then use it in the slice expression by enclosing it in parentheses. This ensures that the slice index is always an integer. Make sure that the when conditions prevent the task from running when there aren’t more backups than the retention count.
 
+In process_webserver_backup.yml
 yaml
 Copy
 - name: Set remove_count for WebServer backups for {{ ws_src | basename }}
@@ -12,17 +12,13 @@ Copy
   file:
     path: "{{ item.path }}"
     state: absent
-  loop: >
-    {{
-      (ws_existing_backups.files | sort(attribute='mtime') | list)
-      [:remove_count] if (remove_count | int) > 0 else []
-    }}
+  loop: "{{ (ws_existing_backups.files | sort(attribute='mtime') | list)[:(remove_count | int)] }}"
   loop_control:
     loop_var: item
-  when: ws_source_stat.stat.exists and ((ws_existing_backups.files | default([]) | length | int) > (backup_retain | int))
+  when: ws_source_stat.stat.exists and 
+        (ws_existing_backups.files | default([]) | length | int) > (backup_retain | int) and 
+        (remove_count | int) > 0
 In process_websphere_backup.yml
-Replace the removal task with:
-
 yaml
 Copy
 - name: Set remove_count for WebSphere backups for {{ wsphere_src | basename }}
@@ -34,29 +30,38 @@ Copy
   file:
     path: "{{ item.path }}"
     state: absent
-  loop: >
-    {{
-      (wsphere_existing_backups.files | sort(attribute='mtime') | list)
-      [:remove_count] if (remove_count | int) > 0 else []
-    }}
+  loop: "{{ (wsphere_existing_backups.files | sort(attribute='mtime') | list)[:(remove_count | int)] }}"
   loop_control:
     loop_var: item
-  when: wsphere_source_stat.stat.exists and ((wsphere_existing_backups.files | default([]) | length | int) > (backup_retain | int))
+  when: wsphere_source_stat.stat.exists and 
+        (wsphere_existing_backups.files | default([]) | length | int) > (backup_retain | int) and 
+        (remove_count | int) > 0
 Explanation & Features
-Separate Calculation with set_fact:
-We compute remove_count as the number of backup files minus backup_retain, ensuring both values are cast to integers.
+Separate Calculation of remove_count:
+We first calculate remove_count using a set_fact task. This computes the difference between the number of backup files (using a default empty list if none exist) and the desired backup_retain value. We cast both values to integers using the | int filter.
 
-Conditional Slicing with Python Slicing Syntax:
-The loop uses a Jinja2 expression:
+Explicit Integer Casting in Slice:
+In the loop, we use:
 
 jinja
 Copy
-(ws_existing_backups.files | sort(attribute='mtime') | list)[:remove_count] if (remove_count | int) > 0 else []
-This means:
+(ws_existing_backups.files | sort(attribute='mtime') | list)[:(remove_count | int)]
+This ensures that the slice index is explicitly an integer.
 
-If remove_count is greater than zero, we slice the sorted list to get that many items.
-Otherwise, we use an empty list, so the loop never runs.
-When Conditions:
-The task runs only if the source directory exists and if the number of backup files exceeds the retention count.
+When Condition Checks:
+The removal task runs only if:
 
-Using this approach should prevent the ZeroDivisionError and allow the role to remove old backups as intended.
+The source directory exists.
+The number of existing backup files is greater than the retention count.
+The computed remove_count is greater than zero.
+These modifications should prevent the "slice indices must be integers" error by ensuring that the slicing always receives an integer value.
+
+
+
+
+
+
+
+
+
+
