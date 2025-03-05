@@ -1,0 +1,43 @@
+Below is an updated snippet for the removal task in the backup file that ensures a division‐or modulo‐by‑zero error won’t occur. In this example, we add an extra condition to check that the value of backup_retain is greater than zero before performing the slice. This prevents a scenario where backup_retain is zero (or not defined as a positive integer), which would cause the error.
+
+For example, update the WebServer backup removal task in process_webserver_backup.yml as follows:
+
+yaml
+Copy
+- name: Remove old WebServer backups for {{ ws_src | basename }} (retain {{ backup_retain }})
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ ws_existing_backups.files | sort(attribute='mtime') | list | slice(0, ws_existing_backups.files | length - backup_retain) }}"
+  loop_control:
+    loop_var: item
+  when: ws_source_stat.stat.exists and (ws_existing_backups.files | length > backup_retain) and (backup_retain | int > 0)
+Similarly, update the removal task in process_websphere_backup.yml:
+
+yaml
+Copy
+- name: Remove old WebSphere backups for {{ wsphere_src | basename }} (retain {{ backup_retain }})
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ wsphere_existing_backups.files | sort(attribute='mtime') | list | slice(0, wsphere_existing_backups.files | length - backup_retain) }}"
+  loop_control:
+    loop_var: item
+  when: wsphere_source_stat.stat.exists and (wsphere_existing_backups.files | length > backup_retain) and (backup_retain | int > 0)
+Explanation & Features
+Conditional Check for Retention:
+The additional condition and (backup_retain | int > 0) ensures that the task runs only when backup_retain is a positive integer. This avoids an attempt to perform a slice with a negative or zero value that might lead to division/modulo errors internally in Ansible’s filters.
+
+Existing Conditions:
+The task already checks if the source exists and if the number of existing backup files is greater than the retention count.
+
+No Change to Other Logic:
+The rest of the role remains unchanged. This update only affects the cleanup (removal) tasks to ensure robustness.
+
+If you set backup_retain to 0 or leave it unset, the task won’t execute the removal action, preventing the error. Adjust backup_retain as needed to retain at least one backup, and the error should no longer occur.
+
+
+
+
+
+
