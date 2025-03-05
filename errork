@@ -1,3 +1,6 @@
+changed_when: >
+  ("upgrade to " ~ upgrade_version ~ " in the " ~ installroot ~ " Successful") in upgrade.stdout
+
 Below is an updated version of the removal tasks in both the WebServer and WebSphere backup processing files. In these snippets, we explicitly cast the calculated remove_count to an integer and then use it in the slice expression by enclosing it in parentheses. This ensures that the slice index is always an integer. Make sure that the when conditions prevent the task from running when there aren’t more backups than the retention count.
 
 In process_webserver_backup.yml
