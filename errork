@@ -1,3 +1,49 @@
+- name: Set start time
+  set_fact:
+    start_time: "{{ lookup('pipe','date +%s') | int }}"
+
+- name: Load installation flags from installation_flags.yml
+  include_vars: "installation_flags.yml"
+
+- name: Run only configuration tasks if only_config is true
+  import_tasks: post_configs.yml
+  when: only_config | default(false)
+
+- name: Run upgrade process if not only_config and mode is "upgrade"
+  block:
+    - name: Run pre-upgrade backup tasks (if enabled)
+      import_tasks: backup.yml
+      when: pre_upgrade_backup | default(false)
+
+    - name: Run upgrade tasks for IBM WebServer and IBM WebSphere (optional)
+      import_tasks: upgrade.yml
+      when: upgrade_enabled | default(true)
+  rescue:
+    - name: Upgrade process failed - rollback disabled message
+      debug:
+        msg: "Upgrade failed. Rollback is disabled."
+      when: not (enable_rollback | default(true))
+    - name: Upgrade process failed; executing restore tasks for rollback
+      import_tasks: restore.yml
+      when: enable_rollback | default(true)
+  always:
+    - name: Run post-upgrade configuration tasks
+      import_tasks: post_configs.yml
+  when: (mode == "upgrade") and not (only_config | default(false))
+
+- name: Run only restore tasks if not only_config and mode is "restore"
+  import_tasks: restore.yml
+  when: (mode == "restore") and not (only_config | default(false))
+
+- name: Set end time
+  set_fact:
+    end_time: "{{ lookup('pipe','date +%s') | int }}"
+
+- name: Display total execution time
+  debug:
+    msg: "Total execution time: {{ (end_time - start_time) }} seconds"
+  when: start_time is defined and end_time is defined
+#################
 changed_when: >
   ("upgrade to " ~ upgrade_version ~ " in the " ~ installroot ~ " Successful") in upgrade.stdout
 
