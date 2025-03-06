@@ -1,6 +1,5 @@
 # updateSecurityCustomProperties.py
-import sys
-import os
+import sys, os
 
 print "sys.argv:", sys.argv
 
@@ -51,22 +50,12 @@ if not security:
 
 def ensure_list(x):
     """
-    Ensure that x is returned as a list.
-    - If x is None, return an empty list.
-    - If x is a string, split it into lines.
-    - If x has an __iter__ attribute, convert it to a list.
-    - Otherwise, wrap x in a list.
+    Convert the object x to a list by first converting it to a string and splitting on newlines.
+    This guarantees that the result is iterable.
     """
     if x is None:
         return []
-    if type(x) == type(""):
-        return x.splitlines()
-    if hasattr(x, '__iter__'):
-        try:
-            return list(x)
-        except Exception, e:
-            return [x]
-    return [x]
+    return str(x).splitlines()
 
 # Retrieve existing custom property settings using the "Property" datatype.
 existingProps = {}
@@ -76,7 +65,7 @@ for cp in cp_list:
     name = AdminConfig.showAttribute(cp, "name")
     existingProps[name] = cp
 
-# Iterate through each property from the file.
+# Iterate through each property from the file and create any that do not exist.
 for key, value in properties.items():
     if key in existingProps:
         print "Security custom property '%s' already exists. Skipping." % key
