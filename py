@@ -3,13 +3,14 @@ import sys
 import os
 import re
 
-# Check that at least one argument (the properties file path) is provided.
+# If no file path is provided, use a default path.
 if len(sys.argv) < 2:
-    print "Usage: wsadmin.sh -lang jython -f /tmp/updateSecurityCustomProperties_with_AdminTask_check.py <properties_file_path>"
-    sys.exit(1)
+    propertiesFile = "/tmp/default.properties"
+    print "No properties file argument provided. Using default properties file: " + propertiesFile
+else:
+    propertiesFile = sys.argv[-1].strip()
 
-# Use the last argument as the properties file path.
-propertiesFile = sys.argv[-1].strip()
+# Normalize the properties file path.
 propertiesFile = os.path.abspath(os.path.expanduser(propertiesFile))
 print "Using properties file: " + propertiesFile
 
@@ -51,48 +52,4 @@ def parseActiveCustomProperties(propStr):
         propStr = propStr[1:-1].strip()
     props = {}
     # Find all [name value] pairs using regex.
-    pairs = re.findall(r'\[([^\]]+)\]', propStr)
-    for pair in pairs:
-        parts = pair.split()
-        if len(parts) >= 2:
-            name = parts[0]
-            value = " ".join(parts[1:])
-            props[name] = value
-    return props
-
-# Load new properties from the file.
-newProps = loadProperties(propertiesFile)
-print "New properties from file:", newProps
-
-# Retrieve the current active security custom properties as a string.
-activeStr = AdminTask.showActiveSecuritySettings("[-customProperties]")
-print "Active custom properties string:", activeStr
-
-# Parse active properties into a dictionary.
-activeProps = {}
-if activeStr and activeStr.strip() != "":
-    activeProps = parseActiveCustomProperties(activeStr)
-print "Active properties parsed:", activeProps
-
-# Merge active properties with new ones.
-combinedProps = activeProps.copy()
-for key, value in newProps.items():
-    if key in activeProps:
-        print "Property '%s' already exists with value '%s'. Skipping." % (key, activeProps[key])
-    else:
-        combinedProps[key] = value
-        print "Adding property '%s' with value '%s'." % (key, value)
-
-# Build the custom properties string for the command.
-customPropsList = []
-for key, value in combinedProps.items():
-    customPropsList.append("[" + key + " " + value + "]")
-customPropsStr = "[" + " ".join(customPropsList) + "]"
-cmd = "[-customProperties " + customPropsStr + "]"
-print "Executing AdminTask.setAdminActiveSecuritySettings with parameters:", cmd
-
-# Execute the command and save the configuration.
-AdminTask.setAdminActiveSecuritySettings(cmd)
-AdminConfig.save()
-
-print "Security custom properties updated successfully."
+    pairs = r
