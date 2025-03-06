@@ -2,7 +2,7 @@
 import sys
 import os
 
-# Ensure compatibility for checking string types in Jython/Python
+# Ensure basestring exists for compatibility
 try:
     basestring
 except NameError:
@@ -60,5 +60,8 @@ if not security:
 existingProps = {}
 customProps = AdminConfig.list("Property", security)
 if customProps:
-    # If customProps is a string, split it into a list.
-    if isinst
+    # Check if customProps is a string (if so, split it into a list).
+    if isinstance(customProps, basestring):
+        cp_list = customProps.splitlines()
+    else:
+        cp_list = customProps  # Assume it's already a seque
