@@ -21,7 +21,6 @@ def loadProperties(filename):
     Read properties from a file and return a dictionary.
     Each valid line should be in the format: name=value.
     Blank lines or lines starting with '#' are ignored.
-    This function reads the entire file content at once.
     """
     print "DEBUG: Loading properties from file: " + filename
     if not os.path.exists(filename):
@@ -32,7 +31,6 @@ def loadProperties(filename):
         f = open(filename, "r")
         content = f.read()
         f.close()
-        # Split the content into lines.
         lines = content.splitlines()
         index = 0
         for line in lines:
@@ -67,7 +65,6 @@ def parseActiveCustomProperties(propStr):
     if propStr.startswith("[") and propStr.endswith("]"):
         propStr = propStr[1:-1].strip()
     props = {}
-    # Find all [name value] pairs using regex.
     pairs = re.findall(r'\[([^\]]+)\]', propStr)
     print "DEBUG: Found property pairs: " + str(pairs)
     for pair in pairs:
@@ -88,8 +85,8 @@ try:
     activeStr = AdminTask.showActiveSecuritySettings("[-customProperties]")
     print "DEBUG: Active custom properties string retrieved:", activeStr
 except Exception, e:
-    print "ERROR: Exception while retrieving active custom properties: " + str(e)
-    sys.exit(1)
+    print "WARNING: Could not retrieve active custom properties. Assuming no active properties. Exception: " + str(e)
+    activeStr = ""
 
 # Parse active properties into a dictionary.
 activeProps = {}
@@ -108,28 +105,4 @@ for key, value in newProps.items():
 
 print "DEBUG: Combined properties:", combinedProps
 
-# Build the custom properties string for the command.
-customPropsList = []
-for key, value in combinedProps.items():
-    customPropsList.append("[" + key + " " + value + "]")
-customPropsStr = "[" + " ".join(customPropsList) + "]"
-cmd = "[-customProperties " + customPropsStr + "]"
-print "DEBUG: Command to be executed: " + cmd
-
-# Execute the command and save the configuration.
-try:
-    print "DEBUG: Executing AdminTask.setAdminActiveSecuritySettings..."
-    AdminTask.setAdminActiveSecuritySettings(cmd)
-    print "DEBUG: Command executed successfully."
-except Exception, e:
-    print "ERROR: Exception while executing AdminTask.setAdminActiveSecuritySettings: " + str(e)
-    sys.exit(1)
-
-try:
-    AdminConfig.save()
-    print "DEBUG: Configuration saved successfully."
-except Exception, e:
-    print "ERROR: Exception while saving configuration: " + str(e)
-    sys.exit(1)
-
-print "DEBUG: Security custom properties updated successfully."
+# Build the custom 
