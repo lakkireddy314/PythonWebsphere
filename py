@@ -2,11 +2,16 @@
 import sys
 import os
 
-if len(sys.argv) != 2:
+# Debug: print all arguments to help diagnose what wsadmin is passing
+print "sys.argv:", sys.argv
+
+if len(sys.argv) < 1:
     print "Usage: wsadmin.sh -lang jython -f updateGlobalSecurityCustomProperties.py <globalCustom.properties>"
     sys.exit(1)
 
-propertiesFile = sys.argv[1]
+# Use the last argument as the properties file.
+propertiesFile = sys.argv[-1]
+print "Using properties file: %s" % propertiesFile
 
 def loadProperties(filename):
     """
@@ -16,7 +21,7 @@ def loadProperties(filename):
     if not os.path.exists(filename):
         print "Property file not found: %s" % filename
         sys.exit(1)
-        
+    
     props = {}
     try:
         f = open(filename, "r")
@@ -45,7 +50,7 @@ if not security:
     print "Global Security configuration not found. Exiting."
     sys.exit(1)
 
-# Retrieve existing global security custom properties using "Property" as the datatype.
+# Retrieve existing global security custom properties using the "Property" datatype.
 existingProps = {}
 customProps = AdminConfig.list("Property", security)
 if customProps:
