@@ -2,10 +2,15 @@
 import sys
 import os
 
+# Ensure compatibility for checking string types in Jython/Python
+try:
+    basestring
+except NameError:
+    basestring = str
+
 # Debug: print all arguments to help diagnose what wsadmin is passing
 print "sys.argv:", sys.argv
 
-# Expect at least one argument; use the last argument as the properties file path.
 if len(sys.argv) < 1:
     print "Usage: wsadmin.sh -lang jython -f updateSecurityCustomProperties.py <securityPropertiesFile>"
     sys.exit(1)
@@ -55,16 +60,5 @@ if not security:
 existingProps = {}
 customProps = AdminConfig.list("Property", security)
 if customProps:
-    for cp in customProps.splitlines():
-        name = AdminConfig.showAttribute(cp, "name")
-        existingProps[name] = cp
-
-# Iterate through each property from the file.
-for key, value in properties.items():
-    if key in existingProps:
-        print "Security custom property '%s' already exists. Skipping." % key
-    else:
-        params = [['name', key], ['value', value]]
-        newProp = AdminConfig.create("Property", security, params)
-        print "Created security custom property '%s' with value '%s'" % (key, value)
-        AdminConfig.save()
+    # If customProps is a string, split it into a list.
+    if isinst
