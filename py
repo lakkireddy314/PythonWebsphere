@@ -1,18 +1,22 @@
 # updateGlobalSecurityCustomProperties.py
 import sys
+import os
 
-# In wsadmin, when using the -f option, the script file is not included in sys.argv.
-if len(sys.argv) != 1:
+if len(sys.argv) != 2:
     print "Usage: wsadmin.sh -lang jython -f updateGlobalSecurityCustomProperties.py <globalCustom.properties>"
     sys.exit(1)
 
-propertiesFile = sys.argv[0]
+propertiesFile = sys.argv[1]
 
 def loadProperties(filename):
     """
     Load properties from a file into a dictionary.
     Lines starting with '#' or empty lines are skipped.
     """
+    if not os.path.exists(filename):
+        print "Property file not found: %s" % filename
+        sys.exit(1)
+        
     props = {}
     try:
         f = open(filename, "r")
@@ -29,9 +33,10 @@ def loadProperties(filename):
             props[key.strip()] = value.strip()
     except Exception, e:
         print "Error reading file: %s" % e
+        sys.exit(1)
     return props
 
-# Load properties from the provided file.
+print "Loading properties from: %s" % propertiesFile
 properties = loadProperties(propertiesFile)
 
 # Retrieve the global security configuration object.
@@ -40,9 +45,9 @@ if not security:
     print "Global Security configuration not found. Exiting."
     sys.exit(1)
 
-# Retrieve existing global security custom properties.
+# Retrieve existing global security custom properties using "Property" as the datatype.
 existingProps = {}
-customProps = AdminConfig.list("CustomProperty", security)
+customProps = AdminConfig.list("Property", security)
 if customProps:
     for cp in customProps.splitlines():
         name = AdminConfig.showAttribute(cp, "name")
@@ -54,6 +59,6 @@ for key, value in properties.iteritems():
         print "Property '%s' already exists. Skipping." % key
     else:
         params = [['name', key], ['value', value]]
-        newProp = AdminConfig.create("CustomProperty", security, params)
+        newProp = AdminConfig.create("Property", security, params)
         print "Created global security property '%s' with value '%s'" % (key, value)
         AdminConfig.save()
