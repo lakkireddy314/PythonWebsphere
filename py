@@ -56,13 +56,14 @@ def ensure_list(x):
     If x is a list or tuple, return it as a list.
     Otherwise, wrap x in a list.
     """
-    if isinstance(x, str):
+    if type(x) == type(""):
         return x.splitlines()
-    if isinstance(x, list):
+    elif type(x) == type([]):
         return x
-    if isinstance(x, tuple):
+    elif type(x) == type(()):
         return list(x)
-    return [x]
+    else:
+        return [x]
 
 # Retrieve existing custom property settings using the "Property" datatype.
 existingProps = {}
