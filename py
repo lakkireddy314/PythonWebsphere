@@ -52,25 +52,26 @@ if not security:
 def ensure_list(x):
     """
     Ensure that x is returned as a list.
-    If x is a string, split it into lines.
-    If x is a list or tuple, return it as a list.
-    Otherwise, wrap x in a list.
+    - If x is None, return an empty list.
+    - If x is a string, split it into lines.
+    - If x has an __iter__ attribute, convert it to a list.
+    - Otherwise, wrap x in a list.
     """
+    if x is None:
+        return []
     if type(x) == type(""):
         return x.splitlines()
-    elif type(x) == type([]):
-        return x
-    elif type(x) == type(()):
-        return list(x)
-    else:
-        return [x]
+    if hasattr(x, '__iter__'):
+        try:
+            return list(x)
+        except Exception, e:
+            return [x]
+    return [x]
 
 # Retrieve existing custom property settings using the "Property" datatype.
 existingProps = {}
 customProps = AdminConfig.list("Property", security)
-cp_list = []
-if customProps:
-    cp_list = ensure_list(customProps)
+cp_list = ensure_list(customProps)
 for cp in cp_list:
     name = AdminConfig.showAttribute(cp, "name")
     existingProps[name] = cp
