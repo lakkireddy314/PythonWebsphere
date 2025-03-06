@@ -21,6 +21,7 @@ def loadProperties(filename):
     Read properties from a file and return a dictionary.
     Each valid line should be in the format: name=value.
     Blank lines or lines starting with '#' are ignored.
+    This function reads the entire file content at once.
     """
     print "DEBUG: Loading properties from file: " + filename
     if not os.path.exists(filename):
@@ -29,23 +30,26 @@ def loadProperties(filename):
     props = {}
     try:
         f = open(filename, "r")
-        i = 0
-        for line in f:
+        content = f.read()
+        f.close()
+        # Split the content into lines.
+        lines = content.splitlines()
+        index = 0
+        for line in lines:
             try:
                 line = line.strip()
                 if not line or line.startswith("#"):
-                    i += 1
+                    index += 1
                     continue
                 if "=" not in line:
-                    print "DEBUG: Skipping invalid property line (no '=' found) at line %d: %s" % (i, line)
-                    i += 1
+                    print "DEBUG: Skipping invalid property line (no '=' found) at line %d: %s" % (index, line)
+                    index += 1
                     continue
                 key, value = line.split("=", 1)
                 props[key.strip()] = value.strip()
             except Exception, e:
-                print "ERROR: Exception processing line %d: %s; Exception: %s" % (i, line, e)
-            i += 1
-        f.close()
+                print "ERROR: Exception processing line %d: %s; Exception: %s" % (index, line, e)
+            index += 1
         print "DEBUG: Finished loading properties: " + str(props)
     except Exception, e:
         print "ERROR: Exception while reading file: " + str(e)
