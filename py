@@ -1,11 +1,12 @@
 # updateGlobalSecurityCustomProperties.py
 import sys
 
-if len(sys.argv) != 2:
+# In wsadmin, when using the -f option, the script file is not included in sys.argv.
+if len(sys.argv) != 1:
     print "Usage: wsadmin.sh -lang jython -f updateGlobalSecurityCustomProperties.py <globalCustom.properties>"
     sys.exit(1)
 
-propertiesFile = sys.argv[1]
+propertiesFile = sys.argv[0]
 
 def loadProperties(filename):
     """
