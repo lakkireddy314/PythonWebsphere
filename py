@@ -3,13 +3,13 @@ import sys
 import os
 import re
 
-# Check that a properties file path is provided.
-if len(sys.argv) != 2:
+# Check that at least one argument (the properties file path) is provided.
+if len(sys.argv) < 2:
     print "Usage: wsadmin.sh -lang jython -f /tmp/updateSecurityCustomProperties_with_AdminTask_check.py <properties_file_path>"
     sys.exit(1)
 
-# Normalize the properties file path (expands ~ and converts to absolute path).
-propertiesFile = sys.argv[1].strip()
+# Use the last argument as the properties file path.
+propertiesFile = sys.argv[-1].strip()
 propertiesFile = os.path.abspath(os.path.expanduser(propertiesFile))
 print "Using properties file: " + propertiesFile
 
@@ -44,7 +44,7 @@ def parseActiveCustomProperties(propStr):
     """
     Given a string of active custom properties in the format:
       [[prop1 value1] [prop2 value2] ...]
-    parse and return a dictionary {prop1: value1, ...}.
+    Parse and return a dictionary {prop1: value1, ...}.
     """
     propStr = propStr.strip()
     if propStr.startswith("[") and propStr.endswith("]"):
@@ -75,7 +75,6 @@ if activeStr and activeStr.strip() != "":
 print "Active properties parsed:", activeProps
 
 # Merge active properties with new ones.
-# Only add a new property if its name does not exist already.
 combinedProps = activeProps.copy()
 for key, value in newProps.items():
     if key in activeProps:
@@ -85,7 +84,6 @@ for key, value in newProps.items():
         print "Adding property '%s' with value '%s'." % (key, value)
 
 # Build the custom properties string for the command.
-# Each property is formatted as [name value].
 customPropsList = []
 for key, value in combinedProps.items():
     customPropsList.append("[" + key + " " + value + "]")
