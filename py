@@ -2,12 +2,6 @@
 import sys
 import os
 
-# Ensure basestring exists for compatibility
-try:
-    basestring
-except NameError:
-    basestring = str
-
 # Debug: print all arguments to help diagnose what wsadmin is passing
 print "sys.argv:", sys.argv
 
@@ -60,8 +54,13 @@ if not security:
 existingProps = {}
 customProps = AdminConfig.list("Property", security)
 if customProps:
-    # Check if customProps is a string (if so, split it into a list).
-    if isinstance(customProps, basestring):
+    # Check if customProps is a string; if so, split it into a list.
+    if isinstance(customProps, str):
         cp_list = customProps.splitlines()
     else:
-        cp_list = customProps  # Assume it's already a seque
+        cp_list = customProps  # Assume it's already a sequence
+    for cp in cp_list:
+        name = AdminConfig.showAttribute(cp, "name")
+        existingProps[name] = cp
+
+# Iterate through each pro
