@@ -1,76 +1,98 @@
-# updateSecurityCustomProperties.py
+# updateSecurityCustomProperties_with_AdminTask_check.py
 import sys
 import os
+import re
 
-print "sys.argv:", sys.argv
-
-if len(sys.argv) < 1:
-    print "Usage: wsadmin.sh -lang jython -f updateSecurityCustomProperties.py <securityPropertiesFile>"
+# Check that a properties file path is provided.
+if len(sys.argv) != 2:
+    print "Usage: wsadmin.sh -lang jython -f updateSecurityCustomProperties_with_AdminTask_check.py <properties_file_path>"
     sys.exit(1)
 
-# Use the last argument as the properties file path.
-propertiesFile = sys.argv[-1]
-print "Using security properties file: %s" % propertiesFile
+propertiesFile = sys.argv[1]
+print "Using properties file: " + propertiesFile
 
 def loadProperties(filename):
     """
-    Load properties from a file into a dictionary.
-    Lines starting with '#' or blank lines are skipped.
+    Read properties from a file (any location) and return a dictionary.
+    Each line should be in the format: name=value.
+    Lines that are empty or start with '#' are ignored.
     """
     if not os.path.exists(filename):
-        print "Property file not found: %s" % filename
+        print "Property file not found: " + filename
         sys.exit(1)
-    
     props = {}
     try:
         f = open(filename, "r")
-        lines = f.readlines()
-        f.close()
-        for line in lines:
+        for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            if '=' not in line:
-                print "Skipping invalid property line: %s" % line
+            if "=" not in line:
+                print "Skipping invalid property line: " + line
                 continue
-            key, value = line.split('=', 1)
+            key, value = line.split("=", 1)
             props[key.strip()] = value.strip()
+        f.close()
     except Exception, e:
-        print "Error reading file: %s" % e
+        print "Error reading file: " + str(e)
         sys.exit(1)
     return props
 
-print "Loading properties from: %s" % propertiesFile
-properties = loadProperties(propertiesFile)
+def parseActiveCustomProperties(propStr):
+    """
+    Given a string of active custom properties in the format:
+      [[prop1 value1] [prop2 value2] ...]
+    Parse it and return a dictionary {prop1: value1, ...}.
+    """
+    propStr = propStr.strip()
+    if propStr.startswith("[") and propStr.endswith("]"):
+        propStr = propStr[1:-1].strip()
+    props = {}
+    # Find all [name value] pairs using regex.
+    pairs = re.findall(r'\[([^\]]+)\]', propStr)
+    for pair in pairs:
+        parts = pair.split()
+        if len(parts) >= 2:
+            name = parts[0]
+            value = " ".join(parts[1:])
+            props[name] = value
+    return props
 
-# Retrieve the Security configuration object.
-security = AdminConfig.getid("/Security:/")
-if not security:
-    print "Security configuration not found. Exiting."
-    sys.exit(1)
+# Load new properties from the file.
+newProps = loadProperties(propertiesFile)
+print "New properties from file:", newProps
 
-# Convert the output of AdminConfig.list into a Python list.
-customProps = AdminConfig.list("Property", security)
-if customProps is None:
-    cp_list = []
-else:
-    customProps_str = str(customProps)
-    if "\n" in customProps_str:
-        cp_list = customProps_str.splitlines()
+# Retrieve active custom properties as a string.
+activeStr = AdminTask.showActiveSecuritySettings("[-customProperties]")
+print "Active custom properties string:", activeStr
+
+# Parse the active properties string into a dictionary.
+activeProps = {}
+if activeStr and activeStr.strip() != "":
+    activeProps = parseActiveCustomProperties(activeStr)
+print "Active properties parsed:", activeProps
+
+# Combine active properties with new ones.
+# Only add a new property if its name is not already present.
+combinedProps = activeProps.copy()
+for key, value in newProps.items():
+    if key in activeProps:
+        print "Property '%s' already exists with value '%s'. Skipping." % (key, activeProps[key])
     else:
-        cp_list = [customProps_str]
+        combinedProps[key] = value
+        print "Adding property '%s' with value '%s'." % (key, value)
 
-existingProps = {}
-for cp in cp_list:
-    name = AdminConfig.showAttribute(cp, "name")
-    existingProps[name] = cp
+# Build the custom properties string for the command.
+# Each property is formatted as [name value].
+customPropsList = []
+for key, value in combinedProps.items():
+    customPropsList.append("[" + key + " " + value + "]")
+customPropsStr = "[" + " ".join(customPropsList) + "]"
+cmd = "[-customProperties " + customPropsStr + "]"
+print "Executing AdminTask.setAdminActiveSecuritySettings with parameters:", cmd
 
-# Iterate through each property from the file and create any that do not exist.
-for key, value in properties.items():
-    if key in existingProps:
-        print "Security custom property '%s' already exists. Skipping." % key
-    else:
-        params = [['name', key], ['value', value]]
-        newProp = AdminConfig.create("Property", security, params)
-        print "Created security custom property '%s' with value '%s'" % (key, value)
-        AdminConfig.save()
+# Execute the command and save the configuration.
+AdminTask.setAdminActiveSecuritySettings(cmd)
+AdminConfig.save()
+
+print "Security custom properties updated successfully."
