@@ -44,11 +44,6 @@ def loadProperties(filename):
 print "Loading properties from: %s" % propertiesFile
 properties = loadProperties(propertiesFile)
 
-# Sanity check: ensure that properties is a dict
-if not isinstance(properties, dict):
-    print "Loaded properties is not a dictionary!"
-    sys.exit(1)
-
 # Retrieve the global security configuration object.
 security = AdminConfig.getid("/Security:/")
 if not security:
