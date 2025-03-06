@@ -1,5 +1,6 @@
 # updateSecurityCustomProperties.py
-import sys, os
+import sys
+import os
 
 print "sys.argv:", sys.argv
 
@@ -48,19 +49,18 @@ if not security:
     print "Security configuration not found. Exiting."
     sys.exit(1)
 
-def ensure_list(x):
-    """
-    Convert the object x to a list by first converting it to a string and splitting on newlines.
-    This guarantees that the result is iterable.
-    """
-    if x is None:
-        return []
-    return str(x).splitlines()
-
-# Retrieve existing custom property settings using the "Property" datatype.
-existingProps = {}
+# Convert the output of AdminConfig.list into a Python list.
 customProps = AdminConfig.list("Property", security)
-cp_list = ensure_list(customProps)
+if customProps is None:
+    cp_list = []
+else:
+    customProps_str = str(customProps)
+    if "\n" in customProps_str:
+        cp_list = customProps_str.splitlines()
+    else:
+        cp_list = [customProps_str]
+
+existingProps = {}
 for cp in cp_list:
     name = AdminConfig.showAttribute(cp, "name")
     existingProps[name] = cp
