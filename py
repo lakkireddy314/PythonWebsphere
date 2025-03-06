@@ -8,7 +8,9 @@ if len(sys.argv) != 2:
     print "Usage: wsadmin.sh -lang jython -f updateSecurityCustomProperties_with_AdminTask_check.py <properties_file_path>"
     sys.exit(1)
 
-propertiesFile = sys.argv[1]
+# Normalize the properties file path (expands ~ and converts to absolute path).
+propertiesFile = sys.argv[1].strip()
+propertiesFile = os.path.abspath(os.path.expanduser(propertiesFile))
 print "Using properties file: " + propertiesFile
 
 def loadProperties(filename):
