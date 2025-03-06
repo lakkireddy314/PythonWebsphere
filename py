@@ -53,11 +53,16 @@ if not security:
 existingProps = {}
 customProps = AdminConfig.list("Property", security)
 if customProps:
-    # Check if customProps is a string; if so, split it into a list.
+    # If customProps is a string, split it into a list;
+    # if it's already a list, use it directly;
+    # otherwise, wrap it in a list.
     if type(customProps) == type(''):
         cp_list = customProps.splitlines()
+    elif type(customProps) == type([]):
+        cp_list = customProps
     else:
-        cp_list = customProps  # Assume it's already a sequence
+        cp_list = [customProps]
+        
     for cp in cp_list:
         name = AdminConfig.showAttribute(cp, "name")
         existingProps[name] = cp
