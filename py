@@ -1,11 +1,11 @@
-# updateSecurityCustomProperties_with_AdminTask_check.py
+# /tmp/updateSecurityCustomProperties_with_AdminTask_check.py
 import sys
 import os
 import re
 
 # Check that a properties file path is provided.
 if len(sys.argv) != 2:
-    print "Usage: wsadmin.sh -lang jython -f updateSecurityCustomProperties_with_AdminTask_check.py <properties_file_path>"
+    print "Usage: wsadmin.sh -lang jython -f /tmp/updateSecurityCustomProperties_with_AdminTask_check.py <properties_file_path>"
     sys.exit(1)
 
 # Normalize the properties file path (expands ~ and converts to absolute path).
@@ -15,9 +15,9 @@ print "Using properties file: " + propertiesFile
 
 def loadProperties(filename):
     """
-    Read properties from a file (any location) and return a dictionary.
-    Each line should be in the format: name=value.
-    Lines that are empty or start with '#' are ignored.
+    Read properties from a file and return a dictionary.
+    Each valid line should be in the format: name=value.
+    Blank lines or lines starting with '#' are ignored.
     """
     if not os.path.exists(filename):
         print "Property file not found: " + filename
@@ -44,7 +44,7 @@ def parseActiveCustomProperties(propStr):
     """
     Given a string of active custom properties in the format:
       [[prop1 value1] [prop2 value2] ...]
-    Parse it and return a dictionary {prop1: value1, ...}.
+    parse and return a dictionary {prop1: value1, ...}.
     """
     propStr = propStr.strip()
     if propStr.startswith("[") and propStr.endswith("]"):
@@ -64,18 +64,18 @@ def parseActiveCustomProperties(propStr):
 newProps = loadProperties(propertiesFile)
 print "New properties from file:", newProps
 
-# Retrieve active custom properties as a string.
+# Retrieve the current active security custom properties as a string.
 activeStr = AdminTask.showActiveSecuritySettings("[-customProperties]")
 print "Active custom properties string:", activeStr
 
-# Parse the active properties string into a dictionary.
+# Parse active properties into a dictionary.
 activeProps = {}
 if activeStr and activeStr.strip() != "":
     activeProps = parseActiveCustomProperties(activeStr)
 print "Active properties parsed:", activeProps
 
-# Combine active properties with new ones.
-# Only add a new property if its name is not already present.
+# Merge active properties with new ones.
+# Only add a new property if its name does not exist already.
 combinedProps = activeProps.copy()
 for key, value in newProps.items():
     if key in activeProps:
