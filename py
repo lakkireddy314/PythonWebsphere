@@ -63,4 +63,12 @@ if customProps:
         name = AdminConfig.showAttribute(cp, "name")
         existingProps[name] = cp
 
-# Iterate through each pro
+# Iterate through each property from the file.
+for key, value in properties.items():
+    if key in existingProps:
+        print "Security custom property '%s' already exists. Skipping." % key
+    else:
+        params = [['name', key], ['value', value]]
+        newProp = AdminConfig.create("Property", security, params)
+        print "Created security custom property '%s' with value '%s'" % (key, value)
+        AdminConfig.save()
