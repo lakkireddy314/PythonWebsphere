@@ -60,7 +60,7 @@ if customProps:
         existingProps[name] = cp
 
 # Iterate through each property from the file.
-for key, value in properties.iteritems():
+for key, value in properties.items():
     if key in existingProps:
         print "Security custom property '%s' already exists. Skipping." % key
     else:
