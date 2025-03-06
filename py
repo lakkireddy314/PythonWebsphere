@@ -2,9 +2,6 @@
 import sys
 import os
 
-# Debug: print all arguments to help diagnose what wsadmin is passing
-print "sys.argv:", sys.argv
-
 if len(sys.argv) < 1:
     print "Usage: wsadmin.sh -lang jython -f updateGlobalSecurityCustomProperties.py <globalCustom.properties>"
     sys.exit(1)
@@ -21,7 +18,7 @@ def loadProperties(filename):
     if not os.path.exists(filename):
         print "Property file not found: %s" % filename
         sys.exit(1)
-    
+        
     props = {}
     try:
         f = open(filename, "r")
@@ -59,7 +56,7 @@ if customProps:
         existingProps[name] = cp
 
 # Iterate through each property from the file.
-for key, value in properties.iteritems():
+for key, value in properties.items():
     if key in existingProps:
         print "Property '%s' already exists. Skipping." % key
     else:
