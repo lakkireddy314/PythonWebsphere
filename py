@@ -105,4 +105,28 @@ for key, value in newProps.items():
 
 print "DEBUG: Combined properties:", combinedProps
 
-# Build the custom 
+# Build the custom properties string for the command.
+customPropsList = []
+for key, value in combinedProps.items():
+    customPropsList.append("[" + key + " " + value + "]")
+customPropsStr = "[" + " ".join(customPropsList) + "]"
+cmd = "[-customProperties " + customPropsStr + "]"
+print "DEBUG: Command to be executed: " + cmd
+
+# Execute the command and save the configuration.
+try:
+    print "DEBUG: Executing AdminTask.setAdminActiveSecuritySettings..."
+    AdminTask.setAdminActiveSecuritySettings(cmd)
+    print "DEBUG: Command executed successfully."
+except Exception, e:
+    print "ERROR: Exception while executing AdminTask.setAdminActiveSecuritySettings: " + str(e)
+    sys.exit(1)
+
+try:
+    AdminConfig.save()
+    print "DEBUG: Configuration saved successfully."
+except Exception, e:
+    print "ERROR: Exception while saving configuration: " + str(e)
+    sys.exit(1)
+
+print "DEBUG: Security custom properties updated successfully."
