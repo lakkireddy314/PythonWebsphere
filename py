@@ -49,23 +49,32 @@ if not security:
     print "Security configuration not found. Exiting."
     sys.exit(1)
 
+def ensure_list(x):
+    """
+    Ensure that x is a list.
+    If x is iterable and is a string, split it into lines.
+    If x is iterable and not a string, convert it to a list.
+    Otherwise, wrap x in a list.
+    """
+    try:
+        iter(x)
+    except TypeError:
+        return [x]
+    else:
+        if type(x) == type(""):
+            return x.splitlines()
+        else:
+            return list(x)
+
 # Retrieve existing custom property settings using the "Property" datatype.
 existingProps = {}
 customProps = AdminConfig.list("Property", security)
+cp_list = []
 if customProps:
-    # If customProps is a string, split it into a list;
-    # if it's already a list, use it directly;
-    # otherwise, wrap it in a list.
-    if type(customProps) == type(''):
-        cp_list = customProps.splitlines()
-    elif type(customProps) == type([]):
-        cp_list = customProps
-    else:
-        cp_list = [customProps]
-        
-    for cp in cp_list:
-        name = AdminConfig.showAttribute(cp, "name")
-        existingProps[name] = cp
+    cp_list = ensure_list(customProps)
+for cp in cp_list:
+    name = AdminConfig.showAttribute(cp, "name")
+    existingProps[name] = cp
 
 # Iterate through each property from the file.
 for key, value in properties.items():
