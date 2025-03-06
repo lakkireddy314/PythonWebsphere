@@ -2,7 +2,6 @@
 import sys
 import os
 
-# Debug: print all arguments to help diagnose what wsadmin is passing
 print "sys.argv:", sys.argv
 
 if len(sys.argv) < 1:
@@ -55,7 +54,7 @@ existingProps = {}
 customProps = AdminConfig.list("Property", security)
 if customProps:
     # Check if customProps is a string; if so, split it into a list.
-    if isinstance(customProps, str):
+    if type(customProps) == type(''):
         cp_list = customProps.splitlines()
     else:
         cp_list = customProps  # Assume it's already a sequence
