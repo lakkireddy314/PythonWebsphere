@@ -51,25 +51,18 @@ if not security:
 
 def ensure_list(x):
     """
-    Ensure that x is a list.
+    Ensure that x is returned as a list.
     If x is a string, split it into lines.
-    If x is not iterable, wrap it in a list.
-    Otherwise, if x is iterable but not a list, convert it to a list.
+    If x is a list or tuple, return it as a list.
+    Otherwise, wrap x in a list.
     """
-    # If x is a string, split it into lines.
     if isinstance(x, str):
         return x.splitlines()
-    # If x is not iterable, wrap it in a list.
-    if not hasattr(x, '__iter__'):
-        return [x]
-    # If x is already a list, return it.
     if isinstance(x, list):
         return x
-    # Otherwise, try to convert to list.
-    try:
+    if isinstance(x, tuple):
         return list(x)
-    except Exception, e:
-        return [x]
+    return [x]
 
 # Retrieve existing custom property settings using the "Property" datatype.
 existingProps = {}
