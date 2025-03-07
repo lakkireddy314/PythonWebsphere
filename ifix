@@ -1,0 +1,49 @@
+Final Ansible Task (tasks/main.yml):
+yaml
+Copy
+---
+- name: "Find available iFix files in /tmp/ifixes/"
+  find:
+    paths: "/tmp/ifixes"
+    patterns: "*.zip"
+  register: ifix_files
+
+- name: "Get currently installed WebSphere packages/iFixes"
+  command: "/opt/IBM/InstallationManager/eclipse/tools/imcl listInstalledPackages"
+  register: installed_ifixes_output
+  changed_when: false
+
+- name: "Set fact for installed iFixes"
+  set_fact:
+    installed_ifixes_list: "{{ installed_ifixes_output.stdout_lines }}"
+
+- name: "Install WebSphere iFixes only if not already installed"
+  command: >
+    /opt/IBM/InstallationManager/eclipse/tools/imcl install {{ item.path }}
+    -repositories {{ item.path }}
+    -installationDirectory /opt/IBM/WebSphere/AppServer
+    -acceptLicense
+  loop: "{{ ifix_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: >
+    (item.path | basename | splitext)[0] not in installed_ifixes_list
+    and ifix_files.matched > 0
+Explanation of Conditionals & Enhancements:
+Check existence:
+ifix_files.matched > 0 ensures that at least one iFix file was found, avoiding unnecessary execution.
+
+Installed iFix comparison:
+Converts the installed packages to a list (installed_ifixes_list) for accurate comparison.
+
+Filename to installed package comparison:
+(item.path | basename | splitext)[0] extracts the file name without the .zip extension and compares it directly against the installed package names.
+
+Robustness:
+Avoids attempting installations if the iFix is already installed, making your tasks idempotent and safe.
+
+Notes & Adjustments:
+Confirm that the naming convention of your .zip iFix files exactly matches the output of imcl listInstalledPackages. Adjust matching logic if naming patterns differ.
+Update paths to match your actual environment:
+/opt/IBM/InstallationManager/eclipse/tools/imcl
+/opt/IBM/WebSphere/AppServer
