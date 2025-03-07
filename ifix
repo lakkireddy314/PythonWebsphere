@@ -64,3 +64,47 @@ Copy
     - role: websphere_ifix_install
       install_ifixes: true  # Enable iFix installation at playbook level
 This makes your role highly flexible and reusable across environments.
+
+
+
+
+
+
+Here's how you correctly modify the installation command to use only the iFix name (excluding the path and the .zip extension):
+
+✅ Corrected main.yml Task:
+yaml
+Copy
+---
+- name: "Find available iFix files in provided directory"
+  find:
+    paths: "{{ ifix_source_path }}"
+    patterns: "*.zip"
+  register: ifix_files
+  when: install_ifixes
+
+- name: "Retrieve list of installed WebSphere packages/iFixes"
+  command: "{{ imcl_path }} listInstalledPackages"
+  register: installed_ifixes_output
+  changed_when: false
+  when: install_ifixes
+
+- name: "Set fact for installed iFixes"
+  set_fact:
+    installed_ifixes_list: "{{ installed_ifixes_output.stdout_lines }}"
+  when: install_ifixes
+
+- name: "Install WebSphere iFixes if not already installed"
+  command: >
+    {{ imcl_path }} install {{ (ifix_file.path | basename | splitext)[0] }}
+    -repositories {{ ifix_file.path }}
+    -installationDirectory {{ websphere_install_dir }}
+    -acceptLicense
+  loop: "{{ ifix_files.files }}"
+  loop_control:
+    loop_var: ifix_file
+    label: "{{ ifix_file.path | basename }}"
+  when: >
+    install_ifixes and
+    (ifix_file.path | basename | splitext)[0] not in installed_ifixes_list and
+    ifix_files.matched > 0
