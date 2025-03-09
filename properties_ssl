@@ -1,6 +1,16 @@
-Role Directory Structure
-Your role can be organized as follows:
+Below is a complete example of an Ansible role that is fully compatible with Ansible 2.6. It:
 
+Recursively searches under the directory defined by {{ websphere_install_root }} for files named ssl.client.props.
+Appends a block (only if not already present) at the end of each file.
+Inserts a commented heading:
+arduino
+Copy
+# websphere fixpack 8.5.5.27 custom properties
+followed by the contents of a properties file located in the role’s properties folder (named was_fixpack.properties), which in this example contains:
+ini
+Copy
+com.ibm.ssl=true
+Role Directory Structure
 css
 Copy
 my_wasfix_role/
@@ -12,7 +22,7 @@ my_wasfix_role/
     └── was_fixpack.properties
 File Contents
 1. defaults/main.yml
-Define default variables. For example, set the WebSphere installation root:
+Define default variables such as the WebSphere installation root:
 
 yaml
 Copy
@@ -20,10 +30,13 @@ Copy
 # defaults/main.yml
 websphere_install_root: "/opt/IBM/WebSphere"
 2. tasks/main.yml
-This tasks file performs two actions:
+This tasks file performs the following actions:
 
-Uses the find module to locate all files named ssl.client.props under {{ websphere_install_root }}.
-For each found file, uses the blockinfile module to append a block (only if not already present) at the end of the file. The block includes a commented heading and then the contents of the properties file, which in this example provides the custom property com.ibm.ssl=true.
+Uses the find module to search recursively for files named ssl.client.props under {{ websphere_install_root }}.
+For each found file, uses the blockinfile module to append a custom properties block (if not already present) at the end of the file.
+The block includes a commented heading followed by the contents of the local properties file.
+Note: Although Ansible 2.6 supports the loop keyword, this example uses with_items to ensure maximum compatibility with similar syntax from earlier versions.
+
 yaml
 Copy
 ---
@@ -43,23 +56,23 @@ Copy
     block: |
       # websphere fixpack 8.5.5.27 custom properties
       {{ lookup('file', 'properties/was_fixpack.properties') }}
-  loop: "{{ ssl_client_props_files.files }}"
+  with_items: "{{ ssl_client_props_files.files }}"
   become: yes
 3. properties/was_fixpack.properties
-Create this file in the role’s properties folder with the following content:
+Create this file in the role’s properties directory with the following content:
 
 ini
 Copy
 com.ibm.ssl=true
 Explanation
 Finding Files:
-The first task uses the find module to recursively search for files named ssl.client.props under the directory specified by {{ websphere_install_root }} and registers the list of files in ssl_client_props_files.
+The first task uses the find module to search for all files named ssl.client.props under {{ websphere_install_root }} and registers the list in ssl_client_props_files.
 
 Appending the Block:
-The second task iterates over each file found and uses the blockinfile module to append a block at the end of the file.
+The second task iterates over each file found and uses the blockinfile module to insert a block at the end of the file.
 
-marker: The marker (# {mark} WASFIX PACK PROPERTIES) is used to ensure that the block is inserted only once.
-block: The block starts with the commented heading (# websphere fixpack 8.5.5.27 custom properties) and then uses the lookup function to load the contents of the properties file (was_fixpack.properties), which contains the custom property com.ibm.ssl=true.
-insertafter: EOF: This parameter ensures the block is appended at the end of the file.
-become: yes: If modifying the file requires elevated privileges, this parameter ensures that Ansible runs the task with the necessary permissions.
-When you include this role in your playbook, every ssl.client.props file found under your WebSphere installation root will be updated with the custom properties block only once.
+marker: The marker (# {mark} WASFIX PACK PROPERTIES) ensures that the block is only added once per file.
+block: The block starts with the commented header (# websphere fixpack 8.5.5.27 custom properties) and then inserts the contents of was_fixpack.properties using the lookup function.
+insertafter: EOF: This ensures that the block is appended at the very end of the file.
+become: yes: Allows the task to run with elevated privileges if necessary.
+When you include this role in your playbook, every ssl.client.props file found under your WebSphere installation root will be updated with the custom properties block—ensuring it is added only once.
