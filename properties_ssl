@@ -1,0 +1,65 @@
+Role Directory Structure
+Your role can be organized as follows:
+
+css
+Copy
+my_wasfix_role/
+├── defaults
+│   └── main.yml
+├── tasks
+│   └── main.yml
+└── properties
+    └── was_fixpack.properties
+File Contents
+1. defaults/main.yml
+Define default variables. For example, set the WebSphere installation root:
+
+yaml
+Copy
+---
+# defaults/main.yml
+websphere_install_root: "/opt/IBM/WebSphere"
+2. tasks/main.yml
+This tasks file performs two actions:
+
+Uses the find module to locate all files named ssl.client.props under {{ websphere_install_root }}.
+For each found file, uses the blockinfile module to append a block (only if not already present) at the end of the file. The block includes a commented heading and then the contents of the properties file, which in this example provides the custom property com.ibm.ssl=true.
+yaml
+Copy
+---
+# tasks/main.yml
+
+- name: Find all ssl.client.props files under websphere_install_root
+  find:
+    paths: "{{ websphere_install_root }}"
+    patterns: "ssl.client.props"
+  register: ssl_client_props_files
+
+- name: Append custom wasfix properties block to ssl.client.props files if not already present
+  blockinfile:
+    path: "{{ item.path }}"
+    marker: "# {mark} WASFIX PACK PROPERTIES"
+    insertafter: EOF
+    block: |
+      # websphere fixpack 8.5.5.27 custom properties
+      {{ lookup('file', 'properties/was_fixpack.properties') }}
+  loop: "{{ ssl_client_props_files.files }}"
+  become: yes
+3. properties/was_fixpack.properties
+Create this file in the role’s properties folder with the following content:
+
+ini
+Copy
+com.ibm.ssl=true
+Explanation
+Finding Files:
+The first task uses the find module to recursively search for files named ssl.client.props under the directory specified by {{ websphere_install_root }} and registers the list of files in ssl_client_props_files.
+
+Appending the Block:
+The second task iterates over each file found and uses the blockinfile module to append a block at the end of the file.
+
+marker: The marker (# {mark} WASFIX PACK PROPERTIES) is used to ensure that the block is inserted only once.
+block: The block starts with the commented heading (# websphere fixpack 8.5.5.27 custom properties) and then uses the lookup function to load the contents of the properties file (was_fixpack.properties), which contains the custom property com.ibm.ssl=true.
+insertafter: EOF: This parameter ensures the block is appended at the end of the file.
+become: yes: If modifying the file requires elevated privileges, this parameter ensures that Ansible runs the task with the necessary permissions.
+When you include this role in your playbook, every ssl.client.props file found under your WebSphere installation root will be updated with the custom properties block only once.
