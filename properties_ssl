@@ -1,6 +1,13 @@
-- name: Load all role vars files
+- name: Load all variable files from the role’s vars directory
   ansible.builtin.include_vars:
     dir: "{{ role_path }}/vars"
+    # Optionally, to avoid loading main.yml twice, ignore it:
+    ignore_files:
+      - "main.yml"
+
+
+
+
 
 - name: Run DBUpgrade script and respond to prompt
   expect:
