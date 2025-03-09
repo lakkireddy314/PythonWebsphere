@@ -1,3 +1,7 @@
+- name: Load all role vars files
+  ansible.builtin.include_vars:
+    dir: "{{ role_path }}/vars"
+
 - name: Run DBUpgrade script and respond to prompt
   expect:
     command: "{{ websphere_install_root }}/bin/DBUpgrade.sh -profileName {{ dmgr_profile }}"
