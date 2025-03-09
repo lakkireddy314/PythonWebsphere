@@ -1,3 +1,28 @@
+Below is an example of how you might add a subtask in your role’s tasks to run the DBUpgrade script and then verify that its output contains the expected success message:
+
+yaml
+Copy
+- name: Run DBUpgrade script with dmgr profile
+  command: "{{ websphere_install_root }}/bin/DBUpgrade.sh -profileName {{ dmgr_profile }}"
+  register: dbupgrade_result
+
+- name: Ensure DBUpgrade script ran successfully
+  assert:
+    that:
+      - "'All upgrade steps have been completed successfully' in dbupgrade_result.stdout"
+    fail_msg: "DBUpgrade script did not run successfully. Output was: {{ dbupgrade_result.stdout }}"
+Explanation
+Running the Script:
+The first task uses the command module to execute the script located in the bin directory of your install root, passing the dmgr_profile as the profile name.
+Registering the Output:
+The output of the command is captured in the variable dbupgrade_result.
+Verification:
+The second task uses the assert module to check that the expected success message appears in the command output. If the message is not found, the task fails and provides the output for debugging.
+This setup ensures that your playbook only continues if the DBUpgrade script completes successfully as indicated by the specific success message.
+
+
+
+
 - name: Set dmgr_profile variable if directory contains "dm"
   set_fact:
     dmgr_profile: >-
