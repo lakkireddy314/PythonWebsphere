@@ -1,3 +1,18 @@
+- name: stop_httpserver
+  block:
+    - name: Stop IBM HTTP Server and validate it is down
+      shell: >
+        {{ ihs_install_root }}/bin/apachectl -d {{ ihs_install_root }} -f {{ ihs_install_root }}/conf/{{ ihs_instance }} -k stop;
+        sleep 30;
+        ps -ef | grep httpd | grep '{{ ihs_instance }}' || true
+      register: stop_httpserver_result
+      retries: 3
+      delay: 30
+      until: stop_httpserver_result.stdout | trim == ""
+      args:
+        executable: /bin/bash
+
+
 # tasks/main.yml
 
 - name: Find all ssl.client.props files under websphere_install_root
