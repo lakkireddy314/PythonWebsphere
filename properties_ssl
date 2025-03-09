@@ -1,3 +1,14 @@
+- name: Set dmgr_profile variable if directory contains "dm"
+  set_fact:
+    dmgr_profile: >-
+      {{
+        lookup('fileglob', websphere_install_root ~ '/profiles/*')
+        | select('search', 'dm')
+        | list
+        | first
+      }}
+
+
 Below is a complete example of an Ansible role that is fully compatible with Ansible 2.6. It:
 
 Recursively searches under the directory defined by {{ websphere_install_root }} for files named ssl.client.props.
