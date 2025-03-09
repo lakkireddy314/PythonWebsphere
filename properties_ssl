@@ -1,3 +1,25 @@
+# tasks/main.yml
+
+- name: Find all ssl.client.props files under websphere_install_root
+  find:
+    paths: "{{ websphere_install_root }}"
+    patterns: "ssl.client.props"
+  register: ssl_client_props_files
+
+- name: Append custom wasfix properties block to ssl.client.props files if not already present
+  blockinfile:
+    path: "{{ custom.path }}"
+    marker: "# {mark} WASFIX PACK PROPERTIES"
+    insertafter: EOF
+    block: |
+      # websphere fixpack 8.5.5.27 custom properties
+      {{ lookup('file', 'properties/was_fixpack.properties') }}
+  with_items: "{{ ssl_client_props_files.files }}"
+  loop_control:
+    loop_var: custom
+
+
+
 - name: Load all variable files from the role’s vars directory
   ansible.builtin.include_vars:
     dir: "{{ role_path }}/vars"
