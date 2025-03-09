@@ -1,9 +1,9 @@
-Below is an example of how you might add a subtask in your role’s tasks to run the DBUpgrade script and then verify that its output contains the expected success message:
-
-yaml
-Copy
-- name: Run DBUpgrade script with dmgr profile
-  command: "{{ websphere_install_root }}/bin/DBUpgrade.sh -profileName {{ dmgr_profile }}"
+- name: Run DBUpgrade script and respond to prompt
+  expect:
+    command: "{{ websphere_install_root }}/bin/DBUpgrade.sh -profileName {{ dmgr_profile }}"
+    responses:
+      'Please input\\[y/n\\]:': 'y'
+    timeout: 600
   register: dbupgrade_result
 
 - name: Ensure DBUpgrade script ran successfully
@@ -12,6 +12,18 @@ Copy
       - "'All upgrade steps have been completed successfully' in dbupgrade_result.stdout"
     fail_msg: "DBUpgrade script did not run successfully. Output was: {{ dbupgrade_result.stdout }}"
 Explanation
+expect module:
+This module spawns the command and waits for the prompt matching Please input\[y/n\]: (note the escaped square brackets), then automatically sends y as the response.
+
+timeout:
+Specifies a maximum waiting time (here, 600 seconds) for the interactive prompt to appear and be answered.
+
+assert module:
+After the command runs, we use assert to check that the output includes the success message 'All upgrade steps have been completed successfully'.
+
+This approach automates the interactive step, ensuring your upgrade script runs non-interactively within your playbook.
+
+
 Running the Script:
 The first task uses the command module to execute the script located in the bin directory of your install root, passing the dmgr_profile as the profile name.
 Registering the Output:
