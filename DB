@@ -1,0 +1,58 @@
+---
+- name: Run DBUpgrade, verify output, and notify handlers
+  hosts: all
+  become: yes
+  vars:
+    websphere_install_root: /opt/wps8/websphere/AppServer
+    dmgr_profile: /opt/wps8/websphere/AppServer/profiles/dmgrProfile_example
+  tasks:
+    - name: Run DBUpgrade script and respond to prompt
+      expect:
+        command: "{{ websphere_install_root }}/bin/DBUpgrade.sh -profileName {{ dmgr_profile }}"
+        responses:
+          'Please input\\[y/n\\]:': 'y'
+        timeout: 600
+      register: dbupgrade_result
+
+    - name: Verify DBUpgrade script output and notify handlers
+      assert:
+        that:
+          - "'All upgrade steps have been completed successfully' in dbupgrade_result.stdout"
+        fail_msg: "DBUpgrade did not complete successfully. Output: {{ dbupgrade_result.stdout }}"
+      notify:
+        - startdmgr
+        - startnodeagent
+
+    - name: Flush handlers to ensure they complete before moving on
+      meta: flush_handlers
+
+    - name: Continue with subsequent tasks after handlers have run
+      debug:
+        msg: "Handlers have completed, and we are moving on."
+
+  handlers:
+    - name: startdmgr
+      command: "/path/to/startdmgr.sh"
+      # Replace with your actual dmgr start command
+
+    - name: startnodeagent
+      command: "/path/to/startnodeagent.sh"
+      # Replace with your actual node agent start command
+Explanation
+DBUpgrade Task:
+
+The expect module runs the DBUpgrade script and automatically responds with y when prompted.
+The output is registered in the variable dbupgrade_result.
+Verification Task:
+
+The assert module checks that the expected success message is in the script output.
+If the check passes, the task notifies both the startdmgr and startnodeagent handlers.
+If the check fails, the playbook will stop with the specified failure message.
+Flushing Handlers:
+
+The meta: flush_handlers task forces the immediate execution of all notified handlers.
+The playbook waits until both handlers have completed before moving on to the next task.
+Handlers Section:
+
+The handlers are defined to start the dmgr and nodeagent processes. They run in the order they are defined in the handlers: section.
+This playbook ensures that verification and the subsequent notification of handlers are tightly integrated, and the play will wait for both handlers to complete before proceeding.
