@@ -1,3 +1,21 @@
+- name: Find DM profile directory
+  find:
+    paths: "{{ websphere_install_root }}"
+    patterns: '*dm'
+    file_type: directory
+    recurse: no
+  register: dm_dirs
+
+- name: Set DM directory name variable
+  set_fact:
+    dm_directory: "{{ dm_dirs.files[0].path | basename }}"
+  when: dm_dirs.matched > 0
+
+- name: Debug DM directory name
+  debug:
+    msg: "The DM directory is {{ dm_directory }}"
+
+
 - name: stop_httpserver
   block:
     - name: Stop IBM HTTP Server and validate it is down
