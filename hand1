@@ -1,3 +1,15 @@
+- name: Build list of running application server names
+  set_fact:
+    target_servers: >-
+      {{
+        target_lines
+        | map('regex_findall', 'The Application Server \"([^\"]+)\"')
+        | map('first')
+        | select('truthy')
+        | list
+      }}
+
+
 handlers/main.yml
 yaml
 Copy
