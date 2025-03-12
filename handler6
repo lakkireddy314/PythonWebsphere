@@ -1,0 +1,105 @@
+1. Minimal Tasks File – roles/websphere/tasks/main.yml
+This file simply triggers the two handler blocks via notifications.
+
+yaml
+Copy
+---
+- name: Trigger WebSphere stop and start handlers
+  debug:
+    msg: "Triggering WebSphere handlers for stopping and starting servers"
+  notify:
+    - execute_stop_tasks
+    - execute_start_tasks
+2. Main Handlers File – roles/websphere/handlers/main.yml
+This file imports the two sub‑handlers.
+
+yaml
+Copy
+---
+- import_tasks: stop_appservers.yml
+- import_tasks: start_appservers.yml
+3. Stop Application Servers Sub‑Handler – roles/websphere/handlers/stop_appservers.yml
+This handler first checks whether any application servers are running (by examining the output of the status command). If at least one server is running (i.e. the output contains "is STARTED"), it runs the stop command. Otherwise, it prints a debug message indicating no action is needed.
+
+yaml
+Copy
+---
+- name: execute_stop_tasks
+  block:
+    - name: Check server status for stopping
+      shell: "{{ websphere_install_root }}/profiles/*w*/bin/serverStatus.sh -all"
+      register: stop_status_result
+      changed_when: false
+
+    - name: Set stop_needed fact if any server is STARTED
+      set_fact:
+        stop_needed: "{{ 'is STARTED' in stop_status_result.stdout }}"
+
+    - name: Stop application servers if needed
+      shell: "{{ websphere_install_root }}/bin/BPMConfig -stop ~/BPMConfig/{{ env }}.properties"
+      register: stop_result
+      when: stop_needed
+      changed_when: "'command completed successfully' in stop_result.stdout"
+      failed_when: "'command completed successfully' not in stop_result.stdout"
+
+    - name: Debug message when no running servers to stop
+      debug:
+        msg: "No running application servers found, so stop command not executed."
+      when: not stop_needed
+  listen: execute_stop_tasks
+4. Start Application Servers Sub‑Handler – roles/websphere/handlers/start_appservers.yml
+This handler checks whether any application servers are stopped (by looking for the phrase "cannot be reached. It appears to be stopped." in the status output). If so, it executes the start command; otherwise, it prints a debug message.
+
+yaml
+Copy
+---
+- name: execute_start_tasks
+  block:
+    - name: Check server status for starting
+      shell: "{{ websphere_install_root }}/profiles/*w*/bin/serverStatus.sh -all"
+      register: start_status_result
+      changed_when: false
+
+    - name: Set start_needed fact if any server is stopped
+      set_fact:
+        start_needed: "{{ 'cannot be reached. It appears to be stopped' in start_status_result.stdout }}"
+
+    - name: Start application servers if needed
+      shell: "{{ websphere_install_root }}/bin/BPMConfig -start ~/BPMConfig/{{ env }}.properties"
+      register: start_result
+      when: start_needed
+      changed_when: "'command completed successfully' in start_result.stdout"
+      failed_when: "'command completed successfully' not in start_result.stdout"
+
+    - name: Debug message when no stopped servers to start
+      debug:
+        msg: "No stopped application servers found, so start command not executed."
+      when: not start_needed
+  listen: execute_start_tasks
+5. Example Playbook to Invoke the Role – site.yml
+Use the following playbook to run the role. Make sure you set the required variables (websphere_install_root and env):
+
+yaml
+Copy
+---
+- name: Manage WebSphere Application Servers via Role Handlers
+  hosts: websphere_servers
+  vars:
+    websphere_install_root: "/opt/IBM/WebSphere"  # Adjust as needed
+    env: "prod"  # Set your environment (e.g., prod, dev)
+  roles:
+    - websphere
+Explanation
+Conditional Checks for Idempotence:
+Each sub‑handler first runs the status command (using serverStatus.sh -all) and registers its output.
+• For stopping, the task sets a fact (stop_needed) if the output contains "is STARTED".
+• For starting, a fact (start_needed) is set if the output contains the phrase indicating the servers are stopped.
+The subsequent BPMConfig command is executed only if the corresponding fact is true.
+
+Command Output Validation:
+Both handlers register the output of the BPMConfig command. The task is marked as changed only if "command completed successfully" appears in the output. Likewise, it will fail if that phrase is not present.
+
+Idempotence:
+If the servers are already in the desired state (i.e. already stopped or already started), the BPMConfig command is skipped and a debug message is printed. This ensures that running the role multiple times does not cause unnecessary changes.
+
+This solution meets your requirements by including conditional checks and making the tasks idempotent while remaining compatible with Ansible 2.9.2.
