@@ -1,3 +1,10 @@
+ target_servers: " {{ 
+	                 target_lines 
+	                    | map('regex_findall', 'The Application Server \"([^\"]+)\"') 
+						| map('first') 
+						| reject('none') 
+						| list }}"
+
 - name: Build list of running application server names
   set_fact:
     target_servers: >-
