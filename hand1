@@ -18,3 +18,15 @@ Copy
   changed_when: true   # forces the handler to run
   notify:
     - Test
+
+- block:
+    - name: stop apache service
+      service:
+        name: apache2
+        state: stopped
+
+    - name: start apache service
+      service:
+        name: apache2
+        state: started
+  listen: stop_appservers
