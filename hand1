@@ -1,3 +1,5 @@
+{{ sorted_servers | select('match', "^" ~ target_group ~ "ClusterMember") | list }}
+
 - name: Build list of running application server names
   set_fact:
     target_servers: >-
