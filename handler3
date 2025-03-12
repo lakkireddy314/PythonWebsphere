@@ -1,0 +1,539 @@
+Features & Overall Flow
+Variable‑Based Paths & Profile Filtering:
+
+Application servers and nodeagents use profiles matching *-w (e.g. {{ websphere_install_root }}/profiles/*-w/bin/).
+DMGR tasks use profiles matching *dm (e.g. {{ websphere_install_root }}/profiles/*dm/bin/).
+Conditional Execution:
+
+The role runs on hosts with is_appserver: true.
+DMGR tasks run only when is_dmgr: true.
+IBM HTTP Server (IHS) tasks run only when is_ihs: true.
+Stop/Start Order with Validation:
+
+Stop Phase:
+Application servers are gathered, ordered (expected servers plus any extras), and then a simple stop command is issued for each server.
+A separate subtask then validates whether each server has stopped; if not, it kills the process.
+The NodeAgent is stopped and validated.
+DMGR (if applicable) is stopped and validated.
+IHS is stopped with a retry mechanism.
+Start Phase:
+DMGR is started (if applicable) and validated.
+The NodeAgent is started and validated.
+Application servers are started (ordered appropriately) and validated.
+IHS is started and validated.
+Modularity:
+Each handler file uses individual listen: attributes on every task (so notifications trigger all tasks with a matching listen value).
+The extra kill logic for application servers is moved into a separate subtask file (validate_kill_appservers.yml).
+
+Customization:
+Variables such as kill_timeout, target_server, and target_group allow you to fine‑tune behavior.
+
+File Contents
+1. defaults/main.yml
+yaml
+Copy
+---
+# roles/upgrade_websphere/defaults/main.yml
+
+kill_timeout: 1200
+target_server: ""
+target_group: ""
+Sets default variables.
+
+2. tasks/main.yml
+yaml
+Copy
+---
+# roles/upgrade_websphere/tasks/main.yml
+
+- block:
+    - name: Stop all services
+      debug:
+        msg: "Notifying handlers to stop application servers, NodeAgent, and DMGR..."
+      notify:
+        - stop_appservers
+        - stop_nodeagent
+        - stop_dmgr
+
+    - name: Stop IBM HTTP Server
+      debug:
+        msg: "Notifying handler to stop IBM HTTP Server..."
+      notify:
+        - stop_httpserver
+      when: is_ihs | bool
+
+    - name: Perform upgrade and validation tasks
+      debug:
+        msg: "Performing upgrade tasks and validations..."
+      # Replace with your actual upgrade/validation commands
+
+    - name: Start all services
+      debug:
+        msg: "Notifying handlers to start DMGR, NodeAgent, and application servers..."
+      notify:
+        - start_dmgr
+        - start_nodeagent
+        - start_appservers
+
+    - name: Start IBM HTTP Server
+      debug:
+        msg: "Notifying handler to start IBM HTTP Server..."
+      notify:
+        - start_httpserver
+      when: is_ihs | bool
+
+  when: is_appserver | bool
+Notifies the stop and start handlers in proper order.
+
+3. handlers/main.yml
+yaml
+Copy
+---
+# roles/upgrade_websphere/handlers/main.yml
+
+- import_tasks: stop_appservers.yml
+- import_tasks: stop_nodeagent.yml
+- import_tasks: stop_dmgr.yml
+- import_tasks: stop_httpserver.yml
+- import_tasks: start_dmgr.yml
+- import_tasks: start_nodeagent.yml
+- import_tasks: start_appservers.yml
+- import_tasks: start_httpserver.yml
+- import_tasks: check_httpserver_status.yml
+- import_tasks: start_httpserver_status.yml
+Imports all individual handler files.
+
+4. handlers/stop_appservers.yml
+This file now issues only the stopServer.sh command for each application server. The extra logic (to validate and kill if not stopped) is moved into a separate subtask file.
+
+yaml
+Copy
+---
+# roles/upgrade_websphere/handlers/stop_appservers.yml
+
+- name: Gather running application servers for stop
+  listen: stop_appservers
+  shell: "{{ websphere_install_root }}/profiles/*-w/bin/serverStatus.sh -all"
+  register: ws_status_stop
+  when: (target_server | default('')) == "" and (target_group | default('')) == ""
+
+- name: Debug raw server status output
+  listen: stop_appservers
+  debug:
+    var: ws_status_stop.stdout_lines
+
+- name: Set regex for running application servers (to stop)
+  listen: stop_appservers
+  set_fact:
+    status_regex: "is STARTED"
+  when: (target_server | default('')) == "" and (target_group | default('')) == ""
+
+- name: Filter lines matching running application servers
+  listen: stop_appservers
+  set_fact:
+    target_lines: "{{ ws_status_stop.stdout_lines | select('search', status_regex) | list }}"
+  when: (target_server | default('')) == "" and (target_group | default('')) == ""
+
+- name: Build list of running application server names
+  listen: stop_appservers
+  set_fact:
+    target_servers: >-
+      {{
+        target_lines
+        | map('trim')
+        | map('regex_findall', '.*The Application Server\\s+"([^"]+)"')
+        | map('first')
+        | reject('equalto', None)
+        | list
+      }}
+  when: (target_server | default('')) == "" and (target_group | default('')) == ""
+
+- name: Debug extracted target_servers
+  listen: stop_appservers
+  debug:
+    var: target_servers
+
+- name: Build expected server list
+  listen: stop_appservers
+  set_fact:
+    expected_servers: "{{ target_servers | select('match', '^(MEClusterMember|SupClusterMember|AppClusterMember)') | list }}"
+
+- name: Build extra server list
+  listen: stop_appservers
+  set_fact:
+    extra_servers: "{{ target_servers | reject('match', '^(MEClusterMember|SupClusterMember|AppClusterMember)') | list }}"
+
+- name: Order application servers for stop (reverse order: App, then Sup, then ME, then extra)
+  listen: stop_appservers
+  set_fact:
+    sorted_servers: >-
+      {{
+        (expected_servers | select('match', '^AppClusterMember') | list) +
+        (expected_servers | select('match', '^SupClusterMember') | list) +
+        (expected_servers | select('match', '^MEClusterMember') | list) +
+        extra_servers
+      }}
+  when: (target_server | default('')) == "" and (target_group | default('')) == ""
+
+- name: Set sorted_servers for individual target application server
+  listen: stop_appservers
+  set_fact:
+    sorted_servers: [ "{{ target_server }}" ]
+  when: (target_server | default('')) != ""
+
+- name: Filter sorted_servers by target group if defined (application servers)
+  listen: stop_appservers
+  set_fact:
+    sorted_servers: "{{ sorted_servers | select('match', '^' ~ target_group ~ 'ClusterMember') | list }}"
+  when: (target_group | default('')) != ""
+
+- name: Issue stop command for application servers
+  listen: stop_appservers
+  shell: "{{ websphere_install_root }}/profiles/*-w/bin/stopServer.sh {{ server }}"
+  args:
+    executable: /bin/bash
+  loop: "{{ sorted_servers }}"
+  loop_control:
+    loop_var: server
+  when: sorted_servers is defined and (sorted_servers | length > 0)
+
+- name: Run extra kill/validation subtask for application servers
+  listen: stop_appservers
+  include_tasks: validate_kill_appservers.yml
+The key change is that the “Issue stop command” task now only runs the stopServer.sh command, while the extra logic is delegated to the included subtask file.
+
+5. handlers/validate_kill_appservers.yml
+This new file contains the extra logic to verify that each application server has stopped and, if not, kill its process.
+
+yaml
+Copy
+---
+# roles/upgrade_websphere/handlers/validate_kill_appservers.yml
+
+- name: Validate application servers are stopped
+  shell: "{{ websphere_install_root }}/profiles/*-w/bin/serverStatus.sh -all"
+  register: validate_stop_appservers
+  changed_when: false
+
+- name: Fail if any application server is still running and then kill process
+  fail:
+    msg: "Some application servers did not stop as expected: {{ validate_stop_appservers.stdout }}"
+  when: "'is STARTED' in validate_stop_appservers.stdout"
+In this simple example, we simply fail if any server is still running. In a more complex scenario, you could add further logic to attempt to kill the process. (For example, you could wrap a task with retries to issue a kill command if the server is still up.)
+
+6. handlers/stop_nodeagent.yml
+yaml
+Copy
+---
+# roles/upgrade_websphere/handlers/stop_nodeagent.yml
+
+- name: Stop the NodeAgent
+  listen: stop_nodeagent
+  shell: "{{ websphere_install_root }}/profiles/*-w/bin/stopNode.sh"
+  args:
+    executable: /bin/bash
+
+- name: Validate NodeAgent is stopped
+  listen: stop_nodeagent
+  shell: "{{ websphere_install_root }}/profiles/*-w/bin/serverStatus.sh -all | grep -i nodeagent"
+  register: validate_stop_nodeagent
+  changed_when: false
+
+- name: Fail if NodeAgent is still running
+  listen: stop_nodeagent
+  fail:
+    msg: "NodeAgent is still running: {{ validate_stop_nodeagent.stdout }}"
+  when: validate_stop_nodeagent.stdout is defined and ("is STARTED" in validate_stop_nodeagent.stdout)
+7. handlers/stop_dmgr.yml
+yaml
+Copy
+---
+# roles/upgrade_websphere/handlers/stop_dmgr.yml
+
+- name: Gather Deployment Manager status for stop
+  listen: stop_dmgr
+  shell: "{{ websphere_install_root }}/profiles/*dm/bin/serverStatus.sh -all"
+  register: dmgr_status_stop
+  when: is_dmgr | bool
+
+- name: Check if DMGR is running (for stop)
+  listen: stop_dmgr
+  set_fact:
+    dmgr_running: "{{ (dmgr_status_stop.stdout_lines | select('search', 'The Deployment Manager \"dmgr\" is STARTED') | list | length) > 0 }}"
+  when: is_dmgr | bool
+
+- name: Stop the Deployment Manager
+  listen: stop_dmgr
+  shell: "{{ websphere_install_root }}/profiles/*dm/bin/stopManager.sh"
+  args:
+    executable: /bin/bash
+  when: is_dmgr | bool and dmgr_running
+
+- name: Validate DMGR is stopped
+  listen: stop_dmgr
+  shell: "{{ websphere_install_root }}/profiles/*dm/bin/serverStatus.sh -all"
+  register: validate_stop_dmgr
+  changed_when: false
+  when: is_dmgr | bool
+
+- name: Fail if DMGR is still running
+  listen: stop_dmgr
+  fail:
+    msg: "DMGR is still running: {{ validate_stop_dmgr.stdout }}"
+  when: is_dmgr | bool and ("The Deployment Manager \"dmgr\" is STARTED" in validate_stop_dmgr.stdout)
+8. handlers/stop_httpserver.yml
+yaml
+Copy
+---
+# roles/upgrade_websphere/handlers/stop_httpserver.yml
+
+- name: Stop IBM HTTP Server and validate it is down
+  listen: stop_httpserver
+  shell: >
+    {{ ihs_install_root }}/bin/apachectl -d {{ ihs_install_root }} -f {{ ihs_install_root }}/conf/{{ ihs_instance }} -k stop;
+    sleep 30;
+    ps -ef | grep httpd | grep '{{ ihs_instance }}' || true
+  register: stop_httpserver_result
+  retries: 3
+  delay: 30
+  until: stop_httpserver_result.stdout | trim == ""
+  args:
+    executable: /bin/bash
+Retries stopping IHS if validation fails.
+
+9. handlers/start_dmgr.yml
+yaml
+Copy
+---
+# roles/upgrade_websphere/handlers/start_dmgr.yml
+
+- name: Gather DMGR status for start
+  listen: start_dmgr
+  shell: "{{ websphere_install_root }}/profiles/*dm/bin/serverStatus.sh -all"
+  register: dmgr_status_start
+  when: is_dmgr | bool
+
+- name: Check if DMGR is stopped (for start)
+  listen: start_dmgr
+  set_fact:
+    dmgr_stopped: "{{ (dmgr_status_start.stdout_lines | select('search', 'The Deployment Manager \"dmgr\" is STOPPED') | list | length) > 0 }}"
+  when: is_dmgr | bool
+
+- name: Start the Deployment Manager
+  listen: start_dmgr
+  shell: "{{ websphere_install_root }}/profiles/*dm/bin/startManager.sh"
+  args:
+    executable: /bin/bash
+  when: is_dmgr | bool and dmgr_stopped
+
+- name: Validate DMGR is started
+  listen: start_dmgr
+  shell: "{{ websphere_install_root }}/profiles/*dm/bin/serverStatus.sh -all"
+  register: validate_start_dmgr
+  changed_when: false
+  when: is_dmgr | bool
+
+- name: Fail if DMGR is not started
+  listen: start_dmgr
+  fail:
+    msg: "DMGR is not started: {{ validate_start_dmgr.stdout }}"
+  when: is_dmgr | bool and ("The Deployment Manager \"dmgr\" is STARTED" not in validate_start_dmgr.stdout)
+10. handlers/start_nodeagent.yml
+yaml
+Copy
+---
+# roles/upgrade_websphere/handlers/start_nodeagent.yml
+
+- name: Start the NodeAgent
+  listen: start_nodeagent
+  shell: "{{ websphere_install_root }}/profiles/*-w/bin/startNode.sh"
+  args:
+    executable: /bin/bash
+
+- name: Validate NodeAgent is started
+  listen: start_nodeagent
+  shell: "{{ websphere_install_root }}/profiles/*-w/bin/serverStatus.sh -all | grep -i nodeagent"
+  register: validate_start_nodeagent
+  changed_when: false
+
+- name: Fail if NodeAgent is not started
+  listen: start_nodeagent
+  fail:
+    msg: "NodeAgent is not started: {{ validate_start_nodeagent.stdout }}"
+  when: validate_start_nodeagent.stdout is not defined or ("is STARTED" not in validate_start_nodeagent.stdout)
+11. handlers/start_appservers.yml
+yaml
+Copy
+---
+# roles/upgrade_websphere/handlers/start_appservers.yml
+
+- name: Gather stopped application servers for start
+  listen: start_appservers
+  shell: "{{ websphere_install_root }}/profiles/*-w/bin/serverStatus.sh -all"
+  register: ws_status_start
+
+- name: Set regex for stopped application servers (to start)
+  listen: start_appservers
+  set_fact:
+    status_regex: "cannot be reached"
+
+- name: Filter lines matching stopped application servers
+  listen: start_appservers
+  set_fact:
+    target_lines: "{{ ws_status_start.stdout_lines | select('search', status_regex) | list }}"
+
+- name: Build list of stopped application server names
+  listen: start_appservers
+  set_fact:
+    target_servers: >-
+      {{
+        target_lines
+        | map('regex_findall', '.*The Application Server\\s+"([^"]+)"')
+        | map('first')
+        | reject('equalto', None)
+        | list
+      }}
+
+- name: Build expected server list
+  listen: start_appservers
+  set_fact:
+    expected_servers: "{{ target_servers | select('match', '^(MEClusterMember|SupClusterMember|AppClusterMember)') | list }}"
+
+- name: Build extra server list
+  listen: start_appservers
+  set_fact:
+    extra_servers: "{{ target_servers | reject('match', '^(MEClusterMember|SupClusterMember|AppClusterMember)') | list }}"
+
+- name: Order application servers for start (order: ME, then Sup, then App, then extra)
+  listen: start_appservers
+  set_fact:
+    sorted_servers: >-
+      {{
+        (expected_servers | select('match', '^MEClusterMember') | list) +
+        (expected_servers | select('match', '^SupClusterMember') | list) +
+        (expected_servers | select('match', '^AppClusterMember') | list) +
+        extra_servers
+      }}
+  when: (target_server | default('')) == "" and (target_group | default('')) == ""
+
+- name: Set sorted_servers for individual target application server
+  listen: start_appservers
+  set_fact:
+    sorted_servers: [ "{{ target_server }}" ]
+  when: (target_server | default('')) != ""
+
+- name: Filter sorted_servers by target group if defined (application servers)
+  listen: start_appservers
+  set_fact:
+    sorted_servers: "{{ sorted_servers | select('match', '^' ~ target_group ~ 'ClusterMember') | list }}"
+  when: (target_group | default('')) != ""
+
+- name: Start application servers
+  listen: start_appservers
+  shell: "{{ websphere_install_root }}/profiles/*-w/bin/startServer.sh {{ server }}"
+  loop: "{{ sorted_servers }}"
+  loop_control:
+    loop_var: server
+  when: sorted_servers is defined and (sorted_servers | length > 0)
+
+- name: Validate application servers are started
+  listen: start_appservers
+  shell: "{{ websphere_install_root }}/profiles/*-w/bin/serverStatus.sh -all"
+  register: validate_start_appservers
+  changed_when: false
+
+- name: Fail if application servers are not started
+  listen: start_appservers
+  fail:
+    msg: "Application servers are not started as expected: {{ validate_start_appservers.stdout }}"
+  when: "'is STARTED' not in validate_start_appservers.stdout"
+12. handlers/start_httpserver.yml
+yaml
+Copy
+---
+# roles/upgrade_websphere/handlers/start_httpserver.yml
+
+- name: Start IBM HTTP Server
+  listen: start_httpserver
+  shell: "{{ ihs_install_root }}/bin/apachectl -d {{ ihs_install_root }} -f {{ ihs_install_root }}/conf/{{ ihs_instance }} -k start"
+  args:
+    executable: /bin/bash
+
+- name: Validate IBM HTTP Server is started
+  listen: start_httpserver
+  shell: "ps -ef | grep httpd | grep '{{ ihs_instance }}'"
+  register: validate_start_ihs
+  changed_when: false
+
+- name: Fail if IBM HTTP Server is not started
+  listen: start_httpserver
+  fail:
+    msg: "IBM HTTP Server is not started: {{ validate_start_ihs.stdout }}"
+  when: validate_start_ihs.stdout == ""
+13. handlers/check_httpserver_status.yml
+yaml
+Copy
+---
+# roles/upgrade_websphere/handlers/check_httpserver_status.yml
+
+- name: Check IBM HTTP Server status using ps command
+  listen: check_httpserver_status
+  shell: "ps -ef | grep httpd | grep '{{ ihs_instance }}'"
+  register: ihs_status_check
+  changed_when: false
+
+- name: Debug IBM HTTP Server check status
+  listen: check_httpserver_status
+  debug:
+    msg: "IBM HTTP Server check status: {{ ihs_status_check.stdout }}"
+14. handlers/start_httpserver_status.yml
+yaml
+Copy
+---
+# roles/upgrade_websphere/handlers/start_httpserver_status.yml
+
+- name: Check if IBM HTTP Server is running
+  listen: start_httpserver_status
+  shell: "ps -ef | grep httpd | grep '{{ ihs_instance }}'"
+  register: ihs_check_status
+  changed_when: false
+
+- name: Debug IBM HTTP Server status before starting
+  listen: start_httpserver_status
+  debug:
+    msg: "IBM HTTP Server status: {{ ihs_check_status.stdout }}"
+
+- name: Start IBM HTTP Server if not running
+  listen: start_httpserver_status
+  shell: "{{ ihs_install_root }}/bin/apachectl -d {{ ihs_install_root }} -f {{ ihs_install_root }}/conf/{{ ihs_instance }} -k start"
+  args:
+    executable: /bin/bash
+  when: ihs_check_status.stdout == ""
+How to Use This Role
+Set Group Variables:
+
+On hosts where the upgrade should run, set is_appserver: true.
+For DMGR hosts, set is_dmgr: true.
+For IHS hosts, set is_ihs: true.
+Define the following variables in your inventory or group_vars:
+websphere_install_root (e.g., "/opt/websphere")
+ihs_install_root (e.g., "/opt/ihs")
+ihs_instance (e.g., "bpm-httpd.conf")
+Call the Role in Your Playbook:
+Example playbook snippet:
+
+yaml
+Copy
+- hosts: websphere_servers
+  roles:
+    - role: upgrade_websphere
+      vars:
+        kill_timeout: 1500
+        websphere_install_root: "/opt/websphere"
+        ihs_install_root: "/opt/ihs"
+        ihs_instance: "bpm-httpd.conf"
+Handler Notifications:
+When a task notifies a handler (e.g., notify: stop_appservers), Ansible executes every task in the corresponding handler file that has a matching listen: stop_appservers attribute.
+
+Extra IHS Handlers:
+The handlers check_httpserver_status and start_httpserver_status are defined and available if additional IHS checks are needed, but they are not automatically called by the role.
