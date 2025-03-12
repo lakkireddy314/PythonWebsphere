@@ -1,0 +1,94 @@
+---
+# This handler gathers the list of running application servers from the status output,
+# orders them (expected servers first, then any extra servers),
+# issues the stop command for each, and then calls a subtask to validate (and kill if needed).
+
+- name: Gather running application servers for stop
+  listen: stop_appservers
+  shell: "{{ websphere_install_root }}/profiles/*-w/bin/serverStatus.sh -all"
+  register: ws_status_stop
+  when: (target_server | default('')) == "" and (target_group | default('')) == ""
+
+- name: Debug raw server status output
+  listen: stop_appservers
+  debug:
+    var: ws_status_stop.stdout_lines
+
+- name: Set regex for running application servers (to stop)
+  listen: stop_appservers
+  set_fact:
+    status_regex: "is STARTED"
+  when: (target_server | default('')) == "" and (target_group | default('')) == ""
+
+- name: Filter lines matching running application servers
+  listen: stop_appservers
+  set_fact:
+    target_lines: "{{ ws_status_stop.stdout_lines | select('search', status_regex) | list }}"
+  when: (target_server | default('')) == "" and (target_group | default('')) == ""
+
+- name: Build list of running application server names
+  listen: stop_appservers
+  set_fact:
+    target_servers: >-
+      {{
+        target_lines
+        | map('trim')
+        | map('regex_findall', '.*The Application Server\\s+"([^"]+)"')
+        | select('length')
+        | map('first')
+        | list
+      }}
+  when: (target_server | default('')) == "" and (target_group | default('')) == ""
+
+- name: Debug extracted target_servers
+  listen: stop_appservers
+  debug:
+    var: target_servers
+
+- name: Build expected server list
+  listen: stop_appservers
+  set_fact:
+    expected_servers: "{{ target_servers | select('match', '^(MEClusterMember|SupClusterMember|AppClusterMember)') | list }}"
+
+- name: Build extra server list
+  listen: stop_appservers
+  set_fact:
+    extra_servers: "{{ target_servers | reject('match', '^(MEClusterMember|SupClusterMember|AppClusterMember)') | list }}"
+
+- name: Order application servers for stop (reverse order: App, then Sup, then ME, then extra)
+  listen: stop_appservers
+  set_fact:
+    sorted_servers: >-
+      {{
+        (expected_servers | select('match', '^AppClusterMember') | list) +
+        (expected_servers | select('match', '^SupClusterMember') | list) +
+        (expected_servers | select('match', '^MEClusterMember') | list) +
+        extra_servers
+      }}
+  when: (target_server | default('')) == "" and (target_group | default('')) == ""
+
+- name: Set sorted_servers for individual target application server
+  listen: stop_appservers
+  set_fact:
+    sorted_servers: [ "{{ target_server }}" ]
+  when: (target_server | default('')) != ""
+
+- name: Filter sorted_servers by target group if defined (application servers)
+  listen: stop_appservers
+  set_fact:
+    sorted_servers: "{{ sorted_servers | select('match', '^' ~ target_group ~ 'ClusterMember') | list }}"
+  when: (target_group | default('')) != ""
+
+- name: Issue stop command for application servers
+  listen: stop_appservers
+  shell: "{{ websphere_install_root }}/profiles/*-w/bin/stopServer.sh {{ server }}"
+  args:
+    executable: /bin/bash
+  loop: "{{ sorted_servers }}"
+  loop_control:
+    loop_var: server
+  when: sorted_servers is defined and (sorted_servers | length > 0)
+
+- name: Run extra kill/validation subtask for application servers
+  listen: stop_appservers
+  include_tasks: validate_kill_appservers.yml
