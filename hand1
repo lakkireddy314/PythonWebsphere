@@ -1,0 +1,20 @@
+handlers/main.yml
+yaml
+Copy
+- name: Include handlers explicitly
+  import_tasks: test.yml
+handlers/test.yml
+yaml
+Copy
+- name: Test
+  debug:
+    msg: "Explicit debug handler ran!"
+tasks/main.yml
+yaml
+Copy
+- name: Always trigger Test handler
+  debug:
+    msg: "Triggering Test handler explicitly"
+  changed_when: true   # forces the handler to run
+  notify:
+    - Test
