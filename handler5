@@ -1,5 +1,22 @@
-The directory structure remains:
+Reasoned about server status output parsing for 20 seconds
+Below is an example of how you can implement the logic as an Ansible role using only handlers. This solution dynamically picks up any extra (i.e. “OtherServer”) application servers from the output and orders the fixed servers as required. In this example, the role is structured so that a minimal task triggers two main handler sub‑tasks—one for stopping servers (in reverse order) and one for starting servers (in the defined order).
 
+For example, suppose the output of
+
+bash
+Copy
+{{websphere_install_root}}/profiles/*w*/bin/serverStatus.sh -all
+contains these lines (quotes added for clarity):
+
+"ADMU0508I: The Application Server \"AppClusterMember1\" is STARTED."
+"ADMU0508I: The Application Server \"MEClusterMember1\" is STARTED."
+"ADMU0508I: The Application Server \"SupClusterMember1\" is STARTED."
+"ADMU0508I: The Application Server \"OtherServer1\" is STARTED."
+Any server not matching one of the three fixed patterns (MEClusterMember, SupClusterMember, AppClusterMember) will be considered an “OtherServer” and processed dynamically.
+
+Below is the directory structure and the YAML code.
+
+Directory Structure
 css
 Copy
 roles/
@@ -11,7 +28,7 @@ roles/
         ├── stop_appservers.yml
         └── start_appservers.yml
 1. Minimal Tasks File – roles/websphere/tasks/main.yml
-A single task triggers both stop and start handler blocks:
+This file simply triggers the two handler blocks via notifications.
 
 yaml
 Copy
@@ -23,7 +40,7 @@ Copy
     - execute_stop_tasks
     - execute_start_tasks
 2. Main Handlers File – roles/websphere/handlers/main.yml
-This file simply imports the two sub‑handler files:
+This file imports the two sub‑handlers.
 
 yaml
 Copy
@@ -31,12 +48,12 @@ Copy
 - import_tasks: stop_appservers.yml
 - import_tasks: start_appservers.yml
 3. Stop Servers Sub‑Handler – roles/websphere/handlers/stop_appservers.yml
-In the stop handler the process is:
+This handler does the following for stopping servers (reverse order):
 
-Retrieve the status output.
-Extract running server names.
-Order them in reverse—first the “others” (i.e. any server not matching the fixed patterns), then AppClusterMember, SupClusterMember, and finally MEClusterMember.
-Issue the stop command for each.
+Retrieves the status output.
+Extracts running servers using a regex that captures the server name between quotes.
+Orders the list so that “OtherServer” entries (i.e. those not matching the fixed patterns) come first, followed by AppClusterMember, then SupClusterMember, and finally MEClusterMember.
+Executes the stop command (./stopServer.sh) on each server.
 yaml
 Copy
 ---
@@ -48,9 +65,9 @@ Copy
 
     - name: Extract list of running servers (for stopping)
       set_fact:
-        running_servers: "{{ status_result_stop.stdout | regex_findall('Application Server \"([^\"]+)\" is STARTED') }}"
+        running_servers: "{{ status_result_stop.stdout | regex_findall('Application Server \\\"([^\\\"]+)\\\" is STARTED') }}"
 
-    - name: Order running servers for stopping (reverse order: Others, AppClusterMember, SupClusterMember, MEClusterMember)
+    - name: Order running servers for stopping (reverse order)
       set_fact:
         ordered_running_servers: >-
           {{
@@ -68,13 +85,20 @@ Copy
       loop_control:
         loop_var: server_name
   listen: execute_stop_tasks
-4. Start Servers Sub‑Handler – roles/websphere/handlers/start_appservers.yml
-Similarly, for starting servers:
+Notes:
 
-Retrieve the status output.
-Extract stopped server names.
-Order them so that fixed servers come first in the desired order (MEClusterMember, then SupClusterMember, then AppClusterMember) and finally any “other” servers (picked dynamically).
-Issue the start command for each.
+The regex pattern uses escaped quotes (\\\") to capture the server name from lines like:
+ADMU0508I: The Application Server \"AppClusterMember1\" is STARTED.
+
+The ordering for stop is reversed (i.e. “OtherServer” first, then fixed servers in reverse priority).
+
+4. Start Servers Sub‑Handler – roles/websphere/handlers/start_appservers.yml
+This handler performs the start operations in the desired order:
+
+Retrieves the status output.
+Extracts stopped servers using a regex that matches the stopped state message.
+Orders the list so that fixed servers come first in the order: MEClusterMember, then SupClusterMember, then AppClusterMember, and finally any “OtherServer” entries.
+Executes the start command (./startServer.sh) on each server.
 yaml
 Copy
 ---
@@ -86,9 +110,9 @@ Copy
 
     - name: Extract list of stopped servers (for starting)
       set_fact:
-        stopped_servers: "{{ status_result_start.stdout | regex_findall('Application Server \"([^\"]+)\" cannot be reached. It appears to be stopped.') }}"
+        stopped_servers: "{{ status_result_start.stdout | regex_findall('Application Server \\\"([^\\\"]+)\\\" cannot be reached. It appears to be stopped.') }}"
 
-    - name: Order stopped servers for starting (order: MEClusterMember, SupClusterMember, AppClusterMember, Others)
+    - name: Order stopped servers for starting
       set_fact:
         ordered_stopped_servers: >-
           {{
@@ -96,8 +120,8 @@ Copy
             (stopped_servers | select('search', 'SupClusterMember') | list) +
             (stopped_servers | select('search', 'AppClusterMember') | list) +
             (stopped_servers | reject('search', 'MEClusterMember')
-                             | reject('search', 'SupClusterMember')
-                             | reject('search', 'AppClusterMember') | list)
+                           | reject('search', 'SupClusterMember')
+                           | reject('search', 'AppClusterMember') | list)
           }}
 
     - name: Start stopped application servers
@@ -106,8 +130,13 @@ Copy
       loop_control:
         loop_var: server_name
   listen: execute_start_tasks
+Notes:
+
+The regex for stopped servers expects output messages like:
+ADMU0509I: The Application Server "AppClusterMember1" cannot be reached. It appears to be stopped.
+The ordering for starting prioritizes fixed servers (MEClusterMember, then SupClusterMember, then AppClusterMember) and then appends any extra servers dynamically.
 5. Example Playbook to Invoke the Role
-An example playbook (e.g., site.yml) to use this role would look like:
+Below is an example playbook (e.g., site.yml) that uses the websphere role. Adjust the variable websphere_install_root as needed:
 
 yaml
 Copy
@@ -115,17 +144,17 @@ Copy
 - name: Manage WebSphere Application Servers via Role Handlers
   hosts: websphere_servers
   vars:
-    websphere_install_root: "/opt/IBM/WebSphere"  # adjust as needed
+    websphere_install_root: "/opt/IBM/WebSphere"  # Update path as needed
   roles:
     - websphere
-Explanation
-Dynamic “Other” Servers:
-In both handlers we use the Jinja2 filter reject('search', ...) to remove any server names that match the known patterns (MEClusterMember, SupClusterMember, AppClusterMember). The remaining entries (if any) are treated as “other” servers and are appended in the proper position.
+Summary
+Dynamic Extraction:
+The regex filters dynamically capture any extra server names from the status output. Servers not matching the fixed patterns (MEClusterMember, SupClusterMember, AppClusterMember) are treated as “OtherServer” entries.
 
-Separate Ordering for Start and Stop:
-For starting, the fixed servers are prioritized (in the order: ME, Sup, App) and then any extra servers are appended. For stopping, the “other” servers are processed first, followed by the fixed ones in reverse order.
+Separate Sub‑Handlers:
+The stop and start logic is completely separated into two handler files. The minimal tasks file triggers them by notification.
 
-Minimal Tasks File & Handlers:
-A minimal tasks file triggers the two sub-handlers via notifications. The main handlers file imports the two sub-handlers.
+Ordering:
+For starting, the order is fixed as MEClusterMember, SupClusterMember, AppClusterMember, and then others. For stopping, the order is reversed.
 
-This design dynamically picks up any additional server names from the output and handles cases where a host might not have any “other” application servers.
+This solution should meet your requirements while dynamically handling extra servers when present.
