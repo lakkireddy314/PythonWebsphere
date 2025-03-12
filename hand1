@@ -1,4 +1,6 @@
- target_servers: " {{ 
+map('regex_findall', 'The Application Server\\s+"([^"]+)"')
+
+target_servers: " {{ 
 	                 target_lines 
 	                    | map('regex_findall', 'The Application Server \"([^\"]+)\"') 
 						| map('first') 
