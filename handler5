@@ -1,0 +1,131 @@
+The directory structure remains:
+
+css
+Copy
+roles/
+└── websphere/
+    ├── tasks/
+    │   └── main.yml
+    └── handlers/
+        ├── main.yml
+        ├── stop_appservers.yml
+        └── start_appservers.yml
+1. Minimal Tasks File – roles/websphere/tasks/main.yml
+A single task triggers both stop and start handler blocks:
+
+yaml
+Copy
+---
+- name: Trigger WebSphere stop and start handlers
+  debug:
+    msg: "Triggering WebSphere handlers for stopping and starting servers"
+  notify:
+    - execute_stop_tasks
+    - execute_start_tasks
+2. Main Handlers File – roles/websphere/handlers/main.yml
+This file simply imports the two sub‑handler files:
+
+yaml
+Copy
+---
+- import_tasks: stop_appservers.yml
+- import_tasks: start_appservers.yml
+3. Stop Servers Sub‑Handler – roles/websphere/handlers/stop_appservers.yml
+In the stop handler the process is:
+
+Retrieve the status output.
+Extract running server names.
+Order them in reverse—first the “others” (i.e. any server not matching the fixed patterns), then AppClusterMember, SupClusterMember, and finally MEClusterMember.
+Issue the stop command for each.
+yaml
+Copy
+---
+- name: execute_stop_tasks
+  block:
+    - name: Get server status output for stopping
+      shell: "{{ websphere_install_root }}/profiles/*w*/bin/serverStatus.sh -all"
+      register: status_result_stop
+
+    - name: Extract list of running servers (for stopping)
+      set_fact:
+        running_servers: "{{ status_result_stop.stdout | regex_findall('Application Server \"([^\"]+)\" is STARTED') }}"
+
+    - name: Order running servers for stopping (reverse order: Others, AppClusterMember, SupClusterMember, MEClusterMember)
+      set_fact:
+        ordered_running_servers: >-
+          {{
+            (running_servers | reject('search', 'MEClusterMember')
+                              | reject('search', 'SupClusterMember')
+                              | reject('search', 'AppClusterMember') | list) +
+            (running_servers | select('search', 'AppClusterMember') | list) +
+            (running_servers | select('search', 'SupClusterMember') | list) +
+            (running_servers | select('search', 'MEClusterMember') | list)
+          }}
+
+    - name: Stop running application servers
+      command: "{{ websphere_install_root }}/profiles/*w*/bin/stopServer.sh {{ server_name }}"
+      loop: "{{ ordered_running_servers }}"
+      loop_control:
+        loop_var: server_name
+  listen: execute_stop_tasks
+4. Start Servers Sub‑Handler – roles/websphere/handlers/start_appservers.yml
+Similarly, for starting servers:
+
+Retrieve the status output.
+Extract stopped server names.
+Order them so that fixed servers come first in the desired order (MEClusterMember, then SupClusterMember, then AppClusterMember) and finally any “other” servers (picked dynamically).
+Issue the start command for each.
+yaml
+Copy
+---
+- name: execute_start_tasks
+  block:
+    - name: Get server status output for starting
+      shell: "{{ websphere_install_root }}/profiles/*w*/bin/serverStatus.sh -all"
+      register: status_result_start
+
+    - name: Extract list of stopped servers (for starting)
+      set_fact:
+        stopped_servers: "{{ status_result_start.stdout | regex_findall('Application Server \"([^\"]+)\" cannot be reached. It appears to be stopped.') }}"
+
+    - name: Order stopped servers for starting (order: MEClusterMember, SupClusterMember, AppClusterMember, Others)
+      set_fact:
+        ordered_stopped_servers: >-
+          {{
+            (stopped_servers | select('search', 'MEClusterMember') | list) +
+            (stopped_servers | select('search', 'SupClusterMember') | list) +
+            (stopped_servers | select('search', 'AppClusterMember') | list) +
+            (stopped_servers | reject('search', 'MEClusterMember')
+                             | reject('search', 'SupClusterMember')
+                             | reject('search', 'AppClusterMember') | list)
+          }}
+
+    - name: Start stopped application servers
+      command: "{{ websphere_install_root }}/profiles/*w*/bin/startServer.sh {{ server_name }}"
+      loop: "{{ ordered_stopped_servers }}"
+      loop_control:
+        loop_var: server_name
+  listen: execute_start_tasks
+5. Example Playbook to Invoke the Role
+An example playbook (e.g., site.yml) to use this role would look like:
+
+yaml
+Copy
+---
+- name: Manage WebSphere Application Servers via Role Handlers
+  hosts: websphere_servers
+  vars:
+    websphere_install_root: "/opt/IBM/WebSphere"  # adjust as needed
+  roles:
+    - websphere
+Explanation
+Dynamic “Other” Servers:
+In both handlers we use the Jinja2 filter reject('search', ...) to remove any server names that match the known patterns (MEClusterMember, SupClusterMember, AppClusterMember). The remaining entries (if any) are treated as “other” servers and are appended in the proper position.
+
+Separate Ordering for Start and Stop:
+For starting, the fixed servers are prioritized (in the order: ME, Sup, App) and then any extra servers are appended. For stopping, the “other” servers are processed first, followed by the fixed ones in reverse order.
+
+Minimal Tasks File & Handlers:
+A minimal tasks file triggers the two sub-handlers via notifications. The main handlers file imports the two sub-handlers.
+
+This design dynamically picks up any additional server names from the output and handles cases where a host might not have any “other” application servers.
