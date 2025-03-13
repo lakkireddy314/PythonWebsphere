@@ -6,7 +6,7 @@
   "project": "My Project",
   "playbook": "deploy.yml",
   "ask_limit_on_launch": false,
-  "extra_vars": "limit: '{{ limit }}'",
+  "extra_vars": "limit: '{{ limit.split(\"|\")[1] }}'",
   "survey_enabled": true,
   "survey_spec": {
     "name": "Deployment Survey",
@@ -18,13 +18,13 @@
         "type": "multiplechoice",
         "required": true,
         "choices": [
-          "all",
-          "web*",
-          "app*",
-          "db*"
+          "All Hosts|all",
+          "Web Servers|web*",
+          "App Servers|app*",
+          "Database Servers|db*"
         ],
-        "default": "all",
-        "help_text": "Select a host limit pattern to restrict the play's inventory."
+        "default": "All Hosts|all",
+        "help_text": "Select a host limit pattern. The value after '|' is used as the actual inventory limit."
       },
       {
         "question_name": "Enable Feature",
@@ -55,3 +55,20 @@
     ]
   }
 }
+Explanation
+Inventory Limit Survey Question:
+The survey question named "Inventory Limit" uses a multiple‑choice dropdown. Each choice is a string in the format "Display Name|backend_value".
+
+For example, "Web Servers|web*" displays "Web Servers" to the user while the actual inventory limit passed to the playbook is web*.
+Mapping the Value:
+In the job template’s extra_vars, the variable limit is set using a Jinja2 expression that splits the selected string on the pipe character and uses the second part:
+
+yaml
+Copy
+extra_vars: "limit: '{{ limit.split(\"|\")[1] }}'"
+This ensures that the playbook receives only the backend value (e.g. web*) as the inventory limit.
+
+Boolean Options as Radio Buttons:
+The "Enable Feature" and "Debug Mode" questions are defined as multiple‑choice with multiselect disabled, so they render as radio buttons with choices "True" and "False".
+
+This configuration maps a human‑readable display name to a backend inventory limit value using a delimiter, and it’s compatible with AWX/Ansible Tower job templates.
