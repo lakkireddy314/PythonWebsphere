@@ -1,0 +1,443 @@
+1. Survey JSON
+Save this file as (for example) survey.json. Note that the question names (the variable names) have been set to lower‑case where “baw” is referenced. (Display texts in the descriptions may still show “BAW” if desired.)
+
+json
+Copy
+{
+  "name": "IBM BAW Maintenance Survey",
+  "description": "Select the environment and maintenance mode, then specify mode parameters as needed.",
+  "spec": [
+    {
+      "question_name": "baw_environment",
+      "question_description": "Select the BAW environment to target.",
+      "required": true,
+      "type": "multiplechoice",
+      "choices": [
+        "dev01",
+        "dev02",
+        "dev03",
+        "dev04",
+        "intg01",
+        "intg02",
+        "intg03",
+        "perf01",
+        "perf02",
+        "perf03"
+      ]
+    },
+    {
+      "question_name": "mode",
+      "question_description": "Select the maintenance mode.",
+      "required": true,
+      "type": "multiplechoice",
+      "choices": [
+        "upgrade",
+        "backup",
+        "restore",
+        "ifix",
+        "config"
+      ]
+    },
+    {
+      "question_name": "pre_upgrade_backup",
+      "question_description": "Perform a pre-upgrade backup (for backup mode)",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "backup" }
+        ]
+      }
+    },
+    {
+      "question_name": "websphere_upgrade_enabled",
+      "question_description": "Enable WebSphere upgrade (for upgrade mode)",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "upgrade" }
+        ]
+      }
+    },
+    {
+      "question_name": "baw_upgrade_enabled",
+      "question_description": "Enable BAW upgrade (for upgrade mode)",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "false",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "upgrade" }
+        ]
+      }
+    },
+    {
+      "question_name": "ihs_upgrade_enabled",
+      "question_description": "Enable IHS upgrade (for upgrade mode)",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "upgrade" }
+        ]
+      }
+    },
+    {
+      "question_name": "plugins_upgrade_enabled",
+      "question_description": "Enable Plugins upgrade (for upgrade mode)",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "upgrade" }
+        ]
+      }
+    },
+    {
+      "question_name": "install_ifixes",
+      "question_description": "Install ifixes (applicable for upgrade, ifix, or config modes)",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "false",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "upgrade" },
+          { "question": "mode", "value": "ifix" },
+          { "question": "mode", "value": "config" }
+        ]
+      }
+    }
+  ]
+}
+2. Job Template Definitions
+There are exactly four job templates—one each for Sandbox, Unit, Integration, and Performance. In the extra variables (which come from the survey), note that the environment variable is referenced as baw_environment and that the limit value is passed in lower case.
+
+Job Template 1: IBM BAW Maintenance – Sandbox
+(For environment “dev04”)
+
+yaml
+Copy
+---
+name: "IBM BAW Maintenance - Sandbox"
+inventory: "mws_middleware_sandbox"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "env": "{{ baw_environment }}",
+    "mode": "{{ mode }}",
+    "pre_upgrade_backup": "{{ pre_upgrade_backup | default('true') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('true') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('true') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('true') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}"
+  }
+Job Template 2: IBM BAW Maintenance – Unit
+(For environments “dev01”, “dev02”, “dev03”, “baw_unit01”, “baw_unit02”, “baw_unit03”)
+
+yaml
+Copy
+---
+name: "IBM BAW Maintenance - Unit"
+inventory: "mws_middleware_unit"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "env": "{{ baw_environment }}",
+    "mode": "{{ mode }}",
+    "pre_upgrade_backup": "{{ pre_upgrade_backup | default('true') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('true') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('true') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('true') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}"
+  }
+Job Template 3: IBM BAW Maintenance – Integration
+(For environments “intg01”, “intg02”, “intg03”)
+
+yaml
+Copy
+---
+name: "IBM BAW Maintenance - Integration"
+inventory: "mws_middleware_intg"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "env": "{{ baw_environment }}",
+    "mode": "{{ mode }}",
+    "pre_upgrade_backup": "{{ pre_upgrade_backup | default('true') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('true') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('true') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('true') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}"
+  }
+Job Template 4: IBM BAW Maintenance – Performance
+(For environments “perf01”, “perf02”, “perf03”)
+
+yaml
+Copy
+---
+name: "IBM BAW Maintenance - Performance"
+inventory: "mws_middleware_perf"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "env": "{{ baw_environment }}",
+    "mode": "{{ mode }}",
+    "pre_upgrade_backup": "{{ pre_upgrade_backup | default('true') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('true') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('true') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('true') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}"
+  }
+3. Workflow Template JSON
+This workflow template (in JSON) attaches the survey and then branches to one of the four job templates based on the selected environment. The workflow node extra_data passes the “limit” value in lower case (for example, "baw/baw_dev04") and the condition checks use the lower-case variable name.
+
+json
+Copy
+{
+  "name": "IBM BAW Maintenance",
+  "description": "Workflow template to run op_baw_maintenance.yml on the selected inventory based on environment and mode.",
+  "survey_enabled": true,
+  "survey_spec": {
+    "name": "IBM BAW Maintenance Survey",
+    "description": "Select the environment and maintenance mode, then specify mode parameters as needed.",
+    "spec": [
+      {
+        "question_name": "baw_environment",
+        "question_description": "Select the BAW environment to target.",
+        "required": true,
+        "type": "multiplechoice",
+        "choices": [
+          "dev01",
+          "dev02",
+          "dev03",
+          "dev04",
+          "intg01",
+          "intg02",
+          "intg03",
+          "perf01",
+          "perf02",
+          "perf03"
+        ]
+      },
+      {
+        "question_name": "mode",
+        "question_description": "Select the maintenance mode.",
+        "required": true,
+        "type": "multiplechoice",
+        "choices": [
+          "upgrade",
+          "backup",
+          "restore",
+          "ifix",
+          "config"
+        ]
+      },
+      {
+        "question_name": "pre_upgrade_backup",
+        "question_description": "Perform a pre-upgrade backup (for backup mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "backup" }
+          ]
+        }
+      },
+      {
+        "question_name": "websphere_upgrade_enabled",
+        "question_description": "Enable WebSphere upgrade (for upgrade mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" }
+          ]
+        }
+      },
+      {
+        "question_name": "baw_upgrade_enabled",
+        "question_description": "Enable BAW upgrade (for upgrade mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "false",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" }
+          ]
+        }
+      },
+      {
+        "question_name": "ihs_upgrade_enabled",
+        "question_description": "Enable IHS upgrade (for upgrade mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" }
+          ]
+        }
+      },
+      {
+        "question_name": "plugins_upgrade_enabled",
+        "question_description": "Enable Plugins upgrade (for upgrade mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" }
+          ]
+        }
+      },
+      {
+        "question_name": "install_ifixes",
+        "question_description": "Install ifixes (applicable for upgrade, ifix, or config modes)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "false",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" },
+            { "question": "mode", "value": "ifix" },
+            { "question": "mode", "value": "config" }
+          ]
+        }
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "name": "Start",
+      "identifier": "start",
+      "type": "workflow_job_template_node",
+      "success_nodes": [
+        {
+          "name": "Run Sandbox Job (dev04)",
+          "job_template": "IBM BAW Maintenance - Sandbox",
+          "extra_data": {
+            "limit": "baw/baw_dev04"
+          },
+          "condition": "{{ baw_environment == 'dev04' }}"
+        },
+        {
+          "name": "Run Unit Job (dev01/dev02/dev03/baw_unit*)",
+          "job_template": "IBM BAW Maintenance - Unit",
+          "extra_data": {
+            "limit": "baw/{{ baw_environment }}"
+          },
+          "condition": "{{ baw_environment in ['dev01','dev02','dev03','baw_unit01','baw_unit02','baw_unit03'] }}"
+        },
+        {
+          "name": "Run Integration Job (intg01/intg02/intg03)",
+          "job_template": "IBM BAW Maintenance - Integration",
+          "extra_data": {
+            "limit": "baw/{{ baw_environment }}"
+          },
+          "condition": "{{ baw_environment in ['intg01','intg02','intg03'] }}"
+        },
+        {
+          "name": "Run Performance Job (perf01/perf02/perf03)",
+          "job_template": "IBM BAW Maintenance - Performance",
+          "extra_data": {
+            "limit": "baw/{{ baw_environment }}"
+          },
+          "condition": "{{ baw_environment in ['perf01','perf02','perf03'] }}"
+        }
+      ]
+    }
+  ]
+}
+How It Works
+Survey Execution:
+The workflow displays the survey (with variable names like baw_environment) so that all mode and environment inputs are collected. Conditional questions show only for the selected mode.
+
+Workflow Branching:
+The workflow’s start node then evaluates the lower-case baw_environment variable to choose which of the four job templates to run. Each branch passes a lower-case limit value (for example, "baw/baw_dev04") in its extra data.
+
+Job Template Invocation:
+The selected job template (for Sandbox, Unit, Integration, or Performance) runs the playbook with its preconfigured inventory and project. The extra variables (including the environment, mode, and mode‑specific options) are passed to the playbook.
+
+This configuration meets your requirements of using one workflow template (with an attached survey) and exactly four job templates, with all “baw” references (other than in display headings or names) rendered in lower case.
+
+
+
+
+
+
+
+
+
+
+Search
+
+Deep research
+
+ChatGPT can m
