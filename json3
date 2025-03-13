@@ -1,0 +1,69 @@
+AWX/Ansible Tower surveys are static in nature and do not support dynamic enabling/disabling (i.e. greying out) of a survey question based on the answer to another question. In other words, you cannot directly make one variable “greyed out” until another variable is true.
+
+Workarounds/Alternatives:
+
+Help Text & Documentation:
+You can use the help_text field on the dependent question to inform users that its value will only be used if the other variable is set to true.
+
+Default Values:
+Set a default value that indicates the feature is disabled unless explicitly enabled by another survey question.
+
+Playbook Logic:
+In your playbook, you can check the value of the controlling variable and ignore or override the dependent variable if the condition isn’t met.
+
+For example, you might configure your survey like this in JSON:
+
+json
+Copy
+{
+  "name": "My Job Template with Survey",
+  "description": "Deploy using survey inputs with conditional logic in the playbook.",
+  "job_type": "run",
+  "inventory": "My Inventory",
+  "project": "My Project",
+  "playbook": "deploy.yml",
+  "ask_limit_on_launch": false,
+  "survey_enabled": true,
+  "survey_spec": {
+    "name": "Deployment Survey",
+    "description": "Provide parameters for deployment. Note: The 'Optional Setting' below is only used if 'Enable Advanced Options' is True.",
+    "spec": [
+      {
+        "question_name": "Enable Advanced Options",
+        "variable": "enable_advanced",
+        "type": "multiplechoice",
+        "multiselect": false,
+        "required": true,
+        "choices": [
+          "True",
+          "False"
+        ],
+        "default": "False",
+        "help_text": "Select 'True' to enable advanced options."
+      },
+      {
+        "question_name": "Optional Setting",
+        "variable": "optional_setting",
+        "type": "text",
+        "required": false,
+        "default": "",
+        "help_text": "This setting is used only if 'Enable Advanced Options' is set to True. Otherwise, it is ignored."
+      }
+    ]
+  }
+}
+In your playbook, you could then conditionally check the value of enable_advanced:
+
+yaml
+Copy
+- name: Process optional setting only if advanced options are enabled
+  debug:
+    msg: "Advanced option set to: {{ optional_setting }}"
+  when: enable_advanced == "True"
+While this approach doesn't grey out the field in the survey, it does ensure that the dependent variable is only used when the condition is met, and it provides guidance to the user via the help text.
+
+
+
+
+
+
