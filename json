@@ -1,0 +1,57 @@
+{
+  "name": "My Job Template with Survey",
+  "description": "Deploy using survey inputs for inventory limit and boolean flags",
+  "job_type": "run",
+  "inventory": "My Inventory",
+  "project": "My Project",
+  "playbook": "deploy.yml",
+  "ask_limit_on_launch": false,
+  "extra_vars": "limit: '{{ limit }}'",
+  "survey_enabled": true,
+  "survey_spec": {
+    "name": "Deployment Survey",
+    "description": "Provide parameters for deployment.",
+    "spec": [
+      {
+        "question_name": "Inventory Limit",
+        "variable": "limit",
+        "type": "multiplechoice",
+        "required": true,
+        "choices": [
+          "all",
+          "web*",
+          "app*",
+          "db*"
+        ],
+        "default": "all",
+        "help_text": "Select a host limit pattern to restrict the play's inventory."
+      },
+      {
+        "question_name": "Enable Feature",
+        "variable": "enable_feature",
+        "type": "multiplechoice",
+        "multiselect": false,
+        "required": true,
+        "choices": [
+          "True",
+          "False"
+        ],
+        "default": "False",
+        "help_text": "Select to enable the feature."
+      },
+      {
+        "question_name": "Debug Mode",
+        "variable": "debug_mode",
+        "type": "multiplechoice",
+        "multiselect": false,
+        "required": true,
+        "choices": [
+          "True",
+          "False"
+        ],
+        "default": "False",
+        "help_text": "Select to enable debug mode."
+      }
+    ]
+  }
+}
