@@ -1,0 +1,74 @@
+Reasoned for 14 seconds
+Below is an updated JSON example where the Inventory Limit survey question provides additional information (via its help_text) to explain what each dropdown option does. In AWX/Tower surveys, there isn’t a dedicated “info” field for a dropdown choice, so including the details in the help_text is the typical approach.
+
+json
+Copy
+{
+  "name": "My Job Template with Survey",
+  "description": "Deploy using survey inputs for inventory limit and boolean flags",
+  "job_type": "run",
+  "inventory": "My Inventory",
+  "project": "My Project",
+  "playbook": "deploy.yml",
+  "ask_limit_on_launch": false,
+  "extra_vars": "limit: '{{ limit.split(\"|\")[1] }}'",
+  "survey_enabled": true,
+  "survey_spec": {
+    "name": "Deployment Survey",
+    "description": "Provide parameters for deployment.",
+    "spec": [
+      {
+        "question_name": "Inventory Limit",
+        "variable": "limit",
+        "type": "multiplechoice",
+        "required": true,
+        "choices": [
+          "All Hosts|all",
+          "Web Servers|web*",
+          "App Servers|app*",
+          "Database Servers|db*"
+        ],
+        "default": "All Hosts|all",
+        "help_text": "Select a host limit pattern. Info: 'All Hosts' includes all hosts. 'Web Servers' restricts the inventory to hosts matching 'web*'. 'App Servers' uses the pattern 'app*' and 'Database Servers' uses 'db*'."
+      },
+      {
+        "question_name": "Enable Feature",
+        "variable": "enable_feature",
+        "type": "multiplechoice",
+        "multiselect": false,
+        "required": true,
+        "choices": [
+          "True",
+          "False"
+        ],
+        "default": "False",
+        "help_text": "Select to enable the feature."
+      },
+      {
+        "question_name": "Debug Mode",
+        "variable": "debug_mode",
+        "type": "multiplechoice",
+        "multiselect": false,
+        "required": true,
+        "choices": [
+          "True",
+          "False"
+        ],
+        "default": "False",
+        "help_text": "Select to enable debug mode."
+      }
+    ]
+  }
+}
+Explanation
+Inventory Limit Question:
+
+Choices: Each choice is defined as "Display Name|backend_value", so the user sees a friendly name (e.g. "Web Servers") while the backend value (e.g. "web*") is extracted in extra_vars using a split on the pipe character.
+help_text: Provides additional information about what each selection does. When a user selects the dropdown, they can read this text to understand the effect of their choice.
+Extra Variables Mapping:
+The job template’s extra_vars line extracts the actual limit by splitting the selected string on the "|" character.
+
+Boolean Questions:
+The Enable Feature and Debug Mode questions are defined as radio buttons (multiplechoice with multiselect set to false) with options "True" and "False".
+
+This configuration gives users clear guidance on the dropdown’s purpose by including additional info in the help_text, ensuring they understand what each option does.
