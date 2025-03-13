@@ -1,0 +1,366 @@
+Below is an updated complete configuration that’s been adjusted for Ansible 2.9.2 compatibility. In this version the job template settings use boolean values (rather than strings) for the various ask_* fields, and the execution environment is set to your Ansible 2.9.2 image (mws_ansible_2_9).
+
+Each job template now includes:
+
+organization: "AAAA"
+execution_environment: "mws_ansible_2_9"
+job_type: "run"
+ask_scm_branch_on_launch: false
+ask_inventory_on_launch: false
+ask_verbosity_branch_on_launch: false
+survey_enabled: false
+The extra_vars block maps the passed branch value to the source_control_branch (defaulting to “main” if not provided) and passes all other survey parameters.
+
+The workflow template remains largely the same but now uses booleans in its survey spec as needed. It collects:
+
+baw_environment (environment selection, which now includes both sandbox and unit options)
+mode (maintenance mode)
+branch_select (radio with choices “default” and “custom”)
+branch_name (conditional text field; if “custom” is selected, its value is used; otherwise “main” is used)
+Additional mode‐specific parameters
+Finally, the workflow branches to the appropriate job template based on the selected environment, passing a “limit” extra variable (formatted as "baw/{{ baw_environment }}") along with all survey responses.
+
+Job Template 1: mws_baw_maintenance_sandbox
+(For environments “dev01”, “dev02”, “dev03”, “dev04” – using the mws_middleware_sandbox inventory)
+
+yaml
+Copy
+---
+name: "mws_baw_maintenance_sandbox"
+organization: "AAAA"
+inventory: "mws_middleware_sandbox"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+execution_environment: "mws_ansible_2_9"
+job_type: "run"
+ask_scm_branch_on_launch: false
+ask_inventory_on_launch: false
+ask_verbosity_branch_on_launch: false
+survey_enabled: false
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "source_control_branch": "{{ branch_name | default('main') }}",
+    "env": "{{ baw_environment }}",
+    "mode": "{{ mode }}",
+    "pre_upgrade_backup": "{{ pre_upgrade_backup | default('true') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('true') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('true') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('true') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}"
+  }
+Job Template 2: mws_baw_maintenance_unit
+(For environments “baw_unit01”, “baw_unit02”, “baw_unit03” – using the mws_middleware_unit inventory)
+
+yaml
+Copy
+---
+name: "mws_baw_maintenance_unit"
+organization: "AAAA"
+inventory: "mws_middleware_unit"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+execution_environment: "mws_ansible_2_9"
+job_type: "run"
+ask_scm_branch_on_launch: false
+ask_inventory_on_launch: false
+ask_verbosity_branch_on_launch: false
+survey_enabled: false
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "source_control_branch": "{{ branch_name | default('main') }}",
+    "env": "{{ baw_environment }}",
+    "mode": "{{ mode }}",
+    "pre_upgrade_backup": "{{ pre_upgrade_backup | default('true') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('true') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('true') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('true') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}"
+  }
+Job Template 3: mws_baw_maintenance_intg
+(For environments “intg01”, “intg02”, “intg03” – using the mws_middleware_intg inventory)
+
+yaml
+Copy
+---
+name: "mws_baw_maintenance_intg"
+organization: "AAAA"
+inventory: "mws_middleware_intg"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+execution_environment: "mws_ansible_2_9"
+job_type: "run"
+ask_scm_branch_on_launch: false
+ask_inventory_on_launch: false
+ask_verbosity_branch_on_launch: false
+survey_enabled: false
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "source_control_branch": "{{ branch_name | default('main') }}",
+    "env": "{{ baw_environment }}",
+    "mode": "{{ mode }}",
+    "pre_upgrade_backup": "{{ pre_upgrade_backup | default('true') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('true') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('true') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('true') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}"
+  }
+Job Template 4: mws_baw_maintenance_perf
+(For environments “perf01”, “perf02”, “perf03” – using the mws_middleware_perf inventory)
+
+yaml
+Copy
+---
+name: "mws_baw_maintenance_perf"
+organization: "AAAA"
+inventory: "mws_middleware_perf"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+execution_environment: "mws_ansible_2_9"
+job_type: "run"
+ask_scm_branch_on_launch: false
+ask_inventory_on_launch: false
+ask_verbosity_branch_on_launch: false
+survey_enabled: false
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "source_control_branch": "{{ branch_name | default('main') }}",
+    "env": "{{ baw_environment }}",
+    "mode": "{{ mode }}",
+    "pre_upgrade_backup": "{{ pre_upgrade_backup | default('true') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('true') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('true') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('true') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}"
+  }
+Workflow Template JSON
+This workflow template embeds the survey and then branches to the appropriate job template based on the baw_environment selection. The survey collects the following:
+
+baw_environment: (environment selection – includes “dev01”, “dev02”, “dev03”, “dev04”, “baw_unit01”, “baw_unit02”, “baw_unit03”, “intg01”, “intg02”, “intg03”, “perf01”, “perf02”, “perf03”)
+mode: (maintenance mode)
+branch_select: (radio button with choices "default" and "custom")
+branch_name: (conditional text field if “custom” is selected; if not provided, “main” is used)
+Additional mode-specific parameters
+The workflow then directs the run to one of four job templates while passing an extra variable limit (set to "baw/{{ baw_environment }}") along with all the survey responses.
+
+json
+Copy
+{
+  "name": "IBM BAW Maintenance",
+  "description": "Workflow template to run op_baw_maintenance.yml on the selected inventory based on environment, mode, and branch option.",
+  "survey_enabled": true,
+  "survey_spec": {
+    "name": "IBM BAW Maintenance Survey",
+    "description": "Select the environment, maintenance mode, branch option, and specify mode parameters as needed.",
+    "spec": [
+      {
+        "question_name": "baw_environment",
+        "question_description": "Select the BAW environment to target.",
+        "required": true,
+        "type": "multiplechoice",
+        "choices": [
+          "dev01",
+          "dev02",
+          "dev03",
+          "dev04",
+          "baw_unit01",
+          "baw_unit02",
+          "baw_unit03",
+          "intg01",
+          "intg02",
+          "intg03",
+          "perf01",
+          "perf02",
+          "perf03"
+        ]
+      },
+      {
+        "question_name": "mode",
+        "question_description": "Select the maintenance mode.",
+        "required": true,
+        "type": "multiplechoice",
+        "choices": [
+          "upgrade",
+          "backup",
+          "restore",
+          "ifix",
+          "config"
+        ]
+      },
+      {
+        "question_name": "branch_select",
+        "question_description": "Select branch option:",
+        "required": true,
+        "type": "multiplechoice",
+        "default": "default",
+        "choices": [
+          "default",
+          "custom"
+        ]
+      },
+      {
+        "question_name": "branch_name",
+        "question_description": "Enter the custom branch name (if 'custom' selected); default is 'main'.",
+        "required": true,
+        "type": "text",
+        "default": "",
+        "condition": {
+          "when": [
+            { "question": "branch_select", "value": "custom" }
+          ]
+        }
+      },
+      {
+        "question_name": "pre_upgrade_backup",
+        "question_description": "Perform a pre-upgrade backup (for backup mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "backup" }
+          ]
+        }
+      },
+      {
+        "question_name": "websphere_upgrade_enabled",
+        "question_description": "Enable WebSphere upgrade (for upgrade mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" }
+          ]
+        }
+      },
+      {
+        "question_name": "baw_upgrade_enabled",
+        "question_description": "Enable BAW upgrade (for upgrade mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "false",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" }
+          ]
+        }
+      },
+      {
+        "question_name": "ihs_upgrade_enabled",
+        "question_description": "Enable IHS upgrade (for upgrade mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" }
+          ]
+        }
+      },
+      {
+        "question_name": "plugins_upgrade_enabled",
+        "question_description": "Enable Plugins upgrade (for upgrade mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" }
+          ]
+        }
+      },
+      {
+        "question_name": "install_ifixes",
+        "question_description": "Install ifixes (applicable for upgrade, ifix, or config modes)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "false",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" },
+            { "question": "mode", "value": "ifix" },
+            { "question": "mode", "value": "config" }
+          ]
+        }
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "name": "Start",
+      "identifier": "start",
+      "type": "workflow_job_template_node",
+      "success_nodes": [
+        {
+          "name": "Run Sandbox Job (dev environments)",
+          "job_template": "mws_baw_maintenance_sandbox",
+          "extra_data": {
+            "limit": "baw/{{ baw_environment }}"
+          },
+          "condition": "{{ baw_environment in ['dev01','dev02','dev03','dev04'] }}"
+        },
+        {
+          "name": "Run Unit Job (baw_unit environments)",
+          "job_template": "mws_baw_maintenance_unit",
+          "extra_data": {
+            "limit": "baw/{{ baw_environment }}"
+          },
+          "condition": "{{ baw_environment in ['baw_unit01','baw_unit02','baw_unit03'] }}"
+        },
+        {
+          "name": "Run Integration Job (intg environments)",
+          "job_template": "mws_baw_maintenance_intg",
+          "extra_data": {
+            "limit": "baw/{{ baw_environment }}"
+          },
+          "condition": "{{ baw_environment in ['intg01','intg02','intg03'] }}"
+        },
+        {
+          "name": "Run Performance Job (perf environments)",
+          "job_template": "mws_baw_maintenance_perf",
+          "extra_data": {
+            "limit": "baw/{{ baw_environment }}"
+          },
+          "condition": "{{ baw_environment in ['perf01','perf02','perf03'] }}"
+        }
+      ]
+    }
+  ]
+}
+Summary
+The job templates now include the required properties for Ansible 2.9.2 compatibility (with boolean values for ask_scm_branch_on_launch, ask_inventory_on_launch, ask_verbosity_branch_on_launch, and survey_enabled).
+The extra_vars block passes source_control_branch (derived from the survey’s branch value, defaulting to “main”) and all other variables to the playbook.
+The workflow template collects all required inputs and branches to the appropriate job template based on the environment.
+This configuration should now work with Ansible 2.9.2.
