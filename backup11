@@ -1,0 +1,100 @@
+File: upgrade_ibm/tasks/process_webserver_backup.yml
+yaml
+Copy
+---
+- name: Check if source directory {{ ws_src }} exists (WebServer)
+  stat:
+    path: "{{ ws_src }}"
+  register: ws_source_stat
+
+- name: Ensure target backup directory exists for {{ ws_src | basename }} (WebServer)
+  file:
+    path: "{{ webserver_backup_dir }}/{{ ws_src | basename }}"
+    state: directory
+    mode: '0755'
+  when: ws_source_stat.stat.exists
+
+- name: Archive {{ ws_src }} (WebServer) using tar (AIX workaround)
+  command: sh -c "cd {{ ws_src | dirname }} && tar -cf {{ webserver_backup_dir }}/{{ ws_src | basename }}/{{ ws_src | basename }}_{{ ansible_date_time.iso8601_basic }}.tar {{ ws_src | basename }}"
+  when: ws_source_stat.stat.exists
+
+- name: Find existing backups for {{ ws_src | basename }} (WebServer)
+  find:
+    paths: "{{ webserver_backup_dir }}/{{ ws_src | basename }}"
+    patterns: "{{ ws_src | basename }}_*.tar"
+    file_type: file
+  register: ws_existing_backups
+  when: ws_source_stat.stat.exists
+
+- name: Set remove_count for WebServer backups for {{ ws_src | basename }}
+  set_fact:
+    remove_count: "{{ (ws_existing_backups.files | default([]) | length | int) - (backup_retain | int) }}"
+  when: ws_source_stat.stat.exists
+
+- name: Remove old WebServer backups for {{ ws_src | basename }} (retain {{ backup_retain }})
+  file:
+    path: "{{ backup_file.path }}"
+    state: absent
+  loop: "{{ (ws_existing_backups.files | sort(attribute='mtime') | list)[:(remove_count | int)] }}"
+  loop_control:
+    loop_var: backup_file
+  when: ws_source_stat.stat.exists and 
+        (ws_existing_backups.files | default([]) | length | int) > (backup_retain | int) and 
+        (remove_count | int) > 0
+Explanation & Features (WebServer Backup):
+AIX Tar Workaround:
+Instead of using the -C option (which AIX tar may not support), the command uses sh -c "cd … && tar -cf …" to change directory to the parent of the source directory and then archives only the basename.
+Safe Cleanup:
+A remove_count is computed and used to remove older backups if more files exist than allowed by backup_retain.
+Custom Loop Variable:
+The loop variable is renamed to backup_file for clarity.
+File: upgrade_ibm/tasks/process_websphere_backup.yml
+yaml
+Copy
+---
+- name: Check if source directory {{ wsphere_src }} exists (WebSphere)
+  stat:
+    path: "{{ wsphere_src }}"
+  register: wsphere_source_stat
+
+- name: Ensure target backup directory exists for {{ wsphere_src | basename }} (WebSphere)
+  file:
+    path: "{{ websphere_backup_dir }}/{{ wsphere_src | basename }}"
+    state: directory
+    mode: '0755'
+  when: wsphere_source_stat.stat.exists
+
+- name: Archive {{ wsphere_src }} (WebSphere) using tar (AIX workaround)
+  command: sh -c "cd {{ wsphere_src | dirname }} && tar -cf {{ websphere_backup_dir }}/{{ wsphere_src | basename }}/{{ wsphere_src | basename }}_{{ ansible_date_time.iso8601_basic }}.tar {{ wsphere_src | basename }}"
+  when: wsphere_source_stat.stat.exists
+
+- name: Find existing backups for {{ wsphere_src | basename }} (WebSphere)
+  find:
+    paths: "{{ websphere_backup_dir }}/{{ wsphere_src | basename }}"
+    patterns: "{{ wsphere_src | basename }}_*.tar"
+    file_type: file
+  register: wsphere_existing_backups
+  when: wsphere_source_stat.stat.exists
+
+- name: Set remove_count for WebSphere backups for {{ wsphere_src | basename }}
+  set_fact:
+    remove_count: "{{ (wsphere_existing_backups.files | default([]) | length | int) - (backup_retain | int) }}"
+  when: wsphere_source_stat.stat.exists
+
+- name: Remove old WebSphere backups for {{ wsphere_src | basename }} (retain {{ backup_retain }})
+  file:
+    path: "{{ backup_file.path }}"
+    state: absent
+  loop: "{{ (wsphere_existing_backups.files | sort(attribute='mtime') | list)[:(remove_count | int)] }}"
+  loop_control:
+    loop_var: backup_file
+  when: wsphere_source_stat.stat.exists and 
+        (wsphere_existing_backups.files | default([]) | length | int) > (backup_retain | int) and 
+        (remove_count | int) > 0
+Explanation & Features (WebSphere Backup):
+AIX Tar Workaround:
+Similar to the WebServer version, it changes directory with a shell command so that the archive includes only the basename.
+Safe Cleanup:
+Computes remove_count and removes older backups if necessary.
+Custom Loop Variable:
+The loop variable for backup cleanup is also set to backup_file.
