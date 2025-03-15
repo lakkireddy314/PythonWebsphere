@@ -1,0 +1,324 @@
+Below is an example wsadmin script written in Jython that demonstrates one way to:
+
+List all WebSphere web servers in the cell.
+Read custom properties from a properties file.
+“Inject” (that is, modify) the plugin configuration of each web server to include these custom properties.
+Trigger the propagation (or update) of the plugin‐configuration (for example, by invoking the update method on the plugin MBean).
+Note:
+The actual attribute names and structure of the WebServer and its plugin configuration object may vary depending on your WebSphere version and setup. The sample below uses a hypothetical attribute named "customProperties" on the WebServer configuration object. In your environment you might need to adjust the attribute names or follow your own procedure for customizing the plugin‐configuration. Always test in a non–production environment first!
+
+Save the following script (for example, as updatePluginProps.py):
+
+python
+Copy
+# updatePluginProps.py
+# This wsadmin Jython script does the following:
+#   1. Reads a properties file (key=value pairs) specified as an argument.
+#   2. Lists all WebSphere WebServer objects in the cell.
+#   3. For each web server, modifies (adds/updates) a custom properties attribute in its plugin configuration.
+#   4. Invokes the update on the plugin (via its MBean) to propagate the changes.
+#   5. Saves the configuration.
+#
+# Usage (from wsadmin shell):
+#   wsadmin -lang jython -f updatePluginProps.py /path/to/custom.properties
+
+import sys
+
+def readPropertiesFile(filePath):
+    """
+    Reads a Java-style properties file and returns a dictionary of key/value pairs.
+    Lines starting with '#' or blank lines are ignored.
+    """
+    props = {}
+    try:
+        f = open(filePath, "r")
+        for line in f.readlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            # Split at the first '='
+            parts = line.split("=", 1)
+            if len(parts) == 2:
+                key = parts[0].strip()
+                value = parts[1].strip()
+                props[key] = value
+        f.close()
+    except Exception, e:
+        print "Error reading properties file %s: %s" % (filePath, str(e))
+    return props
+
+def listWebServers():
+    """
+    Lists all web servers in the cell.
+    Returns a list of configuration IDs.
+    """
+    # AdminConfig.list returns a newline separated list.
+    wsList = AdminConfig.list("WebServer").splitlines()
+    return wsList
+
+def updatePluginConfiguration(wsConfigId, customProps):
+    """
+    For a given web server configuration ID, update its plugin configuration to add the custom properties.
+    In this sample, we assume that the web server object has an attribute 'customProperties' that holds
+    custom key/value pairs.
+    """
+    # Retrieve the web server's name (for logging)
+    wsName = AdminConfig.showAttribute(wsConfigId, "name")
+    
+    # Retrieve the current value of 'customProperties' (if any)
+    # (Note: This attribute is hypothetical; adjust as needed.)
+    currentProps = AdminConfig.showAttribute(wsConfigId, "customProperties")
+    print "Current customProperties for %s: %s" % (wsName, currentProps)
+    
+    # Build a new properties list string.
+    # The expected format here is a space‐separated list of “[ key value ]” entries.
+    newPropsList = []
+    for key in customProps:
+        # Adjust the formatting if needed by your configuration schema
+        newPropsList.append("[ %s %s ]" % (key, customProps[key]))
+    newPropsStr = " ".join(newPropsList)
+    
+    # Update the web server configuration with the new custom properties.
+    AdminConfig.modify(wsConfigId, [["customProperties", newPropsStr]])
+    print "Updated web server %s with custom properties: %s" % (wsName, newPropsStr)
+
+def propagatePluginChanges(wsConfigId):
+    """
+    Propagates the updated plugin configuration to the running web server.
+    Typically, this is done by invoking a method (e.g. updatePluginCfg)
+    on the WebServerPlugin MBean.
+    """
+    wsName = AdminConfig.showAttribute(wsConfigId, "name")
+    # Construct an MBean query for the plugin corresponding to this web server.
+    # The exact query string may differ; this is a common pattern.
+    mbeanQuery = "type=Plugin,process=%s,*" % wsName
+    mbeanNames = AdminControl.queryNames(mbeanQuery)
+    if mbeanNames:
+        for mbean in mbeanNames.splitlines():
+            result = AdminControl.invoke(mbean, "updatePluginCfg")
+            print "Propagated plugin changes for web server %s via MBean %s: %s" % (wsName, mbean, result)
+    else:
+        print "No Plugin MBean found for web server: %s" % wsName
+
+# ----- Main Execution -----
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print "Usage: wsadmin -lang jython -f updatePluginProps.py /path/to/custom.properties"
+        sys.exit(1)
+
+    propsFile = sys.argv[1]
+    customProps = readPropertiesFile(propsFile)
+    print "Custom properties to add:", customProps
+
+    wsList = listWebServers()
+    if not wsList:
+        print "No web servers found in the cell."
+    else:
+        for ws in wsList:
+            wsName = AdminConfig.showAttribute(ws, "name")
+            print "Processing web server: %s" % wsName
+            updatePluginConfiguration(ws, customProps)
+            propagatePluginChanges(ws)
+    
+    # Save the configuration changes.
+    AdminConfig.save()
+    print "Configuration saved."
+How It Works
+Reading the Properties File:
+The readPropertiesFile function reads a file passed as an argument. The file should contain lines with key=value pairs. (Lines starting with “#” are treated as comments.)
+
+Listing Web Servers:
+The function listWebServers() uses AdminConfig.list("WebServer") to get all web server configuration objects in the cell.
+
+Updating the Plugin Configuration:
+For each web server, the script calls updatePluginConfiguration(ws, customProps) which (in this sample) modifies a hypothetical attribute "customProperties" on the web server configuration to include the custom key/value pairs.
+
+Propagating the Changes:
+The function propagatePluginChanges(ws) searches for the corresponding Plugin MBean (using a query based on the web server’s name) and calls its updatePluginCfg method to push the new configuration.
+
+Saving Changes:
+Finally, AdminConfig.save() commits the configuration changes.
+
+Adjustments for Your Environment
+Attribute Names:
+The attribute "customProperties" is used here as an example. In your environment the custom properties might be applied differently. Consult your WebSphere documentation (or AdminConfig output) to see which attribute or object holds the plugin configuration you wish to update.
+
+MBean Query and Method:
+The query string and the method name (updatePluginCfg) used in propagatePluginChanges may vary with your WebSphere version and configuration.
+
+Error Handling and Logging:
+You may wish to add more robust error handling and logging depending on your needs.
+
+Run the script using wsadmin (for example):
+
+bash
+Copy
+wsadmin -lang jython -f updatePluginProps.py /path/to/my_custom.properties
+This script should list your web servers, update their plugin configuration with the custom properties from your file, propagate the changes, and save the configuration.
+
+You said:
+do we need to run this command when the server is up?
+Reasoned for 5 seconds
+Yes – to propagate changes via MBeans (such as calling updatePluginCfg), the server must be running. When the server is up, the MBean server is available so your script can query and invoke operations on the plugin MBeans. If the server is down, those MBeans won’t be accessible and the changes won’t propagate automatically (although the configuration changes might still be saved, you would need to restart the server to load them).
+
+You said:
+Can we add the properties to a xml file in <config section of it using ansible 
+directly
+
+2/2
+
+Reasoned for 8 seconds
+Yes – you can modify an XML file directly using Ansible. For example, you can use the xml module (available in Ansible 2.9 or via the community.general collection) to add elements into the <config> section. One sample play might look like this:
+
+yaml
+Copy
+- name: Add custom properties to plugin-cfg.xml
+  hosts: your_target_hosts
+  become: yes
+  tasks:
+    - name: Add a custom property element to the <config> section
+      xml:
+        path: /opt/websphere/Appserver/plugin-cfg.xml
+        xpath: /config
+        add_children:
+          - tag: property
+            attributes:
+              name: customProp
+              value: someValue
+      # If using Ansible 2.9 and the xml module isn’t in core,
+      # you may need to install the community.general collection.
+This task searches for the <config> element and adds a new <property> child element with the specified attributes.
+
+Note:
+If you prefer to control the complete configuration, using a Jinja2 template with the template module is often recommended. However, if you need to modify an existing file in place, the xml module is a direct approach.
+
+You said:
+how to check xml module is available.
+Reasoned for 6 seconds
+You can verify whether the XML module is available by using the ansible-doc command. For example, run:
+
+bash
+Copy
+ansible-doc xml
+or list all modules and filter for "xml" with:
+
+bash
+Copy
+ansible-doc -l | grep xml
+If the XML module is installed and available, you’ll see its documentation. If nothing shows up, you may need to install it via the community.general collection (especially on older versions like Ansible 2.9.2):
+
+bash
+Copy
+ansible-galaxy collection install community.general
+Then, reference it in your playbook as:
+
+yaml
+Copy
+- name: Modify XML file using the xml module from community.general
+  community.general.xml:
+    path: /opt/websphere/Appserver/plugin-cfg.xml
+    xpath: /config
+    add_children:
+      - tag: property
+        attributes:
+          name: customProp
+          value: someValue
+This approach lets you confirm module availability and use it accordingly.
+
+You said:
+add mutiple properties from properties file into plugin-cfg.xml
+Reasoned for 11 seconds
+Below is an example playbook for Ansible 2.9.2 that:
+
+Reads a properties file containing lines of key=value pairs.
+Converts those lines into a dictionary.
+Builds a list of XML “property” elements from the dictionary.
+Uses the xml module to add those property elements as children under the <config> element in the plugin-cfg.xml file.
+Assume your properties file (e.g. /path/to/custom.properties) looks like this:
+
+properties
+Copy
+customProp1=value1
+customProp2=value2
+customProp3=value3
+Here’s the playbook:
+
+yaml
+Copy
+- name: Add multiple properties from properties file into plugin-cfg.xml
+  hosts: your_target_host
+  become: yes
+  vars:
+    properties_file: /path/to/custom.properties
+  tasks:
+    - name: Read properties file content
+      set_fact:
+        custom_props_raw: "{{ lookup('file', properties_file) }}"
+
+    - name: Convert properties file into a dictionary
+      # This splits the file into lines, converts each "key=value" line into a two-item list,
+      # and then uses dict() to convert the list into a dictionary.
+      set_fact:
+        custom_props: "{{ dict(custom_props_raw.splitlines() 
+                          | map('regex_replace', '^(\\S+)=(.*)$', '\\1,\\2') 
+                          | map('split', ',') ) }}"
+
+    - name: Debug: show custom properties dictionary
+      debug:
+        var: custom_props
+
+    - name: Initialize XML property list variable
+      set_fact:
+        custom_props_list: []
+
+    - name: Build list of XML property elements
+      set_fact:
+        custom_props_list: "{{ custom_props_list + [ {'tag': 'property', 'attributes': {'name': item.key, 'value': item.value} } ] }}"
+      loop: "{{ custom_props | dict2items }}"
+
+    - name: Debug: show XML property list
+      debug:
+        var: custom_props_list
+
+    - name: Add custom properties to plugin-cfg.xml under <config> element
+      xml:
+        path: /opt/websphere/Appserver/plugin-cfg.xml
+        xpath: /config
+        add_children: "{{ custom_props_list }}"
+      # In Ansible 2.9.2, the module name is "xml:" (without ansible.builtin prefix)
+      
+    - name: Save configuration (if applicable)
+      command: wsadmin -lang jython -c "AdminConfig.save()"
+      # Note: In many environments, configuration changes are saved automatically.
+Explanation
+Read and Convert the Properties File:
+The first task uses lookup('file', properties_file) to read the file content.
+The next task splits the content into lines and uses a regex to replace each line from
+key=value into a comma-separated string (e.g. "customProp1,value1"), then splits it
+into a list (e.g. ['customProp1', 'value1']) and converts the list of lists into a dictionary.
+
+Build XML Property Elements:
+We initialize an empty list (custom_props_list) and loop over the dictionary (converted
+to a list of items with dict2items). For each key/value pair, we append a dictionary
+representing an XML element (with "tag": "property" and an "attributes" dict).
+
+Modify the XML File:
+The xml module then targets the file at /opt/websphere/Appserver/plugin-cfg.xml and uses
+an XPath of /config to locate the parent element. It adds the children specified in
+custom_props_list.
+
+Save the Configuration:
+If necessary, you can run a command (or use your wsadmin process) to save the changes.
+
+Note:
+– Adjust the XPath or attribute names if your environment expects a different structure.
+– The wsadmin save step might not be needed if your configuration changes are committed automatically.
+– Make sure the xml module is available in your Ansible 2.9.2 installation. If not, you might need to install the community.general collection and use it as community.general.xml.
+
+This playbook should add all custom properties from your properties file into the <config> section of plugin-cfg.xml.
+
+
+
+
+
+
