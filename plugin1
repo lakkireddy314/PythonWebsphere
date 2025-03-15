@@ -1,0 +1,128 @@
+how to check xml module is available.
+Reasoned for 6 seconds
+You can verify whether the XML module is available by using the ansible-doc command. For example, run:
+
+bash
+Copy
+ansible-doc xml
+or list all modules and filter for "xml" with:
+
+bash
+Copy
+ansible-doc -l | grep xml
+If the XML module is installed and available, you’ll see its documentation. If nothing shows up, you may need to install it via the community.general collection (especially on older versions like Ansible 2.9.2):
+
+bash
+Copy
+ansible-galaxy collection install community.general
+Then, reference it in your playbook as:
+
+yaml
+Copy
+- name: Modify XML file using the xml module from community.general
+  community.general.xml:
+    path: /opt/websphere/Appserver/plugin-cfg.xml
+    xpath: /config
+    add_children:
+      - tag: property
+        attributes:
+          name: customProp
+          value: someValue
+This approach lets you confirm module availability and use it accordingly.
+
+
+
+
+
+
+You said:
+add mutiple properties from properties file into plugin-cfg.xml
+Reasoned for 11 seconds
+Below is an example playbook for Ansible 2.9.2 that:
+
+Reads a properties file containing lines of key=value pairs.
+Converts those lines into a dictionary.
+Builds a list of XML “property” elements from the dictionary.
+Uses the xml module to add those property elements as children under the <config> element in the plugin-cfg.xml file.
+Assume your properties file (e.g. /path/to/custom.properties) looks like this:
+
+properties
+Copy
+customProp1=value1
+customProp2=value2
+customProp3=value3
+Here’s the playbook:
+
+yaml
+Copy
+- name: Add multiple properties from properties file into plugin-cfg.xml
+  hosts: your_target_host
+  become: yes
+  vars:
+    properties_file: /path/to/custom.properties
+  tasks:
+    - name: Read properties file content
+      set_fact:
+        custom_props_raw: "{{ lookup('file', properties_file) }}"
+
+    - name: Convert properties file into a dictionary
+      # This splits the file into lines, converts each "key=value" line into a two-item list,
+      # and then uses dict() to convert the list into a dictionary.
+      set_fact:
+        custom_props: "{{ dict(custom_props_raw.splitlines() 
+                          | map('regex_replace', '^(\\S+)=(.*)$', '\\1,\\2') 
+                          | map('split', ',') ) }}"
+
+    - name: Debug: show custom properties dictionary
+      debug:
+        var: custom_props
+
+    - name: Initialize XML property list variable
+      set_fact:
+        custom_props_list: []
+
+    - name: Build list of XML property elements
+      set_fact:
+        custom_props_list: "{{ custom_props_list + [ {'tag': 'property', 'attributes': {'name': item.key, 'value': item.value} } ] }}"
+      loop: "{{ custom_props | dict2items }}"
+
+    - name: Debug: show XML property list
+      debug:
+        var: custom_props_list
+
+    - name: Add custom properties to plugin-cfg.xml under <config> element
+      xml:
+        path: /opt/websphere/Appserver/plugin-cfg.xml
+        xpath: /config
+        add_children: "{{ custom_props_list }}"
+      # In Ansible 2.9.2, the module name is "xml:" (without ansible.builtin prefix)
+      
+    - name: Save configuration (if applicable)
+      command: wsadmin -lang jython -c "AdminConfig.save()"
+      # Note: In many environments, configuration changes are saved automatically.
+Explanation
+Read and Convert the Properties File:
+The first task uses lookup('file', properties_file) to read the file content.
+The next task splits the content into lines and uses a regex to replace each line from
+key=value into a comma-separated string (e.g. "customProp1,value1"), then splits it
+into a list (e.g. ['customProp1', 'value1']) and converts the list of lists into a dictionary.
+
+Build XML Property Elements:
+We initialize an empty list (custom_props_list) and loop over the dictionary (converted
+to a list of items with dict2items). For each key/value pair, we append a dictionary
+representing an XML element (with "tag": "property" and an "attributes" dict).
+
+Modify the XML File:
+The xml module then targets the file at /opt/websphere/Appserver/plugin-cfg.xml and uses
+an XPath of /config to locate the parent element. It adds the children specified in
+custom_props_list.
+
+Save the Configuration:
+If necessary, you can run a command (or use your wsadmin process) to save the changes.
+
+Note:
+– Adjust the XPath or attribute names if your environment expects a different structure.
+– The wsadmin save step might not be needed if your configuration changes are committed automatically.
+– Make sure the xml module is available in your Ansible 2.9.2 installation. If not, you might need to install the community.general collection and use it as community.general.xml.
+
+This playbook should add all custom properties from your properties file into the <config> section of plugin-cfg.xml.
