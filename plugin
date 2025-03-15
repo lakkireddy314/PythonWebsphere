@@ -1,0 +1,162 @@
+Below is an example wsadmin script written in Jython that demonstrates one way to:
+
+List all WebSphere web servers in the cell.
+Read custom properties from a properties file.
+“Inject” (that is, modify) the plugin configuration of each web server to include these custom properties.
+Trigger the propagation (or update) of the plugin‐configuration (for example, by invoking the update method on the plugin MBean).
+Note:
+The actual attribute names and structure of the WebServer and its plugin configuration object may vary depending on your WebSphere version and setup. The sample below uses a hypothetical attribute named "customProperties" on the WebServer configuration object. In your environment you might need to adjust the attribute names or follow your own procedure for customizing the plugin‐configuration. Always test in a non–production environment first!
+
+Save the following script (for example, as updatePluginProps.py):
+
+python
+Copy
+# updatePluginProps.py
+# This wsadmin Jython script does the following:
+#   1. Reads a properties file (key=value pairs) specified as an argument.
+#   2. Lists all WebSphere WebServer objects in the cell.
+#   3. For each web server, modifies (adds/updates) a custom properties attribute in its plugin configuration.
+#   4. Invokes the update on the plugin (via its MBean) to propagate the changes.
+#   5. Saves the configuration.
+#
+# Usage (from wsadmin shell):
+#   wsadmin -lang jython -f updatePluginProps.py /path/to/custom.properties
+
+import sys
+
+def readPropertiesFile(filePath):
+    """
+    Reads a Java-style properties file and returns a dictionary of key/value pairs.
+    Lines starting with '#' or blank lines are ignored.
+    """
+    props = {}
+    try:
+        f = open(filePath, "r")
+        for line in f.readlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            # Split at the first '='
+            parts = line.split("=", 1)
+            if len(parts) == 2:
+                key = parts[0].strip()
+                value = parts[1].strip()
+                props[key] = value
+        f.close()
+    except Exception, e:
+        print "Error reading properties file %s: %s" % (filePath, str(e))
+    return props
+
+def listWebServers():
+    """
+    Lists all web servers in the cell.
+    Returns a list of configuration IDs.
+    """
+    # AdminConfig.list returns a newline separated list.
+    wsList = AdminConfig.list("WebServer").splitlines()
+    return wsList
+
+def updatePluginConfiguration(wsConfigId, customProps):
+    """
+    For a given web server configuration ID, update its plugin configuration to add the custom properties.
+    In this sample, we assume that the web server object has an attribute 'customProperties' that holds
+    custom key/value pairs.
+    """
+    # Retrieve the web server's name (for logging)
+    wsName = AdminConfig.showAttribute(wsConfigId, "name")
+    
+    # Retrieve the current value of 'customProperties' (if any)
+    # (Note: This attribute is hypothetical; adjust as needed.)
+    currentProps = AdminConfig.showAttribute(wsConfigId, "customProperties")
+    print "Current customProperties for %s: %s" % (wsName, currentProps)
+    
+    # Build a new properties list string.
+    # The expected format here is a space‐separated list of “[ key value ]” entries.
+    newPropsList = []
+    for key in customProps:
+        # Adjust the formatting if needed by your configuration schema
+        newPropsList.append("[ %s %s ]" % (key, customProps[key]))
+    newPropsStr = " ".join(newPropsList)
+    
+    # Update the web server configuration with the new custom properties.
+    AdminConfig.modify(wsConfigId, [["customProperties", newPropsStr]])
+    print "Updated web server %s with custom properties: %s" % (wsName, newPropsStr)
+
+def propagatePluginChanges(wsConfigId):
+    """
+    Propagates the updated plugin configuration to the running web server.
+    Typically, this is done by invoking a method (e.g. updatePluginCfg)
+    on the WebServerPlugin MBean.
+    """
+    wsName = AdminConfig.showAttribute(wsConfigId, "name")
+    # Construct an MBean query for the plugin corresponding to this web server.
+    # The exact query string may differ; this is a common pattern.
+    mbeanQuery = "type=Plugin,process=%s,*" % wsName
+    mbeanNames = AdminControl.queryNames(mbeanQuery)
+    if mbeanNames:
+        for mbean in mbeanNames.splitlines():
+            result = AdminControl.invoke(mbean, "updatePluginCfg")
+            print "Propagated plugin changes for web server %s via MBean %s: %s" % (wsName, mbean, result)
+    else:
+        print "No Plugin MBean found for web server: %s" % wsName
+
+# ----- Main Execution -----
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print "Usage: wsadmin -lang jython -f updatePluginProps.py /path/to/custom.properties"
+        sys.exit(1)
+
+    propsFile = sys.argv[1]
+    customProps = readPropertiesFile(propsFile)
+    print "Custom properties to add:", customProps
+
+    wsList = listWebServers()
+    if not wsList:
+        print "No web servers found in the cell."
+    else:
+        for ws in wsList:
+            wsName = AdminConfig.showAttribute(ws, "name")
+            print "Processing web server: %s" % wsName
+            updatePluginConfiguration(ws, customProps)
+            propagatePluginChanges(ws)
+    
+    # Save the configuration changes.
+    AdminConfig.save()
+    print "Configuration saved."
+How It Works
+Reading the Properties File:
+The readPropertiesFile function reads a file passed as an argument. The file should contain lines with key=value pairs. (Lines starting with “#” are treated as comments.)
+
+Listing Web Servers:
+The function listWebServers() uses AdminConfig.list("WebServer") to get all web server configuration objects in the cell.
+
+Updating the Plugin Configuration:
+For each web server, the script calls updatePluginConfiguration(ws, customProps) which (in this sample) modifies a hypothetical attribute "customProperties" on the web server configuration to include the custom key/value pairs.
+
+Propagating the Changes:
+The function propagatePluginChanges(ws) searches for the corresponding Plugin MBean (using a query based on the web server’s name) and calls its updatePluginCfg method to push the new configuration.
+
+Saving Changes:
+Finally, AdminConfig.save() commits the configuration changes.
+
+Adjustments for Your Environment
+Attribute Names:
+The attribute "customProperties" is used here as an example. In your environment the custom properties might be applied differently. Consult your WebSphere documentation (or AdminConfig output) to see which attribute or object holds the plugin configuration you wish to update.
+
+MBean Query and Method:
+The query string and the method name (updatePluginCfg) used in propagatePluginChanges may vary with your WebSphere version and configuration.
+
+Error Handling and Logging:
+You may wish to add more robust error handling and logging depending on your needs.
+
+Run the script using wsadmin (for example):
+
+bash
+Copy
+wsadmin -lang jython -f updatePluginProps.py /path/to/my_custom.properties
+This script should list your web servers, update their plugin configuration with the custom properties from your file, propagate the changes, and save the configuration.
+
+You said:
+do we need to run this command when the server is up?
+Reasoned for 5 seconds
+Yes – to propagate changes via MBeans (such as calling updatePluginCfg), the server must be running. When the server is up, the MBean server is available so your script can query and invoke operations on the plugin MBeans. If the server is down, those MBeans won’t be accessible and the changes won’t propagate automatically (although the configuration changes might still be saved, you would need to restart the server to load them).
