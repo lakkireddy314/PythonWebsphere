@@ -1,0 +1,115 @@
+#!/usr/bin/env wsadmin.py
+# updatePluginProps.py
+#
+# This script performs the following steps:
+#   1. Reads custom properties from a Java‐style properties file (key=value pairs).
+#   2. Lists all WebSphere WebServer configuration objects in the cell.
+#   3. For each web server, updates its plugin configuration by modifying
+#      the "pluginCustomProperties" attribute to include the custom properties.
+#   4. Propagates the change by invoking the update method on the corresponding
+#      WebServerPlugin MBean.
+#   5. Saves the configuration.
+#
+# Usage:
+#   wsadmin.py -lang jython -f updatePluginProps.py /path/to/custom.properties
+
+import sys
+
+def readPropertiesFile(filePath):
+    """
+    Reads a Java-style properties file and returns a dictionary of key/value pairs.
+    Ignores blank lines and lines beginning with '#'.
+    """
+    props = {}
+    try:
+        f = open(filePath, "r")
+        for line in f.readlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("=", 1)
+            if len(parts) == 2:
+                key = parts[0].strip()
+                value = parts[1].strip()
+                props[key] = value
+        f.close()
+    except Exception, e:
+        print "Error reading properties file %s: %s" % (filePath, str(e))
+    return props
+
+def listWebServers():
+    """
+    Returns a list of WebServer configuration IDs.
+    """
+    wsList = AdminConfig.list("WebServer").splitlines()
+    return wsList
+
+def updatePluginProperties(wsConfigId, customProps):
+    """
+    Updates the given WebServer configuration's plugin custom properties.
+    This example uses the attribute "pluginCustomProperties" to store a space-separated
+    list of [ key value ] entries.
+    """
+    wsName = AdminConfig.showAttribute(wsConfigId, "name")
+    currentProps = AdminConfig.showAttribute(wsConfigId, "pluginCustomProperties")
+    print "Current pluginCustomProperties for %s: %s" % (wsName, currentProps)
+    
+    newPropsList = []
+    for key in customProps:
+        newPropsList.append("[ %s %s ]" % (key, customProps[key]))
+    newPropsStr = " ".join(newPropsList)
+    
+    AdminConfig.modify(wsConfigId, [["pluginCustomProperties", newPropsStr]])
+    print "Updated %s with pluginCustomProperties: %s" % (wsName, newPropsStr)
+
+def propagatePluginChanges(wsConfigId):
+    """
+    Propagates the updated plugin configuration by invoking the update method on the
+    WebServerPlugin MBean for the given WebServer.
+    """
+    wsName = AdminConfig.showAttribute(wsConfigId, "name")
+    mbeanQuery = "type=WebServerPlugin,name=%s,*" % wsName
+    mbeanNames = AdminControl.queryNames(mbeanQuery)
+    if mbeanNames:
+        for mbean in mbeanNames.splitlines():
+            result = AdminControl.invoke(mbean, "updatePluginCfg")
+            print "Propagated plugin changes for %s via MBean %s: %s" % (wsName, mbean, result)
+    else:
+        print "No WebServerPlugin MBean found for %s" % wsName
+
+def main():
+    if len(sys.argv) < 2:
+        print "Usage: wsadmin.py -lang jython -f updatePluginProps.py /path/to/custom.properties"
+        sys.exit(1)
+
+    propsFile = sys.argv[1]
+    customProps = readPropertiesFile(propsFile)
+    print "Custom properties to add:", customProps
+
+    wsList = listWebServers()
+    if not wsList:
+        print "No web servers found in the cell."
+    else:
+        for ws in wsList:
+            wsName = AdminConfig.showAttribute(ws, "name")
+            print "Processing web server: %s" % wsName
+            updatePluginProperties(ws, customProps)
+            propagatePluginChanges(ws)
+    
+    AdminConfig.save()
+    print "Configuration saved."
+
+if __name__ == "__main__":
+    main()
+Running the Script
+Place your custom properties file (e.g., custom.properties) on the file system; it should contain lines like:
+ini
+Copy
+customKey1=customValue1
+customKey2=customValue2
+From the wsadmin shell, run:
+bash
+Copy
+wsadmin.py -lang jython -f updatePluginProps.py /path/to/custom.properties
+The script will list the WebServer objects, update each one’s plugin configuration, propagate the changes, and finally save the configuration.
+This structure follows wsadmin.py conventions and is compatible with WebSphere 8.5.5.27. Adjust attribute names and MBean queries as necessary for your specific environment.
