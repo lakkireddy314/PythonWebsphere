@@ -18,14 +18,17 @@ import sys
 def readPropertiesFile(filePath):
     """
     Reads a Java-style properties file and returns a dictionary of key/value pairs.
-    Uses Python's built-in open() function. Ensure you pass an absolute file path.
+    This version uses f.read() and splitlines() for compatibility with wsadmin.
+    Ensure you pass an absolute file path.
     """
     props = {}
     try:
-        # Force filePath to be a Python string.
         filePath = str(filePath)
         f = open(filePath, 'r')
-        for line in f:
+        content = f.read()
+        lines = content.splitlines()
+        f.close()
+        for line in lines:
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
@@ -34,7 +37,6 @@ def readPropertiesFile(filePath):
                 key = parts[0].strip()
                 value = parts[1].strip()
                 props[key] = value
-        f.close()
     except Exception, e:
         print "Error reading properties file %s: %s" % (filePath, str(e))
     return props
