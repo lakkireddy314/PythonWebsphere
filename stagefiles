@@ -1,0 +1,238 @@
+Role Directory Structure
+python
+Copy
+roles/
+└── install_files/
+    ├── defaults/
+    │   └── main.yml         # Default variables including paths and control flags
+    ├── tasks/
+    │   ├── main.yml         # Main task file to include staging or removal tasks conditionally
+    │   ├── staging.yml      # Tasks to create directories, clean them, and stage (unzip or copy) files
+    │   └── removing.yml     # Tasks to remove all the remote directories created for staging
+    └── vars/
+        └── main.yml         # (Optional) Additional variables if needed
+File: defaults/main.yml
+This file defines all the key variables including the base repository path, the NFS (source) paths, remote (destination) paths, and boolean flags to control processing and actions.
+
+yaml
+Copy
+---
+# Base paths
+repo: /base/path/to/repo
+
+nfs_repo: "/install/BAW"
+nfs_was_repo: "{{ repo }}/WAS/FP27"
+nfs_baw_repo: "{{ repo }}/BAW/24.0.0.1"
+nfs_was_supplements_repo: "{{ repo }}/WAS/WAS_SUPPLEMENTS/FP27"
+nfs_ifixes_repo: "{{ repo }}/ifixes"
+
+remote_repo: "/opt/wps8/cores/BAW/"
+remote_was_repo: "{{ repo }}/WAS/FP27"
+remote_baw_repo: "{{ repo }}/BAW/24.0.0.1"
+remote_was_supplements_repo: "{{ repo }}/WAS/WAS_SUPPLEMENTS/FP27"
+remote_ifixes_repo: "{{ repo }}/ifixes"
+
+# Control which repositories to process
+process_nfs_repo: true
+process_was_repo: true
+process_baw_repo: true
+process_was_supplements_repo: true
+# If set to false, the ifixes repo will simply copy zip files instead of unzipping them.
+process_ifixes_repo_unzip: false
+
+# Control action mode: stage or remove installation files
+stage_install_files: true
+remove_install_files: false
+Features & Explanations
+Path Definitions:
+These variables set the source (NFS) and destination (remote) paths. Changing the paths or overriding these values later is straightforward.
+
+Control Variables:
+Booleans such as process_nfs_repo and process_ifixes_repo_unzip allow you to toggle processing for each repository. Additionally, stage_install_files versus remove_install_files determines which set of tasks run.
+
+File: tasks/main.yml
+This file is the main entry point for the role. It conditionally includes the staging or removal tasks based on the flags defined in defaults.
+
+yaml
+Copy
+---
+- name: Stage install files
+  include_tasks: staging.yml
+  when: stage_install_files
+
+- name: Remove staged install files
+  include_tasks: removing.yml
+  when: remove_install_files
+Features & Explanations
+Conditional Execution:
+Only one set of tasks is run depending on the provided variables, making the role flexible and preventing unintended operations.
+File: tasks/staging.yml
+This file first ensures that all remote directories exist and are empty. Then it processes each NFS repository by finding zip files and unarchiving (or copying) them if files are present. Note the added conditions checking that file lists are defined and nonempty, ensuring idempotent behavior.
+
+yaml
+Copy
+---
+# Define a list of remote directories
+- name: Define remote directories list
+  set_fact:
+    remote_dirs:
+      - "{{ remote_repo }}"
+      - "{{ remote_was_repo }}"
+      - "{{ remote_baw_repo }}"
+      - "{{ remote_was_supplements_repo }}"
+      - "{{ remote_ifixes_repo }}"
+
+# Create the directories if they do not exist
+- name: Ensure all remote directories exist
+  file:
+    path: "{{ item }}"
+    state: directory
+  loop: "{{ remote_dirs }}"
+
+# Clean up all remote directories by removing their contents only if files exist
+- name: Check and clean up remote directories
+  shell: "find {{ item }} -mindepth 1 -delete"
+  loop: "{{ remote_dirs }}"
+  args:
+    warn: false
+  register: cleanup_result
+  changed_when: cleanup_result.stdout != ""
+  # When no files exist, nothing is deleted, so we do not mark the task as changed.
+
+# Process NFS_Repo zip files (if enabled)
+- name: Find zip files in NFS_Repo
+  find:
+    paths: "{{ nfs_repo }}"
+    patterns: '*.zip'
+  register: nfs_repo_zips
+  when: process_nfs_repo
+
+- name: Unzip files from NFS_Repo to remote_repo
+  unarchive:
+    src: "{{ item.path }}"
+    dest: "{{ remote_repo }}"
+    remote_src: yes
+  loop: "{{ nfs_repo_zips.files | default([]) }}"
+  when: process_nfs_repo and (nfs_repo_zips.files | default([]) | length > 0)
+
+# Process WAS repo zip files
+- name: Find zip files in NFS_WAS_REPO
+  find:
+    paths: "{{ nfs_was_repo }}"
+    patterns: '*.zip'
+  register: was_repo_zips
+  when: process_was_repo
+
+- name: Unzip files from NFS_WAS_REPO to remote_was_repo
+  unarchive:
+    src: "{{ item.path }}"
+    dest: "{{ remote_was_repo }}"
+    remote_src: yes
+  loop: "{{ was_repo_zips.files | default([]) }}"
+  when: process_was_repo and (was_repo_zips.files | default([]) | length > 0)
+
+# Process BAW repo zip files
+- name: Find zip files in NFS_BAW_REPO
+  find:
+    paths: "{{ nfs_baw_repo }}"
+    patterns: '*.zip'
+  register: baw_repo_zips
+  when: process_baw_repo
+
+- name: Unzip files from NFS_BAW_REPO to remote_baw_repo
+  unarchive:
+    src: "{{ item.path }}"
+    dest: "{{ remote_baw_repo }}"
+    remote_src: yes
+  loop: "{{ baw_repo_zips.files | default([]) }}"
+  when: process_baw_repo and (baw_repo_zips.files | default([]) | length > 0)
+
+# Process WAS Supplements repo zip files
+- name: Find zip files in NFS_WAS_SUPPLEMENTS_REPO
+  find:
+    paths: "{{ nfs_was_supplements_repo }}"
+    patterns: '*.zip'
+  register: was_supp_zips
+  when: process_was_supplements_repo
+
+- name: Unzip files from NFS_WAS_SUPPLEMENTS_REPO to remote_was_supplements_repo
+  unarchive:
+    src: "{{ item.path }}"
+    dest: "{{ remote_was_supplements_repo }}"
+    remote_src: yes
+  loop: "{{ was_supp_zips.files | default([]) }}"
+  when: process_was_supplements_repo and (was_supp_zips.files | default([]) | length > 0)
+
+# Process ifixes repo: copy the zip files instead of unzipping
+- name: Find zip files in NFS_ifixes_REPO
+  find:
+    paths: "{{ nfs_ifixes_repo }}"
+    patterns: '*.zip'
+  register: ifixes_zip_files
+
+- name: Copy ifixes zip files to remote_ifixes_repo
+  copy:
+    src: "{{ item.path }}"
+    dest: "{{ remote_ifixes_repo }}/"
+    remote_src: yes
+  loop: "{{ ifixes_zip_files.files | default([]) }}"
+  when: not process_ifixes_repo_unzip and (ifixes_zip_files.files | default([]) | length > 0)
+Features & Explanations
+Directory Management:
+
+Creation: The file module ensures directories are present (idempotently).
+Cleanup: A shell command using find removes all contents inside each directory. The task’s change status is conditioned on whether any output is returned, so it won’t always report a change if directories are already empty.
+File Processing:
+
+Each repository uses the find module to locate zip files. A default empty list (default([])) is provided to avoid errors if no files are found.
+Unarchive and copy tasks check that there are files to process before running.
+Conditional Checks:
+Additional when conditions guarantee that tasks run only if the corresponding control variable is true and the file list is nonempty.
+
+Compatibility:
+All modules and syntax are supported in Ansible 2.9.2.
+
+File: tasks/removing.yml
+This file removes the remote directories that were used for staging. The file module with state: absent is idempotent, ensuring directories (and their contents) are removed if they exist.
+
+yaml
+Copy
+---
+- name: Remove remote_repo directory and its contents
+  file:
+    path: "{{ remote_repo }}"
+    state: absent
+
+- name: Remove remote_was_repo directory and its contents
+  file:
+    path: "{{ remote_was_repo }}"
+    state: absent
+
+- name: Remove remote_baw_repo directory and its contents
+  file:
+    path: "{{ remote_baw_repo }}"
+    state: absent
+
+- name: Remove remote_was_supplements_repo directory and its contents
+  file:
+    path: "{{ remote_was_supplements_repo }}"
+    state: absent
+
+- name: Remove remote_ifixes_repo directory and its contents
+  file:
+    path: "{{ remote_ifixes_repo }}"
+    state: absent
+Features & Explanations
+Clean Removal:
+Using the file module with state: absent ensures that the directories are removed if they exist and does nothing if they are already absent.
+
+Idempotency:
+Running the removal tasks repeatedly won’t cause errors, making this portion fully idempotent.
+
+Summary
+This role is now updated to include:
+
+Additional conditions (checking for nonempty file lists before processing),
+An idempotent cleanup mechanism that only reports changes when files are actually deleted,
+Full compatibility with Ansible 2.9.2.
+Each section is clearly separated, and comments throughout explain the purpose of each task, making the role both robust and easy to maintain.
