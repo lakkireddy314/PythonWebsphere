@@ -1,0 +1,9 @@
+webServerId = AdminConfig.list("WebServer")
+
+# Retrieve the attributes for the WebServer object.
+attrs = AdminConfig.attributes(webServerId)
+
+# Loop through the list and print each attribute name and value neatly.
+for attr in attrs:
+    # attr is a two-element list [attributeName, attributeValue]
+    print "%-30s : %s" % (attr[0], attr[1])
