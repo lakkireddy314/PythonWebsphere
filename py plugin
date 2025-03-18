@@ -11,18 +11,19 @@
 #   5. Saves the configuration.
 #
 # Usage:
-#   wsadmin.sh -lang jython -f updatePluginProps.py /path/to/custom.properties
+#   wsadmin.sh -lang jython -f updatePluginProps.py -- /path/to/custom.properties
 
 import sys
 
 def readPropertiesFile(filePath):
     """
     Reads a Java-style properties file and returns a dictionary of key/value pairs.
-    Uses Python's built-in open() function.
-    Ensure you pass an absolute file path.
+    Uses Python's built-in open() function. Ensure you pass an absolute file path.
     """
     props = {}
     try:
+        # Force filePath to be a Python string.
+        filePath = str(filePath)
         f = open(filePath, 'r')
         for line in f:
             line = line.strip()
@@ -79,8 +80,8 @@ def propagatePluginChanges(wsConfigId):
         print "No WebServerPlugin MBean found for %s" % wsName
 
 def main():
-    # In wsadmin, sys.argv[0] is the first argument passed (i.e. the properties file)
     print "sys.argv:", sys.argv
+    # In wsadmin, sys.argv[0] is the first argument passed (the properties file)
     if len(sys.argv) < 1:
         print "Usage: wsadmin.sh -lang jython -f updatePluginProps.py /path/to/custom.properties"
         sys.exit(1)
