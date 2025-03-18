@@ -1,0 +1,101 @@
+---
+- name: Backup existing WebSphere directories
+  hosts: all
+  tasks:
+    - name: Create backup directory
+      file:
+        path: /path/to/backup_dir
+        state: directory
+
+    - name: Archive WebSphere directories
+      shell: |
+        tar -czf /path/to/backup_dir/websphere_backup_{{ env }}_$(date +%F).tar.gz /path/to/websphere_directories
+      args:
+        creates: /path/to/backup_dir/websphere_backup_{{ env }}_$(date +%F).tar.gz
+
+      # Explanation: This task ensures that the existing WebSphere directories are backed up before any upgrade.
+      # The archive is stored in the backup directory with an environment-specific filename for tracking.
+
+- name: Restore WebSphere directories from backup
+  hosts: all
+  tasks:
+    - name: Extract backup archive
+      shell: |
+        tar -xzf /path/to/backup_dir/websphere_backup_{{ env }}_$(date +%F).tar.gz -C /
+      when: restore_backup | default(false)
+
+      # Explanation: If restore mode is enabled (`restore_backup` is set to `true`), this task restores WebSphere directories
+      # from the backup archive corresponding to the specific environment.
+
+- name: Generate version report
+  hosts: all
+  tasks:
+    - name: List installed packages
+      shell: /path/to/InstallationManager/tools/imcl listInstalledPackages
+      register: installed_packages
+
+      # Explanation: This command retrieves the list of installed WebSphere packages to record the current state before the upgrade.
+
+    - name: List available packages in repositories
+      shell: /path/to/InstallationManager/tools/imcl listAvailablePackages -repositories /path/to/websphere_next_repo,/path/to/websphere_plugins_next_repo,/path/to/ibm_http_next_repo
+      register: available_packages
+
+      # Explanation: This command checks the available upgrade versions from the specified repositories.
+
+    - name: Set target versions
+      set_fact:
+        target_versions: "{{ available_packages.stdout_lines | select('search', 'websphere') | list }}"
+
+      # Explanation: Filters the available packages to extract WebSphere-related versions and sets them as upgrade targets.
+
+    - name: Generate comprehensive report
+      copy:
+        dest: /path/to/report/version_report_{{ env }}.txt
+        content: |
+          Environment: {{ env }}
+          ===============================
+          Hosts: {{ ansible_play_hosts_all | join(', ') }}
+          
+          Before Upgrade Versions per Host:
+          {% for host in ansible_play_hosts %}
+          Host: {{ host }}
+          Installed Versions:
+          {{ hostvars[host]['installed_packages'].stdout }}
+          {% endfor %}
+          
+          Target Upgrade Versions:
+          {{ target_versions }}
+
+          Upgrade Status per Host:
+          {% for host in ansible_play_hosts %}
+          Host: {{ host }}
+          {% for package in target_versions %}
+          {{ package }}: {{ 'Upgraded' if package in hostvars[host]['installed_packages'].stdout else 'Not Installed' }}
+          {% endfor %}
+          {% endfor %}
+
+      # Explanation: This step generates a comprehensive report containing:
+      # - The environment name
+      # - The list of hosts the play ran on
+      # - The current installed versions per host
+      # - The target upgrade versions from the repositories
+      # - The upgrade status for each package per host
+      # The report is saved in an environment-specific file for easy tracking.
+
+- name: Upgrade WebSphere packages
+  hosts: all
+  tasks:
+    - name: Check if WebSphere is installed
+      shell: /path/to/InstallationManager/tools/imcl listInstalledPackages | grep websphere
+      register: websphere_installed
+      ignore_errors: true
+
+      # Explanation: This command checks if WebSphere is currently installed before proceeding with the upgrade.
+
+    - name: Perform upgrade
+      shell: /path/to/InstallationManager/tools/imcl install {{ item }} -repositories /path/to/websphere_next_repo -installationDirectory /path/to/installation_directory
+      with_items: "{{ target_versions }}"
+      when: websphere_installed.rc == 0
+
+      # Explanation: If WebSphere is installed, this step upgrades it to the available versions specified in `target_versions`.
+      # The upgrade is executed only if the product is installed to prevent unnecessary operations or errors.
