@@ -79,11 +79,13 @@ def propagatePluginChanges(wsConfigId):
         print "No WebServerPlugin MBean found for %s" % wsName
 
 def main():
-    if len(sys.argv) < 2:
+    # In wsadmin, sys.argv[0] is the first argument passed (i.e. the properties file)
+    print "sys.argv:", sys.argv
+    if len(sys.argv) < 1:
         print "Usage: wsadmin.sh -lang jython -f updatePluginProps.py /path/to/custom.properties"
         sys.exit(1)
 
-    propsFile = sys.argv[1]
+    propsFile = sys.argv[0]
     customProps = readPropertiesFile(propsFile)
     print "Custom properties to add:", customProps
 
