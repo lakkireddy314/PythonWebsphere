@@ -1,0 +1,41 @@
+Below is an example where you use a single variable—binaries_Dir—to hold the directory value based on the environment. The actual directory paths are defined as separate variables in the defaults, and then you conditionally assign one of those values to binaries_Dir.
+
+defaults/main.yml
+yaml
+Copy
+---
+# Default value for non-development environments
+default_binaries_dir: "/opt/websphere/IHS_Install_Files/"
+
+# Value for development environments (dev01, dev02, dev03)
+dev_binaries_dir: "/opt/wps8/cores/BAW/"
+tasks/main.yml
+yaml
+Copy
+---
+- name: Set binaries_Dir based on environment
+  set_fact:
+    binaries_Dir: "{{ dev_binaries_dir if env in ['dev01', 'dev02', 'dev03'] else default_binaries_dir }}"
+Explanation
+Variable Definitions:
+In the defaults, two variables are defined:
+
+default_binaries_dir holds the directory for non-development environments.
+dev_binaries_dir holds the directory for the development environments.
+Conditional Assignment:
+The task uses the set_fact module to assign a value to binaries_Dir based on the env variable. If env is one of dev01, dev02, or dev03, then binaries_Dir is set to the value of dev_binaries_dir. Otherwise, it is set to default_binaries_dir.
+
+This approach ensures that only one variable (binaries_Dir) is used throughout your playbook while allowing you to define and update the actual directory paths separately.
+
+
+
+
+
+
+
+
+
+
+Search
+
+Deep research
