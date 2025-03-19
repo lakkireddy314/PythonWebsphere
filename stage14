@@ -1,0 +1,230 @@
+Role Directory Structure
+python
+Copy
+roles/
+└── install_files/
+    ├── defaults/
+    │   └── main.yml         # Default variables including paths and control flags
+    ├── tasks/
+    │   ├── main.yml         # Main task file that includes staging or removal tasks conditionally
+    │   ├── staging.yml      # Tasks to create directories, clean them, and stage (unzip or copy) files
+    │   └── removing.yml     # Tasks to remove all the remote directories created for staging
+    └── vars/
+        └── main.yml         # (Optional) Additional variables if needed
+File: defaults/main.yml
+yaml
+Copy
+---
+# Base paths
+repo: /base/path/to/repo
+
+nfs_repo: "/install/BAW"
+nfs_was_repo: "{{ repo }}/WAS/FP27"
+nfs_baw_repo: "{{ repo }}/BAW/24.0.0.1"
+nfs_was_supplements_repo: "{{ repo }}/WAS/WAS_SUPPLEMENTS/FP27"
+nfs_ifixes_repo: "{{ repo }}/ifixes"
+
+remote_repo: "/opt/wps8/cores/BAW/"
+remote_was_repo: "{{ repo }}/WAS/FP27"
+remote_baw_repo: "{{ repo }}/BAW/24.0.0.1"
+remote_was_supplements_repo: "{{ repo }}/WAS/WAS_SUPPLEMENTS/FP27"
+remote_ifixes_repo: "{{ repo }}/ifixes"
+
+# Control which repositories to process
+process_nfs_repo: true
+process_was_repo: true
+process_baw_repo: true
+process_was_supplements_repo: true
+# If set to false, the ifixes repo will simply copy zip files instead of unzipping them.
+process_ifixes_repo_unzip: false
+
+# Control action mode: stage or remove installation files
+stage_install_files: true
+remove_install_files: false
+File: tasks/main.yml
+yaml
+Copy
+---
+- name: Stage install files
+  include_tasks: staging.yml
+  when: stage_install_files
+
+- name: Remove staged install files
+  include_tasks: removing.yml
+  when: remove_install_files
+File: tasks/staging.yml
+yaml
+Copy
+---
+# Define a list of remote directories
+- name: Define remote directories list
+  set_fact:
+    remote_dirs:
+      - "{{ remote_repo }}"
+      - "{{ remote_was_repo }}"
+      - "{{ remote_baw_repo }}"
+      - "{{ remote_was_supplements_repo }}"
+      - "{{ remote_ifixes_repo }}"
+
+# Create the directories if they do not exist
+- name: Ensure all remote directories exist
+  file:
+    path: "{{ remote_dir }}"
+    state: directory
+  loop: "{{ remote_dirs }}"
+  loop_control:
+    loop_var: remote_dir
+
+# Clean up all remote directories by removing all files (including hidden files) while preserving the directories
+- name: Clean up remote directories contents
+  shell: "rm -rf {{ remote_dir }}/* {{ remote_dir }}/.[!.]* {{ remote_dir }}/..?*"
+  args:
+    executable: /bin/bash
+  loop: "{{ remote_dirs }}"
+  loop_control:
+    loop_var: remote_dir
+  ignore_errors: yes
+  changed_when: false
+
+# Process NFS_Repo zip files (if enabled)
+- name: Find zip files in NFS_Repo
+  find:
+    paths: "{{ nfs_repo }}"
+    patterns: '*.zip'
+  register: nfs_repo_zips
+  when: process_nfs_repo
+
+- name: Unzip files from NFS_Repo to remote_repo
+  unarchive:
+    src: "{{ zip_file.path }}"
+    dest: "{{ remote_repo }}"
+    remote_src: yes
+  loop: "{{ nfs_repo_zips.files | default([]) }}"
+  loop_control:
+    loop_var: zip_file
+  when: process_nfs_repo and (nfs_repo_zips.files | default([]) | length > 0)
+
+# Process WAS repo zip files
+- name: Find zip files in NFS_WAS_REPO
+  find:
+    paths: "{{ nfs_was_repo }}"
+    patterns: '*.zip'
+  register: was_repo_zips
+  when: process_was_repo
+
+- name: Unzip files from NFS_WAS_REPO to remote_was_repo
+  unarchive:
+    src: "{{ zip_file.path }}"
+    dest: "{{ remote_was_repo }}"
+    remote_src: yes
+  loop: "{{ was_repo_zips.files | default([]) }}"
+  loop_control:
+    loop_var: zip_file
+  when: process_was_repo and (was_repo_zips.files | default([]) | length > 0)
+
+# Process BAW repo zip files
+- name: Find zip files in NFS_BAW_REPO
+  find:
+    paths: "{{ nfs_baw_repo }}"
+    patterns: '*.zip'
+  register: baw_repo_zips
+  when: process_baw_repo
+
+- name: Unzip files from NFS_BAW_REPO to remote_baw_repo
+  unarchive:
+    src: "{{ zip_file.path }}"
+    dest: "{{ remote_baw_repo }}"
+    remote_src: yes
+  loop: "{{ baw_repo_zips.files | default([]) }}"
+  loop_control:
+    loop_var: zip_file
+  when: process_baw_repo and (baw_repo_zips.files | default([]) | length > 0)
+
+# Process WAS Supplements repo zip files
+- name: Find zip files in NFS_WAS_SUPPLEMENTS_REPO
+  find:
+    paths: "{{ nfs_was_supplements_repo }}"
+    patterns: '*.zip'
+  register: was_supp_zips
+  when: process_was_supplements_repo
+
+- name: Unzip files from NFS_WAS_SUPPLEMENTS_REPO to remote_was_supplements_repo
+  unarchive:
+    src: "{{ zip_file.path }}"
+    dest: "{{ remote_was_supplements_repo }}"
+    remote_src: yes
+  loop: "{{ was_supp_zips.files | default([]) }}"
+  loop_control:
+    loop_var: zip_file
+  when: process_was_supplements_repo and (was_supp_zips.files | default([]) | length > 0)
+
+# Process ifixes repo: copy the zip files instead of unzipping
+- name: Find zip files in NFS_ifixes_REPO
+  find:
+    paths: "{{ nfs_ifixes_repo }}"
+    patterns: '*.zip'
+  register: ifixes_zip_files
+
+- name: Copy ifixes zip files to remote_ifixes_repo
+  copy:
+    src: "{{ zip_file.path }}"
+    dest: "{{ remote_ifixes_repo }}/"
+    remote_src: yes
+  loop: "{{ ifixes_zip_files.files | default([]) }}"
+  loop_control:
+    loop_var: zip_file
+  when: not process_ifixes_repo_unzip and (ifixes_zip_files.files | default([]) | length > 0)
+File: tasks/removing.yml
+yaml
+Copy
+---
+- name: Remove remote_repo directory and its contents
+  file:
+    path: "{{ remote_repo }}"
+    state: absent
+
+- name: Remove remote_was_repo directory and its contents
+  file:
+    path: "{{ remote_was_repo }}"
+    state: absent
+
+- name: Remove remote_baw_repo directory and its contents
+  file:
+    path: "{{ remote_baw_repo }}"
+    state: absent
+
+- name: Remove remote_was_supplements_repo directory and its contents
+  file:
+    path: "{{ remote_was_supplements_repo }}"
+    state: absent
+
+- name: Remove remote_ifixes_repo directory and its contents
+  file:
+    path: "{{ remote_ifixes_repo }}"
+    state: absent
+Explanation
+Custom Loop Variables:
+
+In the remote directories loop, remote_dir is used instead of the default item to clearly indicate that each loop iteration represents a remote directory.
+For zip file processing, zip_file is used as the loop variable for clarity when referencing each found zip file.
+Idempotency & Conditions:
+
+The tasks use conditions (with when) and default filters (default([])) to ensure they only run when necessary.
+The shell command for cleaning directories avoids the unsupported “-mindepth 1” option by using glob patterns to remove both non-hidden and hidden files while preserving the directories.
+Ansible 2.9.2 Compatibility:
+The modules and syntax used are all supported in Ansible 2.9.2, ensuring broad compatibility.
+
+This completes the updated role with custom loop variable names, making the playbook clearer and more maintainable.
+
+
+
+
+
+
+
+
+
+
+Search
+
+Deep researc
