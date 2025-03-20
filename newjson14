@@ -1,0 +1,741 @@
+Below is a complete configuration that includes:
+
+An updated survey.json with the new boolean radio‐button questions (for mode stage_install_files) added.
+Updated job template definitions (for sandbox, unit, integration, performance, and all) that now pass the extra variables – including the new variables (stage_was_repo, stage_baw_repo, stage_was_supplements_repo, stage_ifix_repo) – to the playbook.
+An updated workflow template (in JSON) that uses a two‑question approach for environment selection (group and host) and includes the new mode choices.
+In this configuration, if mode is stage_install_files, the survey displays four additional questions with radio buttons (defaulting to "true") for the following variables:
+• stage_was_repo
+• stage_baw_repo
+• stage_was_supplements_repo
+• stage_ifix_repo
+
+The job templates’ extra_vars pass all the required values (including mapping branch_name to source_control_branch with default "main" and backup_enabled replacing pre_upgrade_backup) along with these new stage variables.
+
+1. survey.json
+json
+Copy
+{
+  "name": "IBM BAW Maintenance Survey",
+  "description": "Select the environment group, host, maintenance mode, branch option, and specify mode parameters as needed.",
+  "spec": [
+    {
+      "question_name": "baw_group",
+      "question_description": "Select the environment group to target.",
+      "required": true,
+      "type": "multiplechoice",
+      "choices": [
+        "all",
+        "dev",
+        "unit",
+        "intg",
+        "perf"
+      ]
+    },
+    {
+      "question_name": "baw_host",
+      "question_description": "Select the host. (For group 'dev': choose from baw01, baw02, baw03, baw04; for 'unit', 'intg', 'perf': choose from baw01, baw02, baw03)",
+      "required": true,
+      "type": "multiplechoice",
+      "choices": [
+        "baw01",
+        "baw02",
+        "baw03",
+        "baw04"
+      ],
+      "condition": {
+        "when": [
+          { "question": "baw_group", "operator": "!=", "value": "all" }
+        ]
+      }
+    },
+    {
+      "question_name": "mode",
+      "question_description": "Select the maintenance mode.",
+      "required": true,
+      "type": "multiplechoice",
+      "choices": [
+        "upgrade",
+        "backup",
+        "restore",
+        "ifix",
+        "config",
+        "stage_install_files",
+        "remove_install_files",
+        "start env",
+        "stop env",
+        "restart env"
+      ]
+    },
+    {
+      "question_name": "branch_select",
+      "question_description": "Select branch option:",
+      "required": true,
+      "type": "multiplechoice",
+      "default": "default",
+      "choices": [
+        "default",
+        "custom"
+      ]
+    },
+    {
+      "question_name": "branch_name",
+      "question_description": "Enter the custom branch name (if 'custom' selected); default is 'main'.",
+      "required": true,
+      "type": "text",
+      "default": "",
+      "condition": {
+        "when": [
+          { "question": "branch_select", "value": "custom" }
+        ]
+      }
+    },
+    {
+      "question_name": "backup_enabled",
+      "question_description": "Enable backup (for backup mode)",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "backup" }
+        ]
+      }
+    },
+    {
+      "question_name": "websphere_upgrade_enabled",
+      "question_description": "Enable WebSphere upgrade (for upgrade mode)",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "upgrade" }
+        ]
+      }
+    },
+    {
+      "question_name": "baw_upgrade_enabled",
+      "question_description": "Enable BAW upgrade (for upgrade mode)",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "false",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "upgrade" }
+        ]
+      }
+    },
+    {
+      "question_name": "ihs_upgrade_enabled",
+      "question_description": "Enable IHS upgrade (for upgrade mode)",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "upgrade" }
+        ]
+      }
+    },
+    {
+      "question_name": "plugins_upgrade_enabled",
+      "question_description": "Enable Plugins upgrade (for upgrade mode)",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "upgrade" }
+        ]
+      }
+    },
+    {
+      "question_name": "install_ifixes",
+      "question_description": "Install ifixes (applicable for upgrade, ifix, or config modes)",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "false",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "upgrade" },
+          { "question": "mode", "value": "ifix" },
+          { "question": "mode", "value": "config" }
+        ]
+      }
+    },
+    {
+      "question_name": "stage_was_repo",
+      "question_description": "Enable stage WAS repo?",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "stage_install_files" }
+        ]
+      }
+    },
+    {
+      "question_name": "stage_baw_repo",
+      "question_description": "Enable stage BAW repo?",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "stage_install_files" }
+        ]
+      }
+    },
+    {
+      "question_name": "stage_was_supplements_repo",
+      "question_description": "Enable stage WAS supplements repo?",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "stage_install_files" }
+        ]
+      }
+    },
+    {
+      "question_name": "stage_ifix_repo",
+      "question_description": "Enable stage ifix repo?",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": [
+        "true",
+        "false"
+      ],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "stage_install_files" }
+        ]
+      }
+    }
+  ]
+}
+2. Job Templates
+Each job template is configured for Ansible 2.9.2 with the fixed properties and passes the extra variables (including the new stage_install_files variables). The variable env is set to the selected host (provided as baw_host in the workflow).
+
+Job Template 1: mws_baw_maintenance_sandbox
+(For development hosts – inventory: mws_middleware_sandbox)
+
+yaml
+Copy
+---
+name: "mws_baw_maintenance_sandbox"
+organization: "AAAA"
+inventory: "mws_middleware_sandbox"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+execution_environment: "mws_ansible_2_9"
+job_type: "run"
+ask_scm_branch_on_launch: false
+ask_inventory_on_launch: false
+ask_verbosity_branch_on_launch: false
+survey_enabled: false
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "source_control_branch": "{{ branch_name | default('main') }}",
+    "env": "{{ baw_host }}",
+    "mode": "{{ mode }}",
+    "backup_enabled": "{{ backup_enabled | default('true') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('true') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('true') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('true') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}",
+    "stage_was_repo": "{{ stage_was_repo | default('true') }}",
+    "stage_baw_repo": "{{ stage_baw_repo | default('true') }}",
+    "stage_was_supplements_repo": "{{ stage_was_supplements_repo | default('true') }}",
+    "stage_ifix_repo": "{{ stage_ifix_repo | default('true') }}"
+  }
+Job Template 2: mws_baw_maintenance_unit
+(For unit hosts – inventory: mws_middleware_unit)
+
+yaml
+Copy
+---
+name: "mws_baw_maintenance_unit"
+organization: "AAAA"
+inventory: "mws_middleware_unit"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+execution_environment: "mws_ansible_2_9"
+job_type: "run"
+ask_scm_branch_on_launch: false
+ask_inventory_on_launch: false
+ask_verbosity_branch_on_launch: false
+survey_enabled: false
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "source_control_branch": "{{ branch_name | default('main') }}",
+    "env": "{{ baw_host }}",
+    "mode": "{{ mode }}",
+    "backup_enabled": "{{ backup_enabled | default('true') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('true') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('true') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('true') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}",
+    "stage_was_repo": "{{ stage_was_repo | default('true') }}",
+    "stage_baw_repo": "{{ stage_baw_repo | default('true') }}",
+    "stage_was_supplements_repo": "{{ stage_was_supplements_repo | default('true') }}",
+    "stage_ifix_repo": "{{ stage_ifix_repo | default('true') }}"
+  }
+Job Template 3: mws_baw_maintenance_intg
+(For integration hosts – inventory: mws_middleware_intg)
+
+yaml
+Copy
+---
+name: "mws_baw_maintenance_intg"
+organization: "AAAA"
+inventory: "mws_middleware_intg"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+execution_environment: "mws_ansible_2_9"
+job_type: "run"
+ask_scm_branch_on_launch: false
+ask_inventory_on_launch: false
+ask_verbosity_branch_on_launch: false
+survey_enabled: false
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "source_control_branch": "{{ branch_name | default('main') }}",
+    "env": "{{ baw_host }}",
+    "mode": "{{ mode }}",
+    "backup_enabled": "{{ backup_enabled | default('true') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('true') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('true') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('true') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}",
+    "stage_was_repo": "{{ stage_was_repo | default('true') }}",
+    "stage_baw_repo": "{{ stage_baw_repo | default('true') }}",
+    "stage_was_supplements_repo": "{{ stage_was_supplements_repo | default('true') }}",
+    "stage_ifix_repo": "{{ stage_ifix_repo | default('true') }}"
+  }
+Job Template 4: mws_baw_maintenance_perf
+(For performance hosts – inventory: mws_middleware_perf)
+
+yaml
+Copy
+---
+name: "mws_baw_maintenance_perf"
+organization: "AAAA"
+inventory: "mws_middleware_perf"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+execution_environment: "mws_ansible_2_9"
+job_type: "run"
+ask_scm_branch_on_launch: false
+ask_inventory_on_launch: false
+ask_verbosity_branch_on_launch: false
+survey_enabled: false
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "source_control_branch": "{{ branch_name | default('main') }}",
+    "env": "{{ baw_host }}",
+    "mode": "{{ mode }}",
+    "backup_enabled": "{{ backup_enabled | default('true') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('true') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('true') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('true') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}",
+    "stage_was_repo": "{{ stage_was_repo | default('true') }}",
+    "stage_baw_repo": "{{ stage_baw_repo | default('true') }}",
+    "stage_was_supplements_repo": "{{ stage_was_supplements_repo | default('true') }}",
+    "stage_ifix_repo": "{{ stage_ifix_repo | default('true') }}"
+  }
+Job Template 5: mws_baw_maintenance_all
+(For “all” option – inventory: mws_middleware_all)
+
+yaml
+Copy
+---
+name: "mws_baw_maintenance_all"
+organization: "AAAA"
+inventory: "mws_middleware_all"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+execution_environment: "mws_ansible_2_9"
+job_type: "run"
+ask_scm_branch_on_launch: false
+ask_inventory_on_launch: false
+ask_verbosity_branch_on_launch: false
+survey_enabled: false
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "source_control_branch": "{{ branch_name | default('main') }}",
+    "env": "{{ baw_host }}",
+    "mode": "{{ mode }}",
+    "backup_enabled": "{{ backup_enabled | default('true') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('true') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('true') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('true') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}",
+    "stage_was_repo": "{{ stage_was_repo | default('true') }}",
+    "stage_baw_repo": "{{ stage_baw_repo | default('true') }}",
+    "stage_was_supplements_repo": "{{ stage_was_supplements_repo | default('true') }}",
+    "stage_ifix_repo": "{{ stage_ifix_repo | default('true') }}"
+  }
+3. Workflow Template (JSON)
+This workflow template uses two questions for environment selection:
+• baw_group (with choices: all, dev, unit, intg, perf)
+• baw_host (if the group is not "all")
+It then collects mode (with the additional modes), branch option, branch name (if custom), and backup_enabled along with other mode‐specific options. The workflow nodes branch based on baw_group and pass the limit variable accordingly (using the selected baw_host).
+
+json
+Copy
+{
+  "name": "IBM BAW Maintenance",
+  "description": "Workflow template to run op_baw_maintenance.yml on selected hosts based on group, host, mode, branch option, and group selection.",
+  "survey_enabled": true,
+  "survey_spec": {
+    "name": "IBM BAW Maintenance Survey",
+    "description": "Select the environment group, host, maintenance mode, branch option, and specify mode parameters as needed.",
+    "spec": [
+      {
+        "question_name": "baw_group",
+        "question_description": "Select the environment group to target.",
+        "required": true,
+        "type": "multiplechoice",
+        "choices": [
+          "all",
+          "dev",
+          "unit",
+          "intg",
+          "perf"
+        ]
+      },
+      {
+        "question_name": "baw_host",
+        "question_description": "Select the host. (For group 'dev': choose from baw01, baw02, baw03, baw04; for 'unit', 'intg', 'perf': choose from baw01, baw02, baw03)",
+        "required": true,
+        "type": "multiplechoice",
+        "choices": [
+          "baw01",
+          "baw02",
+          "baw03",
+          "baw04"
+        ],
+        "condition": {
+          "when": [
+            { "question": "baw_group", "operator": "!=", "value": "all" }
+          ]
+        }
+      },
+      {
+        "question_name": "mode",
+        "question_description": "Select the maintenance mode.",
+        "required": true,
+        "type": "multiplechoice",
+        "choices": [
+          "upgrade",
+          "backup",
+          "restore",
+          "ifix",
+          "config",
+          "stage_install_files",
+          "remove_install_files",
+          "start env",
+          "stop env",
+          "restart env"
+        ]
+      },
+      {
+        "question_name": "branch_select",
+        "question_description": "Select branch option:",
+        "required": true,
+        "type": "multiplechoice",
+        "default": "default",
+        "choices": [
+          "default",
+          "custom"
+        ]
+      },
+      {
+        "question_name": "branch_name",
+        "question_description": "Enter the custom branch name (if 'custom' selected); default is 'main'.",
+        "required": true,
+        "type": "text",
+        "default": "",
+        "condition": {
+          "when": [
+            { "question": "branch_select", "value": "custom" }
+          ]
+        }
+      },
+      {
+        "question_name": "backup_enabled",
+        "question_description": "Enable backup (for backup mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "backup" }
+          ]
+        }
+      },
+      {
+        "question_name": "websphere_upgrade_enabled",
+        "question_description": "Enable WebSphere upgrade (for upgrade mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" }
+          ]
+        }
+      },
+      {
+        "question_name": "baw_upgrade_enabled",
+        "question_description": "Enable BAW upgrade (for upgrade mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "false",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" }
+          ]
+        }
+      },
+      {
+        "question_name": "ihs_upgrade_enabled",
+        "question_description": "Enable IHS upgrade (for upgrade mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" }
+          ]
+        }
+      },
+      {
+        "question_name": "plugins_upgrade_enabled",
+        "question_description": "Enable Plugins upgrade (for upgrade mode)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" }
+          ]
+        }
+      },
+      {
+        "question_name": "install_ifixes",
+        "question_description": "Install ifixes (applicable for upgrade, ifix, or config modes)",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "false",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "upgrade" },
+            { "question": "mode", "value": "ifix" },
+            { "question": "mode", "value": "config" }
+          ]
+        }
+      },
+      {
+        "question_name": "stage_was_repo",
+        "question_description": "Enable stage WAS repo?",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "stage_install_files" }
+          ]
+        }
+      },
+      {
+        "question_name": "stage_baw_repo",
+        "question_description": "Enable stage BAW repo?",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "stage_install_files" }
+          ]
+        }
+      },
+      {
+        "question_name": "stage_was_supplements_repo",
+        "question_description": "Enable stage WAS supplements repo?",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "stage_install_files" }
+          ]
+        }
+      },
+      {
+        "question_name": "stage_ifix_repo",
+        "question_description": "Enable stage ifix repo?",
+        "required": false,
+        "type": "multiplechoice",
+        "default": "true",
+        "choices": [
+          "true",
+          "false"
+        ],
+        "condition": {
+          "when": [
+            { "question": "mode", "value": "stage_install_files" }
+          ]
+        }
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "name": "Start",
+      "identifier": "start",
+      "type": "workflow_job_template_node",
+      "success_nodes": [
+        {
+          "name": "Run All Hosts Job",
+          "job_template": "mws_baw_maintenance_all",
+          "extra_data": {
+            "limit": "baw/all"
+          },
+          "condition": "{{ baw_group == 'all' }}"
+        },
+        {
+          "name": "Run Dev Job",
+          "job_template": "mws_baw_maintenance_sandbox",
+          "extra_data": {
+            "limit": "baw/{{ baw_host }}"
+          },
+          "condition": "{{ baw_group == 'dev' }}"
+        },
+        {
+          "name": "Run Unit Job",
+          "job_template": "mws_baw_maintenance_unit",
+          "extra_data": {
+            "limit": "baw/{{ baw_host }}"
+          },
+          "condition": "{{ baw_group == 'unit' }}"
+        },
+        {
+          "name": "Run Integration Job",
+          "job_template": "mws_baw_maintenance_intg",
+          "extra_data": {
+            "limit": "baw/{{ baw_host }}"
+          },
+          "condition": "{{ baw_group == 'intg' }}"
+        },
+        {
+          "name": "Run Performance Job",
+          "job_template": "mws_baw_maintenance_perf",
+          "extra_data": {
+            "limit": "baw/{{ baw_host }}"
+          },
+          "condition": "{{ baw_group == 'perf' }}"
+        }
+      ]
+    }
+  ]
+}
+Summary
+The environment naming is now simplified:
+Development (sandbox) hosts: baw01, baw02, baw03, baw04
+Unit hosts: baw01, baw02, baw03
+Integration hosts: baw01, baw02, baw03
+Performance hosts: baw01, baw02, baw03
+The survey now asks for an environment group (baw_group) and then a host (baw_host) when the group is not "all".
+The maintenance mode now includes the additional options: stage_install_files, remove_install_files, start env, stop env, and restart env.
+When stage_install_files is selected, four additional boolean questions (radio buttons) appear: stage_was_repo, stage_baw_repo, stage_was_supplements_repo, and stage_ifix_repo, each defaulting to "true".
+All job templates pass extra variables – including mapping branch selection to source_control_branch (defaulting to "main"), backup_enabled, and the new stage variables – along with the selected environment host.
+The workflow nodes branch based on the chosen baw_group and baw_host, passing an appropriate limit to the job template.
+This configuration meets your updated requirements.
