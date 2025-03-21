@@ -1,0 +1,31 @@
+---
+- name: "Send Report Email"
+  mail:
+    host: "{{ smtp_host }}"
+    port: "{{ smtp_port }}"
+    subject: >
+      {% if mode == 'ifix' %}
+        WebSphere iFix Installation Report
+      {% elif mode == 'upgrade' %}
+        {% if ifix_install | bool %}
+          Comprehensive Upgrade & iFix Installation Report
+        {% else %}
+          Upgrade Report
+        {% endif %}
+      {% endif %}
+    to: "{{ mail_recipient }}"
+    from: "DoNotReply@test.com"
+    body: >
+      <p style="font-style:italic;">Note: Automated Message</p>
+      {% if mode == 'ifix' %}
+        {{ lookup('template', 'ifix_report.html.j2') }}
+      {% elif mode == 'upgrade' %}
+        {{ lookup('template', 'upgrade_report.html.j2') }}
+        {% if ifix_install | bool %}
+          <br><br>
+          {{ lookup('template', 'ifix_report.html.j2') }}
+        {% endif %}
+      {% endif %}
+    subtype: html
+  delegate_to: localhost
+  run_once: true
