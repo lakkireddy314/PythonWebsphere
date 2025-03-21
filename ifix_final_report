@@ -1,0 +1,65 @@
+---
+- name: "WebSphere iFix Installation Tasks"
+  block:
+
+    - name: "Find available iFix files in IFIX_Repo directory"
+      find:
+        paths: "{{ IFIX_Repo }}"
+        patterns: "*.zip"
+      register: ifix_files
+
+    - name: "Retrieve list of installed WebSphere packages/iFixes before installation"
+      command: "{{ imcl_cmd }} listInstalledPackages"
+      register: installed_ifixes_before
+      changed_when: false
+
+    - name: "Set fact for installed iFixes before installation"
+      set_fact:
+        installed_ifixes_before_list: "{{ installed_ifixes_before.stdout_lines }}"
+
+    - name: "Install WebSphere iFixes if not already installed"
+      command: >
+        {{ imcl_cmd }} install {{ (ifix_file.path | basename | splitext)[0] }}
+        -repositories {{ ifix_file.path }}
+        -installationDirectory {{ websphere_install_root }}
+        -acceptLicense
+      loop: "{{ ifix_files.files }}"
+      loop_control:
+        loop_var: ifix_file
+        label: "{{ ifix_file.path | basename }}"
+      register: ifix_installation_results
+      when: >
+        ifix_files is defined and
+        ifix_files.matched > 0 and
+        (ifix_file.path | basename | splitext)[0] not in installed_ifixes_before_list
+
+    - name: "Set fact with list of iFixes installed during this run"
+      set_fact:
+        installed_ifixes_this_run: >-
+          {{ ifix_installation_results.results 
+             | selectattr('changed', 'eq', true) 
+             | map(attribute='ifix_file.path') 
+             | map('basename') 
+             | map('splitext') 
+             | map('first') 
+             | list }}
+
+    - name: "Generate report fact of WebSphere iFixes installed during this run"
+      set_fact:
+        websphere_ifix_installation_report: |
+          WebSphere iFix Installation Report
+          ====================================
+          Generated on: {{ ansible_date_time.date }} {{ ansible_date_time.time }}
+
+          {% if installed_ifixes_this_run | length > 0 %}
+          iFixes Installed During This Run:
+          {% for ifix in installed_ifixes_this_run %}
+            - {{ ifix }}
+          {% endfor %}
+
+          Total Installed This Run: {{ installed_ifixes_this_run | length }}
+          {% else %}
+          No iFixes were installed during this run.
+          {% endif %}
+
+  when: install_ifixes
