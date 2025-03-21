@@ -1,0 +1,346 @@
+Below is a complete example of a role that generates environment‐based reports for both upgrade and iFix installation and then sends an email from localhost. This role groups the hosts by the env variable (defined in group vars) so that both the Upgrade Report and the iFix Installation Report are organized by environment.
+
+In this example:
+
+When mode is set to ifix, only the iFix report is sent.
+When mode is set to upgrade:
+If ifix_install is true, both reports are sent (comprehensive report).
+If ifix_install is false, only the upgrade report is sent.
+Below are all the role files with inline explanations and a sample HTML page that shows how the final email output might look in Outlook.
+
+Directory Structure
+css
+Copy
+roles/
+└── report_mailer/
+    ├── tasks/
+    │   └── main.yml
+    └── templates/
+        ├── upgrade_report.html.j2
+        └── ifix_report.html.j2
+1. Role Task File
+File: roles/report_mailer/tasks/main.yml
+
+yaml
+Copy
+---
+- name: "Send Report Email"
+  mail:
+    host: "{{ smtp_host }}"
+    port: "{{ smtp_port }}"
+    subject: >
+      {% if mode == 'ifix' %}
+        WebSphere iFix Installation Report
+      {% elif mode == 'upgrade' %}
+        {% if ifix_install | bool %}
+          Comprehensive Upgrade & iFix Installation Report
+        {% else %}
+          Upgrade Report
+        {% endif %}
+      {% endif %}
+    to: "{{ mail_recipient }}"
+    from: "{{ mail_sender }}"
+    body: >
+      {% if mode == 'ifix' %}
+        {{ lookup('template', 'ifix_report.html.j2') }}
+      {% elif mode == 'upgrade' %}
+        {{ lookup('template', 'upgrade_report.html.j2') }}
+        {% if ifix_install | bool %}
+          <br><br>
+          {{ lookup('template', 'ifix_report.html.j2') }}
+        {% endif %}
+      {% endif %}
+    subtype: html
+  delegate_to: localhost
+  run_once: true
+Explanation
+Conditional Subject & Body:
+If mode is ifix, only the iFix report template is rendered.
+If mode is upgrade and ifix_install is true, the email includes both the upgrade and the iFix reports (comprehensive). Otherwise, only the upgrade report is rendered.
+Delegation:
+The task is delegated to localhost with run_once: true so that the email is sent only once from the control node.
+2. Upgrade Report Template
+File: roles/report_mailer/templates/upgrade_report.html.j2
+
+jinja
+Copy
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Upgrade Report</title>
+    <style>
+      body { font-family: Arial, sans-serif; color: #333; font-size: 14px; margin: 0; padding: 20px; }
+      h1, h2, h3 { color: #2E6DA4; }
+      table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+      th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+      th { background-color: #f2f2f2; }
+      hr { margin: 20px 0; }
+    </style>
+  </head>
+  <body>
+    <h1>Upgrade Report</h1>
+    <p><strong>Generated On:</strong> {{ ansible_date_time.iso8601 }}</p>
+
+    {# Build a list of host info with their environment #}
+    {% set host_info = [] %}
+    {% for host in play_hosts %}
+      {% set _ = host_info.append({'name': host, 'env': hostvars[host].env | default('unknown')}) %}
+    {% endfor %}
+
+    {# Group hosts by their env value using Jinja2 groupby #}
+    {% for group in host_info | groupby('env') %}
+      <h2>Environment: {{ group.grouper }}</h2>
+      {% for item in group.list %}
+        <h3>Host: {{ item.name }}</h3>
+        {# Check upgrade status for each product #}
+        {% set baw_upgraded = (hostvars[item.name].baw_installed and (hostvars[item.name].current_baw_version != hostvars[item.name].target_baw_version)) %}
+        {% set websphere_upgraded = (hostvars[item.name].websphere_installed and (hostvars[item.name].current_websphere_version != hostvars[item.name].target_websphere_version)) %}
+        {% set ihttpd_upgraded = (hostvars[item.name].ihttpd_installed and (hostvars[item.name].current_ihttpd_version != hostvars[item.name].target_ihttpd_version)) %}
+        {% set plugin_upgraded = (hostvars[item.name].plugin_installed and (hostvars[item.name].current_plugin_version != hostvars[item.name].target_plugin_version)) %}
+        {% if baw_upgraded or websphere_upgraded or ihttpd_upgraded or plugin_upgraded %}
+          <table border="1" cellpadding="5" cellspacing="0">
+            <tr>
+              <th>Product</th>
+              <th>Before Version</th>
+              <th>After Version</th>
+              <th>Installation Path</th>
+            </tr>
+            {% if baw_upgraded %}
+            <tr>
+              <td>IBM BAW</td>
+              <td>{{ hostvars[item.name].current_baw_version }}</td>
+              <td>{{ hostvars[item.name].target_baw_version }}</td>
+              <td>/home/{{ hostvars[item.name].baw_user | default('bawadm') }}/baw_install</td>
+            </tr>
+            {% endif %}
+            {% if websphere_upgraded %}
+            <tr>
+              <td>IBM Websphere</td>
+              <td>{{ hostvars[item.name].current_websphere_version }}</td>
+              <td>{{ hostvars[item.name].target_websphere_version }}</td>
+              <td>/home/{{ hostvars[item.name].baw_user | default('bawadm') }}/websphere_install</td>
+            </tr>
+            {% endif %}
+            {% if ihttpd_upgraded %}
+            <tr>
+              <td>IBM HTTP Server</td>
+              <td>{{ hostvars[item.name].current_ihttpd_version }}</td>
+              <td>{{ hostvars[item.name].target_ihttpd_version }}</td>
+              <td>/home/{{ hostvars[item.name].baw_user | default('bawadm') }}/ihttpd_install</td>
+            </tr>
+            {% endif %}
+            {% if plugin_upgraded %}
+            <tr>
+              <td>Web Server Plug-ins</td>
+              <td>{{ hostvars[item.name].current_plugin_version }}</td>
+              <td>{{ hostvars[item.name].target_plugin_version }}</td>
+              <td>/home/{{ hostvars[item.name].baw_user | default('bawadm') }}/plugin_install</td>
+            </tr>
+            {% endif %}
+          </table>
+        {% else %}
+          <p><em>No products were upgraded on this host.</em></p>
+        {% endif %}
+        <hr>
+      {% endfor %}
+    {% endfor %}
+  </body>
+</html>
+Explanation
+Grouping by Environment:
+The template builds a list of hosts (using play_hosts) with their env value (defaulting to "unknown" if not set) and then uses the groupby filter to group hosts by environment.
+Host Processing:
+For each host, it checks whether any product was upgraded (IBM BAW, Websphere, HTTP Server, or Plug-ins) and renders a table with upgrade details if any upgrades are found. Otherwise, it displays a message.
+3. iFix Installation Report Template
+File: roles/report_mailer/templates/ifix_report.html.j2
+
+jinja
+Copy
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>WebSphere iFix Installation Report</title>
+    <style>
+      body { font-family: Arial, sans-serif; color: #333; font-size: 14px; margin: 0; padding: 20px; }
+      h1, h2, h3 { color: #2E6DA4; }
+      table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+      th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+      th { background-color: #f2f2f2; }
+      hr { margin: 20px 0; }
+    </style>
+  </head>
+  <body>
+    <h1>WebSphere iFix Installation Report</h1>
+    <p><strong>Generated on:</strong> {{ ansible_date_time.date }} {{ ansible_date_time.time }}</p>
+
+    {# Build a list of host info with environment and iFix installations #}
+    {% set host_info = [] %}
+    {% for host in play_hosts %}
+      {% set ifixes = hostvars[host].installed_ifixes_this_run | default([]) %}
+      {% set _ = host_info.append({'name': host, 'env': hostvars[host].env | default('unknown'), 'ifixes': ifixes}) %}
+    {% endfor %}
+
+    {# Group hosts by environment #}
+    {% for group in host_info | groupby('env') %}
+      <h2>Environment: {{ group.grouper }}</h2>
+      {% for item in group.list %}
+        <h3>Host: {{ item.name }}</h3>
+        {% if item.ifixes | length > 0 %}
+          <table border="1" cellpadding="5" cellspacing="0">
+            <tr>
+              <th>iFix Name</th>
+            </tr>
+            {% for ifix in item.ifixes %}
+            <tr>
+              <td>{{ ifix }}</td>
+            </tr>
+            {% endfor %}
+          </table>
+          <p><strong>Total Installed on this Host:</strong> {{ item.ifixes | length }}</p>
+        {% else %}
+          <p><em>No iFix installations were performed on this host.</em></p>
+        {% endif %}
+        <hr>
+      {% endfor %}
+    {% endfor %}
+  </body>
+</html>
+Explanation
+Grouping by Environment:
+Similar to the upgrade report, this template builds a list of hosts with their env values and each host’s iFix installations (expected in installed_ifixes_this_run).
+Host Processing:
+For each host (grouped by environment), the template checks if any iFix installations exist. If yes, it renders them in a table along with a total count; if not, it shows a message.
+Sample HTML Output
+Below is a sample HTML output as it might appear in Outlook when the play is run against hosts in two environments (e.g., prod and dev), with mode set to upgrade and ifix_install true (comprehensive report):
+
+html
+Copy
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Comprehensive Upgrade & iFix Installation Report</title>
+    <style>
+      body { font-family: Arial, sans-serif; color: #333; font-size: 14px; margin: 0; padding: 20px; }
+      h1, h2, h3 { color: #2E6DA4; }
+      table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+      th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+      th { background-color: #f2f2f2; }
+      hr { margin: 20px 0; }
+    </style>
+  </head>
+  <body>
+    <!-- Upgrade Report Section -->
+    <h1>Upgrade Report</h1>
+    <p><strong>Generated On:</strong> 2025-03-20T14:00:00</p>
+
+    <!-- Environment: prod -->
+    <h2>Environment: prod</h2>
+    <h3>Host: prod-server1</h3>
+    <table border="1" cellpadding="5" cellspacing="0">
+      <tr>
+        <th>Product</th>
+        <th>Before Version</th>
+        <th>After Version</th>
+        <th>Installation Path</th>
+      </tr>
+      <tr>
+        <td>IBM Websphere</td>
+        <td>9.0.5.0</td>
+        <td>9.0.5.1</td>
+        <td>/home/bawadm/websphere_install</td>
+      </tr>
+      <tr>
+        <td>IBM HTTP Server</td>
+        <td>8.5.5.1</td>
+        <td>8.5.5.2</td>
+        <td>/home/bawadm/ihttpd_install</td>
+      </tr>
+    </table>
+    <hr>
+    <h3>Host: prod-server2</h3>
+    <p><em>No products were upgraded on this host.</em></p>
+    <hr>
+
+    <!-- Environment: dev -->
+    <h2>Environment: dev</h2>
+    <h3>Host: dev-server1</h3>
+    <table border="1" cellpadding="5" cellspacing="0">
+      <tr>
+        <th>Product</th>
+        <th>Before Version</th>
+        <th>After Version</th>
+        <th>Installation Path</th>
+      </tr>
+      <tr>
+        <td>IBM BAW</td>
+        <td>7.0.1.0</td>
+        <td>7.0.2.0</td>
+        <td>/home/bawadm/baw_install</td>
+      </tr>
+    </table>
+    <hr>
+
+    <!-- iFix Installation Report Section -->
+    <h1>WebSphere iFix Installation Report</h1>
+    <p><strong>Generated on:</strong> 2025-03-20 14:00:00</p>
+
+    <!-- Environment: prod -->
+    <h2>Environment: prod</h2>
+    <h3>Host: prod-server1</h3>
+    <table border="1" cellpadding="5" cellspacing="0">
+      <tr>
+        <th>iFix Name</th>
+      </tr>
+      <tr>
+        <td>IFIX-2025-001</td>
+      </tr>
+      <tr>
+        <td>IFIX-2025-002</td>
+      </tr>
+    </table>
+    <p><strong>Total Installed on this Host:</strong> 2</p>
+    <hr>
+    <h3>Host: prod-server2</h3>
+    <p><em>No iFix installations were performed on this host.</em></p>
+    <hr>
+
+    <!-- Environment: dev -->
+    <h2>Environment: dev</h2>
+    <h3>Host: dev-server1</h3>
+    <table border="1" cellpadding="5" cellspacing="0">
+      <tr>
+        <th>iFix Name</th>
+      </tr>
+      <tr>
+        <td>IFIX-2025-003</td>
+      </tr>
+    </table>
+    <p><strong>Total Installed on this Host:</strong> 1</p>
+  </body>
+</html>
+Final Notes
+Variables:
+Ensure that your play or inventory defines the following variables:
+smtp_host, smtp_port, mail_recipient, mail_sender
+mode (either "ifix" or "upgrade")
+ifix_install (boolean)
+For each host, ensure that env and (if applicable) installed_ifixes_this_run (a list) are defined.
+Usage:
+Include the role in your playbook and adjust the variables as needed. The role will generate environment-based reports for both upgrades and iFix installations and send a single email from your control node.
+This complete role-based approach offers modular, maintainable reporting that adjusts dynamically based on host environment and installation results.
+
+
+
+
+
+
+
+
+
+
+Search
+
+Deep research
