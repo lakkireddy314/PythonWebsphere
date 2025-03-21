@@ -1,0 +1,222 @@
+Role Directory Structure
+css
+Copy
+roles/
+└── report_mailer/
+    ├── tasks/
+    │   └── main.yml
+    └── templates/
+        ├── upgrade_report.html.j2
+        └── ifix_report.html.j2
+File: roles/report_mailer/tasks/main.yml
+yaml
+Copy
+---
+# Determine the effective report mode.
+- name: "Determine effective report mode"
+  set_fact:
+    report_mode: >-
+      {% if mode is defined %}
+        {% if mode == 'ifix' %}
+          ifix
+        {% elif mode == 'upgrade' %}
+          {% if install_ifixes %}
+            comprehensive
+          {% else %}
+            upgrade
+          {% endif %}
+        {% elif mode == 'comprehensive' %}
+          comprehensive
+        {% else %}
+          upgrade
+        {% endif %}
+      {% else %}
+        {% if install_ifixes %}
+          comprehensive
+        {% else %}
+          upgrade
+        {% endif %}
+      {% endif %}
+
+# Debug output (optional)
+- debug:
+    msg: "Effective report mode: {{ report_mode }}"
+
+# Send the email report from the control node.
+- name: "Send Report Email"
+  mail:
+    host: "{{ smtp_host }}"
+    port: "{{ smtp_port }}"
+    subject: >
+      {% if report_mode == 'ifix' %}
+        WebSphere iFix Installation Report
+      {% elif report_mode == 'upgrade' %}
+        Upgrade Report
+      {% elif report_mode == 'comprehensive' %}
+        Comprehensive Upgrade & iFix Installation Report
+      {% endif %}
+    to: "{{ mail_recipient }}"
+    from: "{{ mail_sender }}"
+    body: >
+      {% if report_mode == 'ifix' %}
+        {{ lookup('template', 'ifix_report.html.j2') }}
+      {% elif report_mode == 'upgrade' %}
+        {{ lookup('template', 'upgrade_report.html.j2') }}
+      {% elif report_mode == 'comprehensive' %}
+        {{ lookup('template', 'upgrade_report.html.j2') }}
+        <br><br>
+        {{ lookup('template', 'ifix_report.html.j2') }}
+      {% endif %}
+    subtype: html
+  delegate_to: localhost
+  run_once: true
+File: roles/report_mailer/templates/upgrade_report.html.j2
+jinja
+Copy
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Upgrade Report</title>
+    <style>
+      body {font-family: Arial, sans-serif; color: #333; font-size: 14px; margin: 0; padding: 20px;}
+      h1, h2, h3 {color: #2E6DA4;}
+      table {border-collapse: collapse; width: 100%; margin-top: 10px;}
+      th, td {border: 1px solid #ccc; padding: 8px; text-align: left;}
+      th {background-color: #f2f2f2;}
+      hr {margin: 20px 0;}
+    </style>
+  </head>
+  <body>
+    <h1>Upgrade Report</h1>
+    <p><strong>Generated On:</strong> {{ ansible_date_time.iso8601 }}</p>
+    {% for host in play_hosts %}
+      <h2>Host: {{ host }}</h2>
+      {% set baw_upgraded = (hostvars[host].baw_installed and (hostvars[host].current_baw_version != hostvars[host].target_baw_version)) %}
+      {% set websphere_upgraded = (hostvars[host].websphere_installed and (hostvars[host].current_websphere_version != hostvars[host].target_websphere_version)) %}
+      {% set ihttpd_upgraded = (hostvars[host].ihttpd_installed and (hostvars[host].current_ihttpd_version != hostvars[host].target_ihttpd_version)) %}
+      {% set plugin_upgraded = (hostvars[host].plugin_installed and (hostvars[host].current_plugin_version != hostvars[host].target_plugin_version)) %}
+      {% if baw_upgraded or websphere_upgraded or ihttpd_upgraded or plugin_upgraded %}
+        <table border="1" cellpadding="5" cellspacing="0">
+          <tr>
+            <th>Product</th>
+            <th>Before Version</th>
+            <th>After Version</th>
+            <th>Installation Path</th>
+          </tr>
+          {% if baw_upgraded %}
+          <tr>
+            <td>IBM BAW</td>
+            <td>{{ hostvars[host].current_baw_version }}</td>
+            <td>{{ hostvars[host].target_baw_version }}</td>
+            <td>/home/{{ hostvars[host].baw_user | default('bawadm') }}/baw_install</td>
+          </tr>
+          {% endif %}
+          {% if websphere_upgraded %}
+          <tr>
+            <td>IBM Websphere</td>
+            <td>{{ hostvars[host].current_websphere_version }}</td>
+            <td>{{ hostvars[host].target_websphere_version }}</td>
+            <td>/home/{{ hostvars[host].baw_user | default('bawadm') }}/websphere_install</td>
+          </tr>
+          {% endif %}
+          {% if ihttpd_upgraded %}
+          <tr>
+            <td>IBM HTTP Server</td>
+            <td>{{ hostvars[host].current_ihttpd_version }}</td>
+            <td>{{ hostvars[host].target_ihttpd_version }}</td>
+            <td>/home/{{ hostvars[host].baw_user | default('bawadm') }}/ihttpd_install</td>
+          </tr>
+          {% endif %}
+          {% if plugin_upgraded %}
+          <tr>
+            <td>Web Server Plug-ins</td>
+            <td>{{ hostvars[host].current_plugin_version }}</td>
+            <td>{{ hostvars[host].target_plugin_version }}</td>
+            <td>/home/{{ hostvars[host].baw_user | default('bawadm') }}/plugin_install</td>
+          </tr>
+          {% endif %}
+        </table>
+      {% else %}
+        <p><em>No products were upgraded on this host.</em></p>
+      {% endif %}
+      <hr>
+    {% endfor %}
+  </body>
+</html>
+File: roles/report_mailer/templates/ifix_report.html.j2
+jinja
+Copy
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>WebSphere iFix Installation Report</title>
+    <style>
+      body {font-family: Arial, sans-serif; color: #333; font-size: 14px; margin: 0; padding: 20px;}
+      h1 {color: #2E6DA4;}
+      table {border-collapse: collapse; width: 100%; margin-top: 10px;}
+      th, td {border: 1px solid #ccc; padding: 8px; text-align: left;}
+      th {background-color: #f2f2f2;}
+    </style>
+  </head>
+  <body>
+    <h1>WebSphere iFix Installation Report</h1>
+    <p><strong>Generated on:</strong> {{ ansible_date_time.date }} {{ ansible_date_time.time }}</p>
+    {% if install_ifixes %}
+      {% if installed_ifixes_this_run | length > 0 %}
+        <p>The following WebSphere iFixes were successfully installed during this run:</p>
+        <table border="1" cellpadding="5" cellspacing="0">
+          <tr>
+            <th>iFix Name</th>
+          </tr>
+          {% for ifix in installed_ifixes_this_run %}
+          <tr>
+            <td>{{ ifix }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+        <p><strong>Total Installed This Run:</strong> {{ installed_ifixes_this_run | length }}</p>
+      {% else %}
+        <p style="color:green;"><strong>No new WebSphere iFixes were installed during this run.</strong></p>
+      {% endif %}
+    {% else %}
+      <p><em>iFix installation was not enabled during this run.</em></p>
+    {% endif %}
+  </body>
+</html>
+How to Use This Role
+Include the Role in Your Play:
+In your playbook, include the report_mailer role. For example:
+
+yaml
+Copy
+- hosts: targeted_hosts
+  gather_facts: yes
+  vars:
+    smtp_host: "smtp.example.com"
+    smtp_port: 25
+    mail_recipient: "recipient@example.com"
+    mail_sender: "sender@example.com"
+    mode: "upgrade"       # Can be 'ifix', 'upgrade', or 'comprehensive'
+    install_ifixes: true  # Set to true if ifix installations occurred
+    installed_ifixes_this_run:
+      - "IFIX-2025-001"
+      - "IFIX-2025-002"
+  roles:
+    - report_mailer
+Variable Logic:
+
+When mode is set to ifix (or if only ifix installations are relevant), only the iFix report is sent.
+When mode is set to upgrade, only the upgrade report is sent.
+If mode is comprehensive (or if mode is upgrade but install_ifixes is also true), both reports are included.
+Delegation:
+The mail task is delegated to localhost and uses run_once: true so that the email is sent only once from the control node.
+
+This role-based approach cleanly separates your reporting logic and makes it easy to adjust the behavior simply by changing the variable values.
+
+
+
+
+
+
