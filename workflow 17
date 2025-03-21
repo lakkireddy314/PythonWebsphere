@@ -1,0 +1,63 @@
+Below is the YAML version of the workflow template for Ansible Tower/AWX 2.9.2. In this version, an approval (confirmation) node is inserted ("CONFIRM VALUES") so that the user can review the entered survey values before the workflow proceeds. Each subsequent node passes an extra_data field that computes the limit using your provided Jinja2 expression. (The survey_spec section should include the survey JSON defined earlier.)
+
+yaml
+Copy
+name: IBM BAW Maintenance
+description: >
+  Workflow template to run op_baw_maintenance.yml based on survey values.
+  After completing the survey, click CONFIRM VALUES to review your inputs.
+  Upon approval, the workflow runs the appropriate job templates.
+survey_enabled: true
+survey_spec: 
+  # Insert your survey JSON here (or reference an external file)
+  # This section defines questions for baw_group, host (dev_host/unit_host/intg_host/perf_host),
+  # branch_name, mode, and mode-specific parameters.
+nodes:
+  - name: Start
+    identifier: start
+    type: workflow_job_template_node
+    success_nodes:
+      - name: CONFIRM VALUES
+        identifier: confirm
+        type: workflow_approval_node
+        description: "Review your inputs. Click Approve to run the workflow."
+        approval_timeout: 0
+        success_nodes:
+          - name: Run Dev Job
+            job_template: mws_baw_maintenance_dev
+            extra_data:
+              limit: "{{ 'baw' if (baw_group == 'all' or dev_host == 'all') else 'baw/' ~ dev_host }}"
+            condition: "{{ baw_group == 'dev' or baw_group == 'all' }}"
+          - name: Run Unit Job
+            job_template: mws_baw_maintenance_unit
+            extra_data:
+              limit: "{{ 'baw' if (baw_group == 'all' or unit_host == 'all') else 'baw/' ~ unit_host }}"
+            condition: "{{ baw_group == 'unit' or baw_group == 'all' }}"
+          - name: Run Integration Job
+            job_template: mws_baw_maintenance_intg
+            extra_data:
+              limit: "{{ 'baw' if (baw_group == 'all' or intg_host == 'all') else 'baw/' ~ intg_host }}"
+            condition: "{{ baw_group == 'intg' or baw_group == 'all' }}"
+          - name: Run Performance Job
+            job_template: mws_baw_maintenance_perf
+            extra_data:
+              limit: "{{ 'baw' if (baw_group == 'all' or perf_host == 'all') else 'baw/' ~ perf_host }}"
+            condition: "{{ baw_group == 'perf' or baw_group == 'all' }}"
+Explanation & Features
+Survey Specification:
+– The survey_spec (not shown in full here) should define all the questions for:
+
+baw_group (choices: all, dev, unit, intg, perf)
+The corresponding host selection (e.g. dev_host with choices including "all")
+branch_name (default "main")
+mode and additional mode‑specific questions (which will only be visible for the selected mode).
+Approval Node ("CONFIRM VALUES"):
+– This node is of type workflow_approval_node and acts as a confirmation step. – The user sees a message to review the inputs and must click Approve before the workflow continues.
+
+Job Template Nodes:
+– Four nodes are defined (for dev, unit, intg, and perf).
+– Each node’s extra_data computes the limit using the expression:
+
+For dev:
+{{ 'baw' if (baw_group == 'all' or dev_host == 'all') else 'baw/' ~ dev_host }} – The condition ensures that if the overall group is "all" or the specific group is selected, the corresponding node runs.
+This YAML workflow template is designed for AWX/Tower 2.9.2 and works with the survey and job templates (which are configured separately) so that only the mode‑specific values provided by the survey are used and all others default to false via the job templates’ | default('false') filters.
