@@ -1,0 +1,482 @@
+Below is a complete integrated solution that meets your requirements. In this solution, only the mode‑specific parameters for the selected mode are provided by the survey; all others will be absent and, using the “default('false')” filter in the job templates, will be set to false. In other words, the workflow passes only the values entered by the user for the chosen mode, and any parameter not selected defaults to false in the job templates.
+
+Below you’ll find:
+
+Survey JSON – It collects the overall environment (baw_group), the corresponding host (with an “all” option), the branch name (branch_name, defaulting to "main"), the maintenance mode (mode), and additional mode‑specific parameters that are conditionally displayed only for the selected mode.
+
+Workflow Template JSON – It uses the survey responses and, after a confirmation (approval) step labeled CONFIRM VALUES, it launches four job template nodes (for dev, unit, intg, and perf). Each node passes an extra_data value for limit that uses your provided expression so that if the overall group or the specific host equals "all" the limit is simply "baw"; otherwise, it is computed as "baw/" ~ <host>". (The workflow does not pass any mode‑specific parameters itself; it simply passes what the survey provides.)
+
+Job Templates YAML – There are four job templates (for dev, unit, intg, and perf). Each is configured for Ansible 2.9.2 (execution_environment: "mws_ansible_2_9") and uses the variable baw_env (instead of the generic env) from the survey host question. In each extra_vars block, each mode‑specific parameter is set using the filter
+| default('false')
+so that if the survey did not provide a value (because that parameter wasn’t relevant for the selected mode), it defaults to false.
+
+1. Survey JSON (survey.json)
+json
+Copy
+{
+  "name": "IBM BAW Maintenance Survey",
+  "description": "Select the environment group, host (if applicable), branch name, maintenance mode, and additional parameters as needed.",
+  "spec": [
+    {
+      "question_name": "baw_group",
+      "question_description": "Select the environment group to target.",
+      "required": true,
+      "type": "multiplechoice",
+      "choices": ["all", "dev", "unit", "intg", "perf"]
+    },
+    {
+      "question_name": "dev_host",
+      "question_description": "For Development, choose a host (options: all, baw01, baw02, baw03, baw04).",
+      "required": true,
+      "type": "multiplechoice",
+      "choices": ["all", "baw01", "baw02", "baw03", "baw04"],
+      "condition": { "when": [ { "question": "baw_group", "value": "dev" } ] }
+    },
+    {
+      "question_name": "unit_host",
+      "question_description": "For Unit, choose a host (options: all, baw01, baw02, baw03).",
+      "required": true,
+      "type": "multiplechoice",
+      "choices": ["all", "baw01", "baw02", "baw03"],
+      "condition": { "when": [ { "question": "baw_group", "value": "unit" } ] }
+    },
+    {
+      "question_name": "intg_host",
+      "question_description": "For Integration, choose a host (options: all, baw01, baw02, baw03).",
+      "required": true,
+      "type": "multiplechoice",
+      "choices": ["all", "baw01", "baw02", "baw03"],
+      "condition": { "when": [ { "question": "baw_group", "value": "intg" } ] }
+    },
+    {
+      "question_name": "perf_host",
+      "question_description": "For Performance, choose a host (options: all, baw01, baw02, baw03).",
+      "required": true,
+      "type": "multiplechoice",
+      "choices": ["all", "baw01", "baw02", "baw03"],
+      "condition": { "when": [ { "question": "baw_group", "value": "perf" } ] }
+    },
+    {
+      "question_name": "branch_name",
+      "question_description": "Enter the branch name (default is 'main').",
+      "required": true,
+      "type": "text",
+      "default": "main"
+    },
+    {
+      "question_name": "mode",
+      "question_description": "Select the maintenance mode.",
+      "required": true,
+      "type": "multiplechoice",
+      "choices": [
+        "upgrade",
+        "ifix",
+        "backup",
+        "restore",
+        "stage_install_files",
+        "remove_install_files",
+        "start env",
+        "stop env",
+        "restart env",
+        "config"
+      ]
+    },
+    {
+      "question_name": "backup_enabled",
+      "question_description": "Enable backup:",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": ["true", "false"],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "upgrade" },
+          { "question": "mode", "value": "ifix" },
+          { "question": "mode", "value": "backup" }
+        ]
+      }
+    },
+    {
+      "question_name": "enable_rollback",
+      "question_description": "Enable rollback:",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "false",
+      "choices": ["true", "false"],
+      "condition": { "when": [ { "question": "mode", "value": "upgrade" }, { "question": "mode", "value": "ifix" } ] }
+    },
+    {
+      "question_name": "websphere_upgrade_enabled",
+      "question_description": "Enable WebSphere upgrade:",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": ["true", "false"],
+      "condition": { "when": [ { "question": "mode", "value": "upgrade" } ] }
+    },
+    {
+      "question_name": "baw_upgrade_enabled",
+      "question_description": "Enable BAW upgrade:",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "false",
+      "choices": ["true", "false"],
+      "condition": { "when": [ { "question": "mode", "value": "upgrade" } ] }
+    },
+    {
+      "question_name": "ihs_upgrade_enabled",
+      "question_description": "Enable IHS upgrade:",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": ["true", "false"],
+      "condition": { "when": [ { "question": "mode", "value": "upgrade" } ] }
+    },
+    {
+      "question_name": "plugins_upgrade_enabled",
+      "question_description": "Enable Plugins upgrade:",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": ["true", "false"],
+      "condition": { "when": [ { "question": "mode", "value": "upgrade" } ] }
+    },
+    {
+      "question_name": "install_ifixes",
+      "question_description": "Install ifixes:",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "false",
+      "choices": ["true", "false"],
+      "condition": { "when": [ { "question": "mode", "value": "upgrade" }, { "question": "mode", "value": "ifix" } ] }
+    },
+    {
+      "question_name": "restart_enabled",
+      "question_description": "Enable restart:",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": ["true", "false"],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "upgrade" },
+          { "question": "mode", "value": "ifix" },
+          { "question": "mode", "value": "backup" },
+          { "question": "mode", "value": "restore" },
+          { "question": "mode", "value": "restart env" },
+          { "question": "mode", "value": "start env" },
+          { "question": "mode", "value": "stop env" },
+          { "question": "mode", "value": "config" }
+        ]
+      }
+    },
+    {
+      "question_name": "report_enabled",
+      "question_description": "Enable report:",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": ["true", "false"],
+      "condition": { "when": [ { "question": "mode", "value": "upgrade" }, { "question": "mode", "value": "ifix" } ] }
+    },
+    {
+      "question_name": "debug_enabled",
+      "question_description": "Enable debug:",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "false",
+      "choices": ["true", "false"],
+      "condition": {
+        "when": [
+          { "question": "mode", "value": "upgrade" },
+          { "question": "mode", "value": "ifix" },
+          { "question": "mode", "value": "backup" },
+          { "question": "mode", "value": "restore" },
+          { "question": "mode", "value": "restart env" },
+          { "question": "mode", "value": "start env" },
+          { "question": "mode", "value": "stop env" },
+          { "question": "mode", "value": "config" }
+        ]
+      }
+    },
+    {
+      "question_name": "stage_was_repo",
+      "question_description": "Enable stage WAS repo:",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": ["true", "false"],
+      "condition": { "when": [ { "question": "mode", "value": "stage_install_files" } ] }
+    },
+    {
+      "question_name": "stage_baw_repo",
+      "question_description": "Enable stage BAW repo:",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": ["true", "false"],
+      "condition": { "when": [ { "question": "mode", "value": "stage_install_files" } ] }
+    },
+    {
+      "question_name": "stage_was_supplements_repo",
+      "question_description": "Enable stage WAS supplements repo:",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": ["true", "false"],
+      "condition": { "when": [ { "question": "mode", "value": "stage_install_files" } ] }
+    },
+    {
+      "question_name": "stage_ifix_repo",
+      "question_description": "Enable stage IFIX repo:",
+      "required": false,
+      "type": "multiplechoice",
+      "default": "true",
+      "choices": ["true", "false"],
+      "condition": { "when": [ { "question": "mode", "value": "stage_install_files" } ] }
+    }
+  ]
+}
+Key Point: Because the survey conditionally displays mode‑specific questions, if a parameter isn’t selected (or isn’t visible), its value will be absent. In the job templates, the filter | default('false') ensures that any missing value becomes false. Thus, the workflow “only takes in the values selected in mode for the play in job templates and the rest default to false.”
+
+2. Workflow Template JSON
+This workflow template includes an approval node (“CONFIRM VALUES”) that acts as a confirmation step. Once approved, it runs the four job template nodes. Each node’s extra_data calculates the limit using your provided expression.
+
+json
+Copy
+{
+  "name": "IBM BAW Maintenance",
+  "description": "Workflow template to run op_baw_maintenance.yml based on survey values. After completing the survey, click CONFIRM VALUES to review your inputs. Upon approval, the workflow runs the appropriate job templates.",
+  "survey_enabled": true,
+  "survey_spec": { /* Include the survey JSON from above */ },
+  "nodes": [
+    {
+      "name": "Start",
+      "identifier": "start",
+      "type": "workflow_job_template_node",
+      "success_nodes": [
+        {
+          "name": "CONFIRM VALUES",
+          "identifier": "confirm",
+          "type": "workflow_approval_node",
+          "description": "Review your inputs. Click Approve to run the workflow.",
+          "approval_timeout": 0,
+          "success_nodes": [
+            {
+              "name": "Run Dev Job",
+              "job_template": "mws_baw_maintenance_dev",
+              "extra_data": {
+                "limit": "{{ 'baw' if (baw_group == 'all' or dev_host == 'all') else 'baw/' ~ dev_host }}"
+              },
+              "condition": "{{ baw_group == 'dev' or baw_group == 'all' }}"
+            },
+            {
+              "name": "Run Unit Job",
+              "job_template": "mws_baw_maintenance_unit",
+              "extra_data": {
+                "limit": "{{ 'baw' if (baw_group == 'all' or unit_host == 'all') else 'baw/' ~ unit_host }}"
+              },
+              "condition": "{{ baw_group == 'unit' or baw_group == 'all' }}"
+            },
+            {
+              "name": "Run Integration Job",
+              "job_template": "mws_baw_maintenance_intg",
+              "extra_data": {
+                "limit": "{{ 'baw' if (baw_group == 'all' or intg_host == 'all') else 'baw/' ~ intg_host }}"
+              },
+              "condition": "{{ baw_group == 'intg' or baw_group == 'all' }}"
+            },
+            {
+              "name": "Run Performance Job",
+              "job_template": "mws_baw_maintenance_perf",
+              "extra_data": {
+                "limit": "{{ 'baw' if (baw_group == 'all' or perf_host == 'all') else 'baw/' ~ perf_host }}"
+              },
+              "condition": "{{ baw_group == 'perf' or baw_group == 'all' }}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+Key Point: Only the survey values for the selected mode are submitted; all mode‑specific variables not provided will be defaulted to false in the job templates.
+
+3. Job Templates YAML
+Each job template is configured for Ansible 2.9.2 and uses baw_env (the corresponding host question) and source_control_branch from branch_name. All mode‑specific values use the default filter so that if the survey did not supply them, they are set to false.
+
+Job Template for Development (mws_baw_maintenance_dev)
+(Inventory: mws_middleware_sandbox)
+
+yaml
+Copy
+---
+name: "mws_baw_maintenance_dev"
+organization: "AAAA"
+inventory: "mws_middleware_sandbox"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+execution_environment: "mws_ansible_2_9"
+job_type: "run"
+ask_scm_branch_on_launch: false
+ask_inventory_on_launch: false
+ask_verbosity_branch_on_launch: false
+survey_enabled: false
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "source_control_branch": "{{ branch_name | default('main') }}",
+    "baw_env": "{{ dev_host }}",
+    "mode": "{{ mode }}",
+    "backup_enabled": "{{ backup_enabled | default('false') }}",
+    "enable_rollback": "{{ enable_rollback | default('false') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('false') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('false') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('false') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}",
+    "restart_enabled": "{{ restart_enabled | default('false') }}",
+    "report_enabled": "{{ report_enabled | default('false') }}",
+    "debug_enabled": "{{ debug_enabled | default('false') }}",
+    "stage_was_repo": "{{ stage_was_repo | default('false') }}",
+    "stage_baw_repo": "{{ stage_baw_repo | default('false') }}",
+    "stage_was_supplements_repo": "{{ stage_was_supplements_repo | default('false') }}",
+    "stage_ifix_repo": "{{ stage_ifix_repo | default('false') }}"
+  }
+Job Template for Unit (mws_baw_maintenance_unit)
+(Inventory: mws_middleware_unit)
+
+yaml
+Copy
+---
+name: "mws_baw_maintenance_unit"
+organization: "AAAA"
+inventory: "mws_middleware_unit"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+execution_environment: "mws_ansible_2_9"
+job_type: "run"
+ask_scm_branch_on_launch: false
+ask_inventory_on_launch: false
+ask_verbosity_branch_on_launch: false
+survey_enabled: false
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "source_control_branch": "{{ branch_name | default('main') }}",
+    "baw_env": "{{ unit_host }}",
+    "mode": "{{ mode }}",
+    "backup_enabled": "{{ backup_enabled | default('false') }}",
+    "enable_rollback": "{{ enable_rollback | default('false') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('false') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('false') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('false') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}",
+    "restart_enabled": "{{ restart_enabled | default('false') }}",
+    "report_enabled": "{{ report_enabled | default('false') }}",
+    "debug_enabled": "{{ debug_enabled | default('false') }}",
+    "stage_was_repo": "{{ stage_was_repo | default('false') }}",
+    "stage_baw_repo": "{{ stage_baw_repo | default('false') }}",
+    "stage_was_supplements_repo": "{{ stage_was_supplements_repo | default('false') }}",
+    "stage_ifix_repo": "{{ stage_ifix_repo | default('false') }}"
+  }
+Job Template for Integration (mws_baw_maintenance_intg)
+(Inventory: mws_middleware_intg)
+
+yaml
+Copy
+---
+name: "mws_baw_maintenance_intg"
+organization: "AAAA"
+inventory: "mws_middleware_intg"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+execution_environment: "mws_ansible_2_9"
+job_type: "run"
+ask_scm_branch_on_launch: false
+ask_inventory_on_launch: false
+ask_verbosity_branch_on_launch: false
+survey_enabled: false
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "source_control_branch": "{{ branch_name | default('main') }}",
+    "baw_env": "{{ intg_host }}",
+    "mode": "{{ mode }}",
+    "backup_enabled": "{{ backup_enabled | default('false') }}",
+    "enable_rollback": "{{ enable_rollback | default('false') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('false') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('false') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('false') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}",
+    "restart_enabled": "{{ restart_enabled | default('false') }}",
+    "report_enabled": "{{ report_enabled | default('false') }}",
+    "debug_enabled": "{{ debug_enabled | default('false') }}",
+    "stage_was_repo": "{{ stage_was_repo | default('false') }}",
+    "stage_baw_repo": "{{ stage_baw_repo | default('false') }}",
+    "stage_was_supplements_repo": "{{ stage_was_supplements_repo | default('false') }}",
+    "stage_ifix_repo": "{{ stage_ifix_repo | default('false') }}"
+  }
+Job Template for Performance (mws_baw_maintenance_perf)
+(Inventory: mws_middleware_perf)
+
+yaml
+Copy
+---
+name: "mws_baw_maintenance_perf"
+organization: "AAAA"
+inventory: "mws_middleware_perf"
+project: "ansible-middleware"
+playbook: "op_baw_maintenance.yml"
+execution_environment: "mws_ansible_2_9"
+job_type: "run"
+ask_scm_branch_on_launch: false
+ask_inventory_on_launch: false
+ask_verbosity_branch_on_launch: false
+survey_enabled: false
+ask_extra_vars_on_launch: false
+extra_vars: |
+  {
+    "source_control_branch": "{{ branch_name | default('main') }}",
+    "baw_env": "{{ perf_host }}",
+    "mode": "{{ mode }}",
+    "backup_enabled": "{{ backup_enabled | default('false') }}",
+    "enable_rollback": "{{ enable_rollback | default('false') }}",
+    "websphere_upgrade_enabled": "{{ websphere_upgrade_enabled | default('false') }}",
+    "baw_upgrade_enabled": "{{ baw_upgrade_enabled | default('false') }}",
+    "ihs_upgrade_enabled": "{{ ihs_upgrade_enabled | default('false') }}",
+    "plugins_upgrade_enabled": "{{ plugins_upgrade_enabled | default('false') }}",
+    "install_ifixes": "{{ install_ifixes | default('false') }}",
+    "restart_enabled": "{{ restart_enabled | default('false') }}",
+    "report_enabled": "{{ report_enabled | default('false') }}",
+    "debug_enabled": "{{ debug_enabled | default('false') }}",
+    "stage_was_repo": "{{ stage_was_repo | default('false') }}",
+    "stage_baw_repo": "{{ stage_baw_repo | default('false') }}",
+    "stage_was_supplements_repo": "{{ stage_was_supplements_repo | default('false') }}",
+    "stage_ifix_repo": "{{ stage_ifix_repo | default('false') }}"
+  }
+Key Point: In each job template, only the values submitted by the survey for the chosen mode will be non-false; all others will be forced to false by the default filter.
+
+Final Summary of Features
+Survey JSON:
+• Collects environment group, host (with “all” option), branch_name, mode, and mode‑specific parameters.
+• Mode‑specific questions appear only for the selected mode. If a parameter is not shown, its value will be missing.
+
+Workflow Template JSON:
+• Contains an approval node labeled CONFIRM VALUES that acts as a confirmation step.
+• After approval, the workflow launches the four job template nodes.
+• Each node’s extra_data computes a limit using the expression:
+
+jinja
+Copy
+"{{ 'baw' if (baw_group == 'all' or <group>_host == 'all') else 'baw/' ~ <group>_host }}"
+so that if "all" is selected at either level, the limit is "baw". • Only the values provided by the survey (for the selected mode) will be passed; any mode‑specific parameter not provided defaults to false in the job templates.
+
+Job Templates YAML:
+• Four job templates are configured for Ansible 2.9.2 with execution_environment "mws_ansible_2_9".
+• They use baw_env (from the appropriate host question) and map source_control_branch from branch_name.
+• All mode‑specific parameters use the filter | default('false') so that only the survey‑provided values for the chosen mode are active; all others are false.
+
+This configuration meets your requirement that the workflow template only takes in the values selected for the chosen mode (and forces the rest to false) and includes an approval step (CONFIRM VALUES) before the final Run.
