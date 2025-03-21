@@ -1,0 +1,79 @@
+---
+- name: IBM BAW Maintenance Playbook
+  hosts: "{{ limit | default('baw') }}"
+  gather_facts: no
+  vars:
+    # baw_env, mode, and mode-specific variables are expected to be passed by the job template.
+    baw_env: "{{ baw_env | default('') }}"
+    mode: "{{ mode | default('') }}"
+    backup_enabled: "{{ backup_enabled | default(false) }}"
+    enable_rollback: "{{ enable_rollback | default(false) }}"
+    websphere_upgrade_enabled: "{{ websphere_upgrade_enabled | default(false) }}"
+    baw_upgrade_enabled: "{{ baw_upgrade_enabled | default(false) }}"
+    ihs_upgrade_enabled: "{{ ihs_upgrade_enabled | default(false) }}"
+    plugins_upgrade_enabled: "{{ plugins_upgrade_enabled | default(false) }}"
+    install_ifixes: "{{ install_ifixes | default(false) }}"
+    restart_enabled: "{{ restart_enabled | default(false) }}"
+    report_enabled: "{{ report_enabled | default(false) }}"
+    debug_enabled: "{{ debug_enabled | default(false) }}"
+    stage_was_repo: "{{ stage_was_repo | default(false) }}"
+    stage_baw_repo: "{{ stage_baw_repo | default(false) }}"
+    stage_was_supplements_repo: "{{ stage_was_supplements_repo | default(false) }}"
+    stage_ifix_repo: "{{ stage_ifix_repo | default(false) }}"
+  tasks:
+    - name: Display run information
+      debug:
+        msg: >
+          Running play for mode {{ mode }} on baw_env {{ baw_env }}
+          using branch {{ source_control_branch }}.
+    - name: Display parameters for upgrade mode
+      debug:
+        msg: >
+          websphere_upgrade_enabled={{ websphere_upgrade_enabled }},
+          baw_upgrade_enabled={{ baw_upgrade_enabled }},
+          ihs_upgrade_enabled={{ ihs_upgrade_enabled }},
+          plugins_upgrade_enabled={{ plugins_upgrade_enabled }},
+          backup_enabled={{ backup_enabled }},
+          enable_rollback={{ enable_rollback }},
+          install_ifixes={{ install_ifixes }},
+          restart_enabled={{ restart_enabled }},
+          report_enabled={{ report_enabled }},
+          debug_enabled={{ debug_enabled }}.
+      when: mode == "upgrade"
+    - name: Display parameters for ifix mode
+      debug:
+        msg: >
+          backup_enabled={{ backup_enabled }},
+          enable_rollback={{ enable_rollback }},
+          install_ifixes={{ install_ifixes }},
+          restart_enabled={{ restart_enabled }},
+          report_enabled={{ report_enabled }},
+          debug_enabled={{ debug_enabled }}.
+      when: mode == "ifix"
+    - name: Display parameters for backup mode
+      debug:
+        msg: >
+          backup_enabled={{ backup_enabled }},
+          restart_enabled={{ restart_enabled }},
+          debug_enabled={{ debug_enabled }}.
+      when: mode == "backup"
+    - name: Display parameters for restore mode
+      debug:
+        msg: >
+          restart_enabled={{ restart_enabled }},
+          debug_enabled={{ debug_enabled }}.
+      when: mode == "restore"
+    - name: Display parameters for env control modes (restart_env, stop env, start env, config)
+      debug:
+        msg: >
+          restart_enabled={{ restart_enabled }},
+          debug_enabled={{ debug_enabled }}.
+      when: mode in ["restart env", "stop env", "start env", "config"]
+    - name: Display parameters for stage_install_files mode
+      debug:
+        msg: >
+          stage_was_repo={{ stage_was_repo }},
+          stage_baw_repo={{ stage_baw_repo }},
+          stage_was_supplements_repo={{ stage_was_supplements_repo }},
+          stage_ifix_repo={{ stage_ifix_repo }}.
+      when: mode == "stage_install_files"
