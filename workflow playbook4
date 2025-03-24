@@ -1,31 +1,38 @@
 ---
-- name: Run IBM BAW Support Role with Controlled Variables
+- name: Run IBM BAW Support Role with Controlled Variables and Debug
   hosts: "{{ limit | default('baw') }}"
   gather_facts: no
   vars:
-    source_control_branch: "{{ branch_name | default('main') }}"
-    baw_env: "{{ baw_env | default('Not Available') }}"
-    mode: "{{ mode | default('') }}"
-    backup_enabled: "{{ backup_enabled | default(false) }}"
-    enable_rollback: "{{ enable_rollback | default(false) }}"
-    websphere_upgrade_enabled: "{{ websphere_upgrade_enabled | default(false) }}"
-    baw_upgrade_enabled: "{{ baw_upgrade_enabled | default(false) }}"
-    ihs_upgrade_enabled: "{{ ihs_upgrade_enabled | default(false) }}"
-    plugins_upgrade_enabled: "{{ plugins_upgrade_enabled | default(false) }}"
-    install_ifixes: "{{ install_ifixes | default(false) }}"
-    restart_enabled: "{{ restart_enabled | default(false) }}"
-    report_enabled: "{{ report_enabled | default(false) }}"
-    debug_enabled: "{{ debug_enabled | default(false) }}"
-    stage_was_repo: "{{ stage_was_repo | default(false) }}"
-    stage_baw_repo: "{{ stage_baw_repo | default(false) }}"
-    stage_was_supplements_repo: "{{ stage_was_supplements_repo | default(false) }}"
-    stage_ifix_repo: "{{ stage_ifix_repo | default(false) }}"
+    # Map workflow-passed variables (with wf_ prefix) to our local variable names.
+    branch_name: "{{ wf_branch_name | default('main') }}"
+    baw_env: "{{ wf_baw_env | default('Not Available') }}"
+    mode: "{{ wf_mode | default('') }}"
+    backup_enabled: "{{ wf_backup_enabled | default(false) }}"
+    enable_rollback: "{{ wf_enable_rollback | default(false) }}"
+    websphere_upgrade_enabled: "{{ wf_websphere_upgrade_enabled | default(false) }}"
+    baw_upgrade_enabled: "{{ wf_baw_upgrade_enabled | default(false) }}"
+    ihs_upgrade_enabled: "{{ wf_ihs_upgrade_enabled | default(false) }}"
+    plugins_upgrade_enabled: "{{ wf_plugins_upgrade_enabled | default(false) }}"
+    install_ifixes: "{{ wf_install_ifixes | default(false) }}"
+    restart_enabled: "{{ wf_restart_enabled | default(false) }}"
+    report_enabled: "{{ wf_report_enabled | default(false) }}"
+    debug_enabled: "{{ wf_debug_enabled | default(false) }}"
+    stage_was_repo: "{{ wf_stage_was_repo | default(false) }}"
+    stage_baw_repo: "{{ wf_stage_baw_repo | default(false) }}"
+    stage_was_supplements_repo: "{{ wf_stage_was_supplements_repo | default(false) }}"
+    stage_ifix_repo: "{{ wf_stage_ifix_repo | default(false) }}"
+    # Also map the host selection variables from the workflow
+    baw_group: "{{ wf_baw_group | default('all') }}"
+    dev_host: "{{ wf_dev_host | default('all') }}"
+    unit_host: "{{ wf_unit_host | default('all') }}"
+    intg_host: "{{ wf_intg_host | default('all') }}"
+    perf_host: "{{ wf_perf_host | default('all') }}"
   tasks:
     - name: Debug: Show variables passed to role
       debug:
         msg: >
           Mode: {{ mode }},
-          Source Control Branch: {{ source_control_branch }},
+          Branch Name: {{ branch_name }},
           BAW Environment: {{ baw_env }},
           Backup Enabled: {{ backup_enabled }},
           Enable Rollback: {{ enable_rollback }},
@@ -40,6 +47,29 @@
           Stage WAS Repo: {{ stage_was_repo }},
           Stage BAW Repo: {{ stage_baw_repo }},
           Stage WAS Supplements Repo: {{ stage_was_supplements_repo }},
-          Stage IFIX Repo: {{ stage_ifix_repo }}.
+          Stage IFIX Repo: {{ stage_ifix_repo }},
+          BAW Group: {{ baw_group }},
+          Dev Host: {{ dev_host }},
+          Unit Host: {{ unit_host }},
+          Integration Host: {{ intg_host }},
+          Performance Host: {{ perf_host }}.
   roles:
     - role: op_baw_support
+      vars:
+        branch_name: "{{ branch_name }}"
+        baw_env: "{{ baw_env }}"
+        mode: "{{ mode }}"
+        backup_enabled: "{{ backup_enabled }}"
+        enable_rollback: "{{ enable_rollback }}"
+        websphere_upgrade_enabled: "{{ websphere_upgrade_enabled }}"
+        baw_upgrade_enabled: "{{ baw_upgrade_enabled }}"
+        ihs_upgrade_enabled: "{{ ihs_upgrade_enabled }}"
+        plugins_upgrade_enabled: "{{ plugins_upgrade_enabled }}"
+        install_ifixes: "{{ install_ifixes }}"
+        restart_enabled: "{{ restart_enabled }}"
+        report_enabled: "{{ report_enabled }}"
+        debug_enabled: "{{ debug_enabled }}"
+        stage_was_repo: "{{ stage_was_repo }}"
+        stage_baw_repo: "{{ stage_baw_repo }}"
+        stage_was_supplements_repo: "{{ stage_was_supplements_repo }}"
+        stage_ifix_repo: "{{ stage_ifix_repo }}"
