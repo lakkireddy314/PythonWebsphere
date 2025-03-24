@@ -1,0 +1,45 @@
+---
+- name: Run IBM BAW Support Role with Controlled Variables
+  hosts: "{{ limit | default('baw') }}"
+  gather_facts: no
+  vars:
+    source_control_branch: "{{ branch_name | default('main') }}"
+    baw_env: "{{ baw_env | default('Not Available') }}"
+    mode: "{{ mode | default('') }}"
+    backup_enabled: "{{ backup_enabled | default(false) }}"
+    enable_rollback: "{{ enable_rollback | default(false) }}"
+    websphere_upgrade_enabled: "{{ websphere_upgrade_enabled | default(false) }}"
+    baw_upgrade_enabled: "{{ baw_upgrade_enabled | default(false) }}"
+    ihs_upgrade_enabled: "{{ ihs_upgrade_enabled | default(false) }}"
+    plugins_upgrade_enabled: "{{ plugins_upgrade_enabled | default(false) }}"
+    install_ifixes: "{{ install_ifixes | default(false) }}"
+    restart_enabled: "{{ restart_enabled | default(false) }}"
+    report_enabled: "{{ report_enabled | default(false) }}"
+    debug_enabled: "{{ debug_enabled | default(false) }}"
+    stage_was_repo: "{{ stage_was_repo | default(false) }}"
+    stage_baw_repo: "{{ stage_baw_repo | default(false) }}"
+    stage_was_supplements_repo: "{{ stage_was_supplements_repo | default(false) }}"
+    stage_ifix_repo: "{{ stage_ifix_repo | default(false) }}"
+  tasks:
+    - name: Debug: Show variables passed to role
+      debug:
+        msg: >
+          Mode: {{ mode }},
+          Source Control Branch: {{ source_control_branch }},
+          BAW Environment: {{ baw_env }},
+          Backup Enabled: {{ backup_enabled }},
+          Enable Rollback: {{ enable_rollback }},
+          WebSphere Upgrade Enabled: {{ websphere_upgrade_enabled }},
+          BAW Upgrade Enabled: {{ baw_upgrade_enabled }},
+          IHS Upgrade Enabled: {{ ihs_upgrade_enabled }},
+          Plugins Upgrade Enabled: {{ plugins_upgrade_enabled }},
+          Install IFIXes: {{ install_ifixes }},
+          Restart Enabled: {{ restart_enabled }},
+          Report Enabled: {{ report_enabled }},
+          Debug Enabled: {{ debug_enabled }},
+          Stage WAS Repo: {{ stage_was_repo }},
+          Stage BAW Repo: {{ stage_baw_repo }},
+          Stage WAS Supplements Repo: {{ stage_was_supplements_repo }},
+          Stage IFIX Repo: {{ stage_ifix_repo }}.
+  roles:
+    - role: op_baw_support
