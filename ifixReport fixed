@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>WebSphere iFix Installation Report</title>
+    <style>
+      body { font-family: Arial, sans-serif; color: #333; font-size: 14px; margin: 0; padding: 20px; }
+      h1, h2, h3 { color: #2E6DA4; }
+      table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+      th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+      th { background-color: #f2f2f2; }
+      hr { margin: 20px 0; }
+    </style>
+  </head>
+  <body>
+    <h1>WebSphere iFix Installation Report</h1>
+    <p><strong>Generated on:</strong> {{ ansible_date_time.date }} {{ ansible_date_time.time }}</p>
+
+    {# Build a list of hosts with their environment and iFix installations #}
+    {% set host_info = [] %}
+    {% for host in play_hosts %}
+      {% set ifixes = hostvars[host].installed_ifixes_this_run | default([]) %}
+      {% set _ = host_info.append({'name': host, 'env': hostvars[host].env | default('unknown'), 'ifixes': ifixes}) %}
+    {% endfor %}
+
+    {# Group hosts by environment using the classic groupby syntax #}
+    {% for group in host_info | groupby('env') %}
+      {% set env = group.0 %}
+      {% set hosts = group.1 %}
+      <h2>Environment: {{ env }}</h2>
+      {% for item in hosts %}
+        <h3>Host: {{ item.name }}</h3>
+        {% if item.ifixes | length > 0 %}
+          <table border="1" cellpadding="5" cellspacing="0">
+            <tr>
+              <th>iFix Name</th>
+            </tr>
+            {% for ifix in item.ifixes %}
+              <tr>
+                <td>{{ ifix }}</td>
+              </tr>
+            {% endfor %}
+          </table>
+          <p><strong>Total Installed on this Host:</strong> {{ item.ifixes | length }}</p>
+        {% else %}
+          <p><em>No iFix installations were performed on this host.</em></p>
+        {% endif %}
+        <hr>
+      {% endfor %}
+    {% endfor %}
+  </body>
+</html>
