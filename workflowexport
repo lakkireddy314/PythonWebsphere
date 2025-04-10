@@ -1,0 +1,15 @@
+- name: Export Workflow Job Template
+  hosts: localhost
+  tasks:
+    - name: Export workflow job template
+      awx.awx.export:
+        controller_host: "https://your_ansible_tower_url"
+        controller_username: "your_username"
+        controller_password: "your_password"
+        workflow_job_templates: "Your Workflow Template Name"
+      register: exported_data
+
+    - name: Save exported data to a YAML file
+      copy:
+        content: "{{ exported_data.exported | to_nice_yaml }}"
+        dest: "./exported_workflow_template.yml"
