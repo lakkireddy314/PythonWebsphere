@@ -1,0 +1,59 @@
+---
+- name: "Get local cert expiry date"
+  shell: |
+    openssl x509 -enddate -noout \
+      -in {{ vcert_install_dir }}/{{ pickup_entry.value }}.pem \
+      | cut -d= -f2
+  register: cert_enddate
+  loop: "{{ httpd_pickup_ids | dict2items }}"
+  loop_control:
+    loop_var: pickup_entry
+    label: "{{ pickup_entry.value }}"
+  delegate_to: localhost
+  tags:
+    - precheck
+    - expiry-check
+
+- name: "Compute days until expiry"
+  set_fact:
+    cert_days_remaining: >-
+      {{
+        ((cert_enddate.stdout | to_datetime("%b %d %H:%M:%S %Y %Z")).timestamp()
+         - (ansible_date_time.iso8601 | to_datetime).timestamp())
+        / 86400 | round(0,'floor') | int
+      }}
+  tags:
+    - precheck
+    - expiry-check
+
+- name: "Get local cert serial number"
+  shell: |
+    openssl x509 -in {{ vcert_install_dir }}/{{ pickup_entry.value }}.pem \
+      -serial -noout | cut -d= -f2
+  register: cert_serial_local
+  delegate_to: localhost
+  tags:
+    - precheck
+    - expiry-check
+
+- name: "Record local_cert_info"
+  set_fact:
+    local_cert_info:
+      expiry_days: "{{ cert_days_remaining }}"
+      serial:      "{{ cert_serial_local.stdout }}"
+      changed:     "{{ cert_days_remaining <= cert_renew_threshold }}"
+  tags:
+    - precheck
+    - expiry-check
+
+- name: "Debug local certificate status"
+  debug:
+    msg: >
+      Cert {{ pickup_entry.value }} has {{ cert_days_remaining }} days left
+      (serial {{ cert_serial_local.stdout }}); {{ 'will renew' if local_cert_info.changed else 'skipping' }}.
+  loop: "{{ httpd_pickup_ids | dict2items }}"
+  loop_control:
+    loop_var: pickup_entry
+  tags:
+    - precheck
+    - expiry-check
