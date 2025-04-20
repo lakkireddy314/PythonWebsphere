@@ -1,4 +1,5 @@
 ---
+
 - name: "Initialize expiry tracking"
   set_fact:
     cert_days_remaining_per_alias: {}
