@@ -1,55 +1,10 @@
-1. Create a helper task file:
-roles/venafi_cert_renew/tasks/check_one_cert.yml
-yaml
-Copy
----
-# This file runs once per alias_entry
+Here’s the correct way to split your expiry‐check so that:
 
-- name: "Fetch expiry date for alias {{ alias_entry.value }}"
-  shell: >
-    openssl x509 -enddate -noout -in {{ vcert_install_dir }}/{{ alias_entry.value }}.pem
-    | cut -d= -f2
-  register: expiry_result
-  changed_when: false
+No delegate_to appears on the include_tasks itself
 
-- name: "Fetch serial number for alias {{ alias_entry.value }}"
-  shell: >
-    openssl x509 -in {{ vcert_install_dir }}/{{ alias_entry.value }}.pem
-      -serial -noout | cut -d= -f2
-  register: serial_result
-  changed_when: false
+All delegation happens inside the included file on each task
 
-- name: "Compute days until expiry for alias {{ alias_entry.value }}"
-  set_fact:
-    days_rem: >-
-      {{
-        (
-          (expiry_result.stdout | to_datetime('%b %d %H:%M:%S %Y %Z')).timestamp()
-          -
-          (ansible_date_time.iso8601 | to_datetime).timestamp()
-        ) / 86400 | round(0, 'floor') | int
-      }}
-
-- name: "Record expiry and serial for alias {{ alias_entry.value }}"
-  set_fact:
-    local_cert_info: >-
-      {{ local_cert_info | default({}) | combine({
-          alias_entry.value: {
-            serial: serial_result.stdout,
-            expiry_days: days_rem,
-            changed: days_rem <= cert_renew_threshold
-          }
-        }) }}
-
-- name: "DEBUG summary for alias {{ alias_entry.value }}"
-  debug:
-    msg: >-
-      Alias {{ alias_entry.value }}:
-        expires in {{ days_rem }} days,
-        serial={{ serial_result.stdout }},
-        needs_renewal={{ days_rem <= cert_renew_threshold }}
-2. Update your main expiry‐check task to include that file
-roles/venafi_cert_renew/tasks/check_local_cert.yml
+1. tasks/check_local_cert.yml
 yaml
 Copy
 ---
@@ -66,22 +21,83 @@ Copy
   loop_control:
     loop_var: alias_entry
     label: "{{ alias_entry.key }}"
+  tags:
+    - precheck
+    - expiry-check
+Note: No delegate_to here—this just drives the loop and includes the helper.
+
+2. tasks/check_one_cert.yml
+yaml
+Copy
+---
+- name: "Fetch expiry date for alias {{ alias_entry.value }}"
+  shell: >
+    openssl x509 -enddate -noout
+      -in {{ vcert_install_dir }}/{{ alias_entry.value }}.pem
+    | cut -d= -f2
+  register: expiry_result
+  changed_when: false
   delegate_to: localhost
   tags:
     - precheck
     - expiry-check
-🔑 Why this fixes your skipping issue
-Single loop entrypoint: Each iteration of the include_tasks runs the entire helper file (check_one_cert.yml) for that alias. No task is left “outside” the loop.
 
-Scoped register & set_fact: expiry_result and serial_result are fresh for each iteration, so you never reference an undefined variable.
+- name: "Fetch serial number for alias {{ alias_entry.value }}"
+  shell: >
+    openssl x509 -in {{ vcert_install_dir }}/{{ alias_entry.value }}.pem
+      -serial -noout | cut -d= -f2
+  register: serial_result
+  changed_when: false
+  delegate_to: localhost
+  tags:
+    - precheck
+    - expiry-check
 
-No invalid loop: on blocks: We only loop the include_tasks, not a block, avoiding the “loop not valid for block” error.
+- name: "Parse expiry timestamp for alias {{ alias_entry.value }}"
+  set_fact:
+    expiry_ts: "{{ expiry_result.stdout | to_datetime('%b %d %H:%M:%S %Y %Z') }}"
+  delegate_to: localhost
+  tags:
+    - precheck
+    - expiry-check
 
-Sequential execution: Steps occur in the right order for each alias, guaranteeing the compute‑days and set‑fact tasks always see a defined expiry_result.stdout.
+- name: "Compute days until expiry for alias {{ alias_entry.value }}"
+  set_fact:
+    days_rem: >-
+      {{
+        (
+          expiry_ts.timestamp()
+          -
+          (ansible_date_time.iso8601 | to_datetime).timestamp()
+        ) / 86400 | round(0, 'floor') | int
+      }}
+  delegate_to: localhost
+  tags:
+    - precheck
+    - expiry-check
 
-You can now safely drive your subsequent renew, backup_and_replace, and restore tasks with:
+- name: "Record cert info for alias {{ alias_entry.value }}"
+  set_fact:
+    local_cert_info: >-
+      {{ local_cert_info 
+         | combine({ alias_entry.value: {
+             serial:      serial_result.stdout,
+             expiry_days: days_rem,
+             changed:     (days_rem <= cert_renew_threshold)
+           }}) }}
+  delegate_to: localhost
+  tags:
+    - precheck
+    - expiry-check
 
-yaml
-Copy
-when: local_cert_info[ cert_entry.cert_alias ].changed
-and be confident none of these helper tasks will be skipped due to undefined variables.
+- name: "Debug summary for alias {{ alias_entry.value }}"
+  debug:
+    msg: >-
+      Alias {{ alias_entry.value }}:
+        expires in {{ days_rem }} days,
+        serial={{ serial_result.stdout }},
+        needs_renewal={{ days_rem <= cert_renew_threshold }}
+  delegate_to: localhost
+  tags:
+    - precheck
+    - expiry-check
