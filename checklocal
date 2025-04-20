@@ -1,5 +1,5 @@
 ---
-- name: "Initialize cert expiry result dictionary"
+- name: "Initialize facts for cert tracking"
   set_fact:
     cert_days_remaining_per_alias: {}
     local_cert_info: {}
@@ -7,7 +7,8 @@
     - precheck
     - expiry-check
 
-- name: "Check cert expiry date for each alias"
+# Step 1: Check expiry date for each alias
+- name: "Get expiry date of each cert alias"
   shell: |
     openssl x509 -enddate -noout -in {{ vcert_install_dir }}/{{ pickup_entry.value }}.pem | cut -d= -f2
   register: cert_expiry_raw
@@ -21,7 +22,8 @@
     - precheck
     - expiry-check
 
-- name: "Check cert serial number for each alias"
+# Step 2: Check serial for each alias
+- name: "Get serial number of each cert alias"
   shell: |
     openssl x509 -in {{ vcert_install_dir }}/{{ pickup_entry.value }}.pem -serial -noout | cut -d= -f2
   register: cert_serial_raw
@@ -35,21 +37,22 @@
     - precheck
     - expiry-check
 
-- name: "Compute days until expiry for each alias"
+# Step 3: Calculate expiry days for each alias
+- name: "Calculate days until expiry for each alias"
   set_fact:
     cert_days_remaining_per_alias: >-
       {{
         cert_days_remaining_per_alias | combine({
           pickup_entry.value: (
             (
-              cert_expiry_raw.results[ansible_loop.index0].stdout
-              | to_datetime('%b %d %H:%M:%S %Y %Z')
+              (cert_expiry_raw.results[ansible_loop.index0].stdout | default('') | to_datetime('%b %d %H:%M:%S %Y %Z'))
             ).timestamp()
             -
             (ansible_date_time.iso8601 | to_datetime).timestamp()
           ) / 86400 | round(0, 'floor') | int
         })
       }}
+  when: cert_expiry_raw.results[ansible_loop.index0].stdout is defined
   loop: "{{ httpd_pickup_ids | dict2items }}"
   loop_control:
     loop_var: pickup_entry
@@ -57,18 +60,22 @@
     - precheck
     - expiry-check
 
-- name: "Set local_cert_info per alias"
+# Step 4: Populate local_cert_info with expiry, serial, changed flag
+- name: "Set local cert info dictionary per alias"
   set_fact:
     local_cert_info: >-
       {{
         local_cert_info | combine({
           pickup_entry.value: {
-            "serial": cert_serial_raw.results[ansible_loop.index0].stdout,
+            "serial": (cert_serial_raw.results[ansible_loop.index0].stdout | default('UNKNOWN')),
             "expiry_days": cert_days_remaining_per_alias[pickup_entry.value],
             "changed": cert_days_remaining_per_alias[pickup_entry.value] <= cert_renew_threshold
           }
         })
       }}
+  when:
+    - cert_days_remaining_per_alias[pickup_entry.value] is defined
+    - cert_serial_raw.results[ansible_loop.index0].stdout is defined
   loop: "{{ httpd_pickup_ids | dict2items }}"
   loop_control:
     loop_var: pickup_entry
@@ -76,12 +83,15 @@
     - precheck
     - expiry-check
 
-- name: "DEBUG summary per cert alias"
+# Step 5: Output debug summary per alias
+- name: "Debug cert status summary for each alias"
   debug:
     msg: >-
-      Alias {{ pickup_entry.value }} expires in {{ cert_days_remaining_per_alias[pickup_entry.value] }} days.
-      Serial: {{ local_cert_info[pickup_entry.value].serial }}.
+      Alias: {{ pickup_entry.value }},
+      Expires in: {{ cert_days_remaining_per_alias[pickup_entry.value] }} days,
+      Serial: {{ local_cert_info[pickup_entry.value].serial }},
       Renewal needed: {{ local_cert_info[pickup_entry.value].changed }}
+  when: cert_days_remaining_per_alias[pickup_entry.value] is defined
   loop: "{{ httpd_pickup_ids | dict2items }}"
   loop_control:
     loop_var: pickup_entry
