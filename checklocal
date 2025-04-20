@@ -1,103 +1,144 @@
-Here’s the correct way to split your expiry‐check so that:
-
-No delegate_to appears on the include_tasks itself
-
-All delegation happens inside the included file on each task
-
 1. tasks/check_local_cert.yml
 yaml
 Copy
 ---
-- name: "Initialize expiry tracking"
+- name: Initialize local_cert_info
   set_fact:
     local_cert_info: {}
   tags:
     - precheck
     - expiry-check
 
-- name: "Check expiry & serial for each cert alias"
-  include_tasks: check_one_cert.yml
+- name: Gather expiry-days and serial for each cert alias
+  shell: |
+    # Extract expiry string (e.g. "Feb 22 07:07:07 2027 GMT")
+    exp=$(openssl x509 -enddate -noout -in {{ vcert_install_dir }}/{{ item.value }}.pem \
+         | cut -d= -f2)
+    # Compute days until expiry
+    days=$(( ( $(date -d "$exp" +%s) - $(date +%s) ) / 86400 ))
+    # Extract serial
+    serial=$(openssl x509 -in {{ vcert_install_dir }}/{{ item.value }}.pem \
+           -serial -noout | cut -d= -f2)
+    # Output:  "<alias> <days> <serial>"
+    echo "{{ item.value }} $days $serial"
+  args:
+    executable: /bin/bash
+  register: expiry_results
+  changed_when: false
+  delegate_to: localhost
   loop: "{{ httpd_pickup_ids | dict2items }}"
   loop_control:
-    loop_var: alias_entry
-    label: "{{ alias_entry.key }}"
+    loop_var: item
+    label: "{{ item.key }}"
   tags:
     - precheck
     - expiry-check
-Note: No delegate_to here—this just drives the loop and includes the helper.
+Why this works
 
-2. tasks/check_one_cert.yml
+We offload all date parsing and arithmetic to the shell, avoiding Jinja2’s unsafe proxy/timestamp pitfalls 
+Stack Overflow
+.
+
+A single register: expiry_results collects each line “alias days serial” in expiry_results.results 
+Stack Overflow
+.
+
+No blocks with invalid loops, and no include_tasks delegation issues 
+Ansible Documentation
+.
+
+2. Build the local_cert_info Dictionary
 yaml
 Copy
----
-- name: "Fetch expiry date for alias {{ alias_entry.value }}"
-  shell: >
-    openssl x509 -enddate -noout
-      -in {{ vcert_install_dir }}/{{ alias_entry.value }}.pem
-    | cut -d= -f2
-  register: expiry_result
-  changed_when: false
-  delegate_to: localhost
-  tags:
-    - precheck
-    - expiry-check
-
-- name: "Fetch serial number for alias {{ alias_entry.value }}"
-  shell: >
-    openssl x509 -in {{ vcert_install_dir }}/{{ alias_entry.value }}.pem
-      -serial -noout | cut -d= -f2
-  register: serial_result
-  changed_when: false
-  delegate_to: localhost
-  tags:
-    - precheck
-    - expiry-check
-
-- name: "Parse expiry timestamp for alias {{ alias_entry.value }}"
-  set_fact:
-    expiry_ts: "{{ expiry_result.stdout | to_datetime('%b %d %H:%M:%S %Y %Z') }}"
-  delegate_to: localhost
-  tags:
-    - precheck
-    - expiry-check
-
-- name: "Compute days until expiry for alias {{ alias_entry.value }}"
-  set_fact:
-    days_rem: >-
-      {{
-        (
-          expiry_ts.timestamp()
-          -
-          (ansible_date_time.iso8601 | to_datetime).timestamp()
-        ) / 86400 | round(0, 'floor') | int
-      }}
-  delegate_to: localhost
-  tags:
-    - precheck
-    - expiry-check
-
-- name: "Record cert info for alias {{ alias_entry.value }}"
+- name: Build local_cert_info from gathered results
   set_fact:
     local_cert_info: >-
-      {{ local_cert_info 
-         | combine({ alias_entry.value: {
-             serial:      serial_result.stdout,
-             expiry_days: days_rem,
-             changed:     (days_rem <= cert_renew_threshold)
-           }}) }}
-  delegate_to: localhost
+      {{
+        local_cert_info | default({}) | combine({
+          (item.stdout.split()[0]): {
+            "expiry_days": (item.stdout.split()[1] | int),
+            "serial":      (item.stdout.split()[2]),
+            "changed":     ((item.stdout.split()[1] | int) <= cert_renew_threshold)
+          }
+        })
+      }}
+  loop: "{{ expiry_results.results }}"
+  loop_control:
+    label: "{{ item.stdout.split()[0] }}"
   tags:
     - precheck
     - expiry-check
+Why this works
 
-- name: "Debug summary for alias {{ alias_entry.value }}"
+expiry_results.results is a list of dicts; each item.stdout is the one line we echoed.
+
+We split() into [alias, days, serial] and populate our fact in one shot 
+Stack Overflow
+.
+
+The boolean changed flag is set only if days <= cert_renew_threshold.
+
+3. Debug / Verify
+yaml
+Copy
+- name: “Debug summary for all aliases”
   debug:
-    msg: >-
-      Alias {{ alias_entry.value }}:
-        expires in {{ days_rem }} days,
-        serial={{ serial_result.stdout }},
-        needs_renewal={{ days_rem <= cert_renew_threshold }}
-  delegate_to: localhost
+    var: local_cert_info
   tags:
     - precheck
     - expiry-check
+You should now see something like:
+
+yaml
+Copy
+local_cert_info:
+  cert_alias_test1:
+    expiry_days: 12
+    serial: "1A2B3C4D"
+    changed: true
+  cert_alias_test2:
+    expiry_days: 210
+    serial: "5E6F7G8H"
+    changed: false
+✅ Benefits
+Zero skipping: No when on the loop itself, so every alias is always processed.
+
+No Jinja2 timestamp bug: All date math done in Bash (date -d ... +%s) 
+Stack Overflow
+.
+
+Idempotent: changed_when: false means checks never report a change.
+
+Self‑contained: Only two tasks handle expiry/serial logic—easier to maintain.
+
+Clear scoping: No inclusion‑scope issues or “unsafe proxy” errors.
+
+Citations
+Delegate per‑task: delegate_to on a normal task, not on include_tasks 
+Ansible Documentation
+
+Register results of a loop: Captures each iteration’s output in .results 
+Stack Overflow
+
+Bash date arithmetic: Use date -d "$exp" +%s to convert OpenSSL strings into epoch seconds 
+Stack Overflow
+
+Looping with dict2items: Convert your httpd_pickup_ids map into a list of { key, value } pairs
+
+split() in Jinja2: Break a string into a list for easy indexing 
+Stack Overflow
+
+Idempotent checks: changed_when: false preserves untouched state when only reading data 
+Spacelift
+
+Combining facts: Use Jinja2’s combine() to build up a dictionary per loop iteration
+
+Tagging tasks: Allows --tags expiry-check to run just these two tasks
+
+OpenSSL expiry extraction: openssl x509 -enddate -noout to get notAfter=... strings 
+Stack Overflow
+
+Shell safety: Use executable: /bin/bash to ensure your multi‑line script runs under Bash 
+Stack Overflow
+
+With this, your last three tasks will never skip as long as the .pem files exist—and you’ll have a rock‑solid local_cert_info you can consume in renew_cert.yml.
