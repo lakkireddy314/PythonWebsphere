@@ -1,0 +1,49 @@
+---
+- name: "Ensure VCert directory exists"
+  file:
+    path: "{{ vcert_install_dir }}"
+    state: directory
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
+    - vcert-pickup
+
+- name: "Download VCert CLI zip"
+  get_url:
+    url: "{{ vcert_download_url }}"
+    dest: "{{ vcert_install_dir }}/vcert.zip"
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
+    - vcert-pickup
+
+- name: "Unarchive VCert CLI"
+  unarchive:
+    src: "{{ vcert_install_dir }}/vcert.zip"
+    dest: "{{ vcert_install_dir }}/"
+    remote_src: yes
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
+    - vcert-pickup
+
+- name: "Fetch PEM via VCert pickup for each config"
+  command: >
+    {{ vcert_install_dir }}/vcert pickup
+      --format pem
+      --output {{ vcert_install_dir }}/{{ pickup_entry.value }}.pem
+      --pickup-id {{ pickup_entry.value }}
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ venafi_pickupid }}
+  loop: "{{ httpd_pickup_ids | dict2items }}"
+  loop_control:
+    loop_var: pickup_entry
+    label: "{{ pickup_entry.key }}"
+  register: pickup_results
+  delegate_to: localhost
+  tags:
+    - precheck
+    - vcert-pickup
