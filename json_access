@@ -1,0 +1,21 @@
+- name: Extract access_token from command output
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Run command to get JSON response
+      ansible.builtin.command:
+        cmd: "your_command_here"
+      register: command_output
+      changed_when: false
+
+    - name: Parse JSON output
+      ansible.builtin.set_fact:
+        parsed_output: "{{ command_output.stdout | from_json }}"
+
+    - name: Extract access_token
+      ansible.builtin.set_fact:
+        access_token: "{{ parsed_output.access_token }}"
+
+    - name: Use access_token in another task
+      ansible.builtin.debug:
+        msg: "The access token is {{ access_token }}"
