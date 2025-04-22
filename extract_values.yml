@@ -6,89 +6,66 @@
     - extract
     - config-parse
 
-- name: "Check that {{ conf_entry.key }} exists"
-  ansible.builtin.stat:
-    path: "{{ conf_entry.key }}"
-  register: conf_stat
+- name: "Read and parse HTTPD configs on remote hosts"
+  vars:
+    # Decode the raw slurp content into a string
+    content: "{{ slurp_result.content | b64decode }}"
+    # Find all Keyfile paths (non‑commented)
+    keyfiles: >
+      {{ content 
+         | regex_findall('(?m)^[ \\t]*Keyfile[ \\t]*=[ \\t]*(\\S+)') }}
+    # Find all SSLServerCert values
+    ssl_aliases: >
+      {{ content 
+         | regex_findall('(?m)^[ \\t]*SSLServerCert[ \\t]*=[ \\t]*(\\S+)') }}
+    # Find first Listen port (default to 443 if none)
+    listen_ports: >
+      {{ content 
+         | regex_findall('(?m)^[ \\t]*Listen[ \\t]+(?:[\\w\\.]+:)?(\\d+)') }}
+  block:
+    - name: "Fetch {{ conf_entry.key }} from remote"
+      slurp:
+        src: "{{ conf_entry.key }}"
+      register: slurp_result
+      ignore_errors: true
+      tags:
+        - extract
+        - config-parse
+
+    - name: "Skip parse if {{ conf_entry.key }} missing"
+      debug:
+        msg: "{{ conf_entry.key }} not found, skipping."
+      when: slurp_result is failed
+      tags:
+        - extract
+        - config-parse
+
+    - name: "Append parsed entries to cert_configs"
+      set_fact:
+        cert_configs: >-
+          {{
+            cert_configs
+            + [
+                {
+                  'config_file': conf_entry.key,
+                  'kdb_file':    kdb,
+                  'cert_alias':  conf_entry.value,
+                  'listen_port': (listen_ports[0] if listen_ports else '443')
+                }
+                for kdb in keyfiles|default([])
+              ]
+          }}
+      when:
+        - slurp_result is succeeded
+        - keyfiles | length > 0
+      tags:
+        - extract
+        - config-parse
+
   loop: "{{ httpd_pickup_ids | dict2items }}"
   loop_control:
     loop_var: conf_entry
     label: "{{ conf_entry.key }}"
-  tags:
-    - extract
-    - config-parse
-
-- name: "Read {{ conf_entry.key }} from remote"
-  ansible.builtin.slurp:
-    src: "{{ conf_entry.key }}"
-  when: conf_stat.stat.exists
-  register: conf_raw
-  loop: "{{ httpd_pickup_ids | dict2items }}"
-  loop_control:
-    loop_var: conf_entry
-  tags:
-    - extract
-    - config-parse
-
-- name: "Decode {{ conf_entry.key }} content"
-  set_fact:
-    file_content: "{{ conf_raw.content | b64decode }}"
-  when: conf_raw is defined
-  tags:
-    - extract
-    - config-parse
-
-- name: "Extract Keyfile paths"
-  set_fact:
-    keyfiles: >-
-      {{ file_content 
-         | regex_findall('(?m)^[ \t]*Keyfile[ \t]*=[ \t]*(\\S+)') }}
-  when: file_content is defined
-  tags:
-    - extract
-    - config-parse
-
-- name: "Extract SSLServerCert aliases"
-  set_fact:
-    ssl_aliases: >-
-      {{ file_content 
-         | regex_findall('(?m)^[ \t]*SSLServerCert[ \t]*=[ \t]*(\\S+)') }}
-  when: file_content is defined
-  tags:
-    - extract
-    - config-parse
-
-- name: "Extract Listen ports"
-  set_fact:
-    listen_ports: >-
-      {{ file_content 
-         | regex_findall('(?m)^[ \t]*Listen[ \t]+(?:[\\w\\.]+:)?(\\d+)') }}
-  when: file_content is defined
-  tags:
-    - extract
-    - config-parse
-
-- name: "Build cert_configs entries"
-  set_fact:
-    cert_configs: >-
-      {{
-        cert_configs
-        + [
-            {
-              'config_file': conf_entry.key,
-              'kdb_file':    kdb,
-              'cert_alias':  conf_entry.value,
-              'listen_port': (listen_ports[0] if listen_ports else '443')
-            }
-            for kdb in keyfiles
-          ]
-      }}
-  when:
-    - keyfiles is defined
-    - keyfiles | length > 0
-  loop: "{{ httpd_pickup_ids | dict2items }}"
-  loop_control:
-    loop_var: conf_entry
   tags:
     - extract
     - config-parse
