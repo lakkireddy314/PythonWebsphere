@@ -55,36 +55,35 @@
     - extract
     - config-parse
 
-- name: "Append parsed entries for {{ conf_entry.key }}"
+- name: "Append each Keyfile entry to cert_configs"
   set_fact:
-    cert_configs: >-
-      {{
-        cert_configs
-        + [
-            {
-              'config_file': conf_entry.key,
-              'kdb_file':    kdb,
-              'cert_alias':  conf_entry.value,
-              'listen_port': (listen_ports_result.stdout | default('443'))
-            }
-            for kdb in (keyfiles_result.stdout_lines | default([]))
-          ]
-      }}
+    cert_configs: "{{ cert_configs + [ {
+      'config_file': conf_entry.key,
+      'kdb_file':    kdb,
+      'cert_alias':  conf_entry.value,
+      'listen_port': (listen_ports_result.stdout | default('443'))
+    } ] }}"
+  loop: "{{ keyfiles_result.stdout_lines | default([]) }}"
+  loop_control:
+    loop_var: kdb
   when:
     - conf_stat.stat.exists
-    - (keyfiles_result.stdout_lines | default([])) | length > 0
+    - keyfiles_result.stdout_lines is defined
+    - keyfiles_result.stdout_lines | length > 0
   tags:
     - extract
     - config-parse
 
-
-- name: "Debug: found entries in {{ conf_entry.key }}"
+- name: "Debug parsed entries for {{ conf_entry.key }}"
   debug:
     msg: >-
       Keyfiles={{ keyfiles_result.stdout_lines | default([]) }},
       SSLServerCerts={{ ssl_aliases_result.stdout_lines | default([]) }},
       ListenPort={{ listen_ports_result.stdout | default('443') }}
   when: conf_stat.stat.exists
+  tags:
+    - extract
+    - config-parse
   tags:
     - extract
     - config-parse
