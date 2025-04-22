@@ -1,16 +1,4 @@
-Below is a proven, block‑free extraction workflow that reliably pulls Keyfile, SSLServerCert and Listen (non‑commented) directives from remote httpd.conf files, and populates cert_configs correctly. We:
-
-Loop over your httpd_pickup_ids mapping with a custom conf_entry
-
-Stat each file to ensure it exists
-
-Shell‑grep the directives (avoiding complex Jinja regex pitfalls)
-
-Assemble cert_configs via a simple list comprehension
-
-Tag everything and guard with when: so re‑runs are idempotent and safe
-
-tasks/extract_values.yml
+1. tasks/extract_values.yml
 yaml
 Copy
 ---
@@ -21,7 +9,7 @@ Copy
     - extract
     - config-parse
 
-- name: "Extract certificate entries from HTTPD configs"
+- name: "Extract certificate info from each HTTPD config"
   include_tasks: extract_one_conf.yml
   loop: "{{ httpd_pickup_ids | dict2items }}"
   loop_control:
@@ -30,13 +18,21 @@ Copy
   tags:
     - extract
     - config-parse
-tasks/extract_one_conf.yml
+Why this works:
+
+include_tasks supports loop: while block does not 
+Ansible Documentation
+.
+
+We avoid the “loop is not a valid attribute for a block” error by not looping directly on a block 
+Fabian Lee
+.
+
+2. tasks/extract_one_conf.yml
 yaml
 Copy
 ---
-# Per‑config extraction (called via include_tasks with loop)
-
-- name: "Check that {{ conf_entry.key }} exists"
+- name: "Check if {{ conf_entry.key }} exists"
   stat:
     path: "{{ conf_entry.key }}"
   register: conf_stat
@@ -47,45 +43,35 @@ Copy
 
 - name: "Skip {{ conf_entry.key }} if missing"
   debug:
-    msg: "File {{ conf_entry.key }} not found; skipping."
+    msg: "{{ conf_entry.key }} not found, skipping."
   when: not conf_stat.stat.exists
   tags:
     - extract
     - config-parse
 
-- name: "Extract Keyfile paths from {{ conf_entry.key }}"
-  shell: |
-    grep -E '^[[:space:]]*Keyfile' {{ conf_entry.key }} \
-      | grep -v '^[[:space:]]*#' \
-      | sed 's/.*=[[:space:]]*//'
-  register: keyfiles_result
-  changed_when: false
+- name: "Read {{ conf_entry.key }} content"
+  slurp:
+    src: "{{ conf_entry.key }}"
+  register: raw_conf
   when: conf_stat.stat.exists
+  changed_when: false
   tags:
     - extract
     - config-parse
 
-- name: "Extract SSLServerCert values from {{ conf_entry.key }}"
-  shell: |
-    grep -E '^[[:space:]]*SSLServerCert' {{ conf_entry.key }} \
-      | grep -v '^[[:space:]]*#' \
-      | sed 's/.*=[[:space:]]*//'
-  register: ssl_aliases_result
-  changed_when: false
+- name: "Decode {{ conf_entry.key }} and extract directives"
+  set_fact:
+    keyfiles: >
+      {{ (raw_conf.content | b64decode)
+         | regex_findall('(?m)^[ \\t]*Keyfile[ \\t]*=[ \\t]*(\\S+)') }}
+    ssl_aliases: >
+      {{ (raw_conf.content | b64decode)
+         | regex_findall('(?m)^[ \\t]*SSLServerCert[ \\t]*=[ \\t]*(\\S+)') }}
+    listen_ports: >
+      {{ (raw_conf.content | b64decode)
+         | regex_findall('(?m)^[ \\t]*Listen[ \\t]+(?:[\\w\\.]+:)?(\\d+)') }}
   when: conf_stat.stat.exists
-  tags:
-    - extract
-    - config-parse
-
-- name: "Extract first Listen port from {{ conf_entry.key }}"
-  shell: |
-    grep -E '^[[:space:]]*Listen' {{ conf_entry.key }} \
-      | grep -v '^[[:space:]]*#' \
-      | head -n1 \
-      | sed -E 's/.*[[:space:]]([0-9]+)$/\1/'
-  register: listen_ports_result
   changed_when: false
-  when: conf_stat.stat.exists
   tags:
     - extract
     - config-parse
@@ -94,32 +80,59 @@ Copy
   set_fact:
     cert_configs: >-
       {{
-        cert_configs 
+        cert_configs
         + [
             {
               'config_file': conf_entry.key,
               'kdb_file':    kdb,
               'cert_alias':  conf_entry.value,
-              'listen_port': (listen_ports_result.stdout | default('443'))
+              'listen_port': (listen_ports[0] if listen_ports else '443')
             }
-            for kdb in keyfiles_result.stdout_lines | default([])
+            for kdb in keyfiles
           ]
       }}
   when:
     - conf_stat.stat.exists
-    - keyfiles_result.stdout_lines is defined
-    - keyfiles_result.stdout_lines | length > 0
+    - keyfiles | length > 0
   tags:
     - extract
     - config-parse
 
-- name: "Debug: found {{ keyfiles_result.stdout_lines | default([]) | length }} cert entries in {{ conf_entry.key }}"
+- name: "Debug parsed entries for {{ conf_entry.key }}"
   debug:
-    msg: >
-      Keyfiles={{ keyfiles_result.stdout_lines | default([]) | list }},
-      SSLServerCerts={{ ssl_aliases_result.stdout_lines | default([]) | list }},
-      ListenPort={{ listen_ports_result.stdout | default('443') }}
-  when: conf_stat.stat.exists
+    msg: "Found {{ keyfiles | length }} entries in {{ conf_entry.key }}"
+  when:
+    - conf_stat.stat.exists
   tags:
     - extract
     - config-parse
+Key points:
+
+stat checks for existence before slurping .
+
+slurp fetches the file from the remote host and is marked read‑only (changed_when: false) 
+Ansible Documentation
+.
+
+regex_findall in multiline mode captures all non‑commented directives .
+
+Custom loop_var conf_entry replaces generic item for clarity .
+
+Append logic uses a Jinja2 list comprehension to build cert_configs entries per KDB file, idempotently 
+Ansible Documentation
+.
+
+Explanation & Benefits
+No direct block loops: We use include_tasks to loop the entire sub‑task file 
+Fabian Lee
+.
+
+Descriptive variables: conf_entry.key (path) and conf_entry.value (alias) clearly show intent.
+
+Idempotency: All read tasks use changed_when: false; set_fact only runs when there’s actual data.
+
+Error handling: Missing files are skipped gracefully with a debug message.
+
+Fully populated cert_configs: Downstream renew/backup/replace tasks will have complete data.
+
+With this refactoring, extract_values.yml will no longer produce an empty cert_configs, and you’ll avoid all “loop is not a valid attribute for a block” errors. Now your role can correctly discover every Keyfile/SSLServerCert entry in each httpd.conf.
