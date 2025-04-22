@@ -8,69 +8,68 @@
     - extract
     - config-parse
 
-- name: "Slurp all HTTPD configs from remote hosts"
-  slurp:
-    src: "{{ conf_item.key }}"
-  register: slurp_results
-  delegate_to: localhost
-  loop: "{{ httpd_pickup_ids | dict2items }}"
-  loop_control:
-    loop_var: conf_item
-    label: "{{ conf_item.key }}"
-  tags:
-    - extract
-    - config-parse
-
-- name: "Combine slurp results with their config entries"
-  set_fact:
-    parsed_confs: >-
-      {{ slurp_results.results
-         | zip(httpd_pickup_ids | dict2items)
-         | map('list')
-         | map('community.general.dict',
-               slurp=item.0,
-               conf_entry=item.1)
-         | list }}
-  tags:
-    - extract
-    - config-parse
-
-- name: "Parse each HTTPD config for Keyfile, SSLServerCert, Listen"
-  set_fact:
-    cert_configs: "{{ cert_configs + new_entries }}"
+- name: "Process each HTTPD config for certificate info"
   vars:
-    content: "{{ parsed_item.slurp.content | b64decode }}"
+    # Decode and expose for use in following tasks
+    cfg_text: "{{ raw_conf.content | b64decode }}"
     keyfiles: >
-      {{ content
+      {{ cfg_text
          | regex_findall('(?m)^[ \\t]*Keyfile[ \\t]*=[ \\t]*(\\S+)') }}
     ssl_aliases: >
-      {{ content
+      {{ cfg_text
          | regex_findall('(?m)^[ \\t]*SSLServerCert[ \\t]*=[ \\t]*(\\S+)') }}
     listen_ports: >
-      {{ content
+      {{ cfg_text
          | regex_findall('(?m)^[ \\t]*Listen[ \\t]+(?:[\\w\\.]+:)?(\\d+)') }}
-    new_entries: >-
-      {{ keyfiles
-         | zip(ssl_aliases, listen_ports)
-         | map('list')
-         | map('community.general.dict',
-               config_file=parsed_item.conf_entry.key,
-               kdb_file=item.0,
-               cert_alias=parsed_item.conf_entry.value,
-               listen_port=(item.2 if item.2 else '443')
-             )
-         | list }}
-  loop: "{{ parsed_confs }}"
+    default_port: "{{ (listen_ports[0] if listen_ports else '443') }}"
+  block:
+    - name: "Check that {{ conf_entry.key }} exists"
+      stat:
+        path: "{{ conf_entry.key }}"
+      register: conf_stat
+
+    - name: "Fetch {{ conf_entry.key }} from remote if present"
+      slurp:
+        src: "{{ conf_entry.key }}"
+      register: raw_conf
+      when: conf_stat.stat.exists
+
+    - name: "Extract Keyfile, SSLServerCert, and Listen from {{ conf_entry.key }}"
+      # No-op task to “activate” our vars block
+      debug:
+        msg: "Parsed {{ conf_entry.key }}"
+      when: raw_conf is defined
+
+    - name: "Append parsed entries to cert_configs"
+      set_fact:
+        cert_configs: >-
+          {{
+            cert_configs
+            + [
+                {
+                  'config_file': conf_entry.key,
+                  'kdb_file':    kdb,
+                  'cert_alias':  conf_entry.value,
+                  'listen_port': default_port
+                }
+                for kdb in keyfiles
+              ]
+          }}
+      when:
+        - raw_conf is defined
+        - keyfiles | length > 0
+
+  loop: "{{ httpd_pickup_ids | dict2items }}"
   loop_control:
-    loop_var: parsed_item
-    label: "{{ parsed_item.conf_entry.key }}"
+    loop_var: conf_entry
+    label: "{{ conf_entry.key }}"
   tags:
     - extract
-    - config-parse
+    - config‑parse
 
-- name: "Debug final cert_configs"
+- name: "Show extracted cert_configs"
   debug:
     var: cert_configs
   tags:
     - extract
-    - config-parse
+    - config‑parse
