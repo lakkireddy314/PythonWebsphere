@@ -1,0 +1,624 @@
+Overview
+This role automates end-to-end Venafi certificate management for IBM HTTP Server, including pickup of PEMs, expiry checks, HTTPD config parsing, conditional renewal via handler, KDB backup/replace, live validation, cleanup, and email reporting 
+Spacelift
+.
+All iterations are done with include_tasks loops (supported in Ansible 2.9 and above) to avoid invalid “loop on block” errors 
+docs.ansible.com
+.
+Handler actions (renew and restart) are driven via notify + meta: flush_handlers, with creates: for idempotency 
+docs.ansible.com
+ 
+GitHub
+.
+
+Directory Structure
+css
+Copy
+Edit
+venafi_cert_renew/
+├── group_vars/
+│   └── prod.yml
+├── vars/
+│   └── main.yml
+├── handlers/
+│   └── main.yml
+├── tasks/
+│   ├── main.yml
+│   ├── download_local_cert.yml
+│   ├── check_cert_expiry.yml
+│   ├── locate_configs.yml
+│   ├── extract_values.yml
+│   ├── extract_one_conf.yml
+│   ├── process_cert.yml
+│   ├── renew_cert.yml
+│   ├── cleanup.yml
+│   └── send_report.yml
+└── README.md
+1. group_vars/prod.yml
+yaml
+Copy
+Edit
+httpd_pickup_ids:
+  "/opt/ihs/conf/test1.conf": "cert_alias_test1"
+  "/opt/ihs/conf/test2.conf": "cert_alias_test2"
+Maps each HTTPD config file path to its Venafi pickup-ID (certificate alias), serving as the single source of truth for both expiry checks and config extraction 
+Stack Overflow
+.
+
+2. vars/main.yml
+yaml
+Copy
+Edit
+env: "prod"
+
+# VCert CLI
+vcert_download_url: "https://localhost/Certs/vcert.zip"
+vcert_install_dir:  "/tmp/vcert"
+vcert_password:     "WEBASCh@ngeit"
+
+# Venafi credentials
+venafi_access_token: "REPLACE_WITH_ACCESS_TOKEN"
+venafi_pickupid:     "REPLACE_WITH_PICKUP_ID"
+
+# Renewal threshold (days)
+cert_renew_threshold: 90
+
+# HTTPD restart config
+httpd_config_path:  "/opt/ihs/85/conf/httpd.conf"
+
+# Dry-run mode
+report_only:        false
+Centralizes all tunable parameters—URLs, paths, credentials, thresholds, and dry-run flag—for easy overrides per environment 
+dbi services
+.
+
+3. handlers/main.yml
+yaml
+Copy
+Edit
+---
+- name: "Renew PFX via VCert CLI"
+  command: >
+    {{ vcert_install_dir }}/vcert renew
+      --alias {{ cert_alias }}
+      --format pfx
+      --password {{ vcert_password }}
+      --chain full
+      --output {{ vcert_install_dir }}/{{ cert_alias }}.pfx
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ venafi_pickupid }}
+  args:
+    creates: "{{ vcert_install_dir }}/{{ cert_alias }}.pfx"
+  delegate_to: localhost
+  tags:
+    - renew
+    - vcert-renew
+
+- name: "Restart IBM HTTP Server"
+  command: "/opt/ihs/85/bin/apachectl -f {{ httpd_config_path }} -k restart"
+  listen: "cert_replaced"
+  tags:
+    - restart
+Renew handler runs the vcert renew command once per notification, using the per-alias fact cert_alias for modularity 
+Ansible
+.
+
+The creates: argument ensures idempotency—if the PFX already exists, the command is skipped 
+docs.ansible.com
+.
+
+Restart handler triggers IHS restart when notified via cert_replaced.
+
+4. tasks/main.yml
+yaml
+Copy
+Edit
+---
+- include_tasks: download_local_cert.yml
+
+- include_tasks: check_cert_expiry.yml
+  when: any_pickup_success
+  tags:
+    - precheck
+
+- name: "Skip if no certificates need renewal"
+  meta: end_play
+  when: venafi_cert_info
+          | dict2items
+          | selectattr('value.changed','equalto',true)
+          | list
+          | length == 0
+  tags:
+    - precheck
+
+- include_tasks: locate_configs.yml
+
+- include_tasks: extract_values.yml
+
+- name: "Process each certificate end-to-end"
+  include_tasks: process_cert.yml
+  loop: "{{ cert_configs }}"
+  loop_control:
+    loop_var: cert_entry
+    label: "{{ cert_entry.cert_alias }}"
+  when:
+    - not report_only
+    - venafi_cert_info[cert_entry.cert_alias].changed
+  tags:
+    - process
+
+- include_tasks: cleanup.yml
+
+- include_tasks: send_report.yml
+Uses include_tasks + loop for processing each alias end-to-end—no loops on blocks 
+docs.ansible.com
+.
+
+Early skip via dict2items + selectattr if no alias requires renewal 
+GitHub
+.
+
+5. tasks/download_local_cert.yml
+yaml
+Copy
+Edit
+---
+- name: "Ensure VCert directory exists"
+  file:
+    path: "{{ vcert_install_dir }}"
+    state: directory
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
+    - vcert-pickup
+
+- name: "Download VCert CLI zip if missing"
+  get_url:
+    url: "{{ vcert_download_url }}"
+    dest: "{{ vcert_install_dir }}/vcert.zip"
+    creates: "{{ vcert_install_dir }}/vcert.zip"
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
+    - vcert-pickup
+
+- name: "Unarchive VCert CLI idempotently"
+  unarchive:
+    src: "{{ vcert_install_dir }}/vcert.zip"
+    dest: "{{ vcert_install_dir }}/"
+    remote_src: yes
+    creates: "{{ vcert_install_dir }}/vcert"
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
+    - vcert-pickup
+
+- name: "Fetch PEM for each alias if missing"
+  command: >
+    {{ vcert_install_dir }}/vcert pickup
+      --format pem
+      --output {{ vcert_install_dir }}/{{ alias_entry.value }}.pem
+      --pickup-id {{ alias_entry.value }}
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ venafi_pickupid }}
+  args:
+    creates: "{{ vcert_install_dir }}/{{ alias_entry.value }}.pem"
+  loop: "{{ httpd_pickup_ids | dict2items }}"
+  loop_control:
+    loop_var: alias_entry
+    label: "{{ alias_entry.key }}"
+  register: pickup_results
+  delegate_to: localhost
+  tags:
+    - precheck
+    - vcert-pickup
+
+- name: "Set any_pickup_success flag"
+  set_fact:
+    any_pickup_success: "{{ pickup_results.results
+                           | selectattr('rc','equalto',0)
+                           | list | length > 0 }}"
+  tags:
+    - precheck
+Ensures the VCert CLI is installed idempotently with creates: 
+Fabian Lee
+.
+
+Loops over pickup IDs to fetch PEMs only if missing.
+
+6. tasks/check_cert_expiry.yml
+yaml
+Copy
+Edit
+---
+- name: "Initialize venafi_cert_info dict"
+  set_fact:
+    venafi_cert_info: {}
+  tags:
+    - precheck
+    - expiry-check
+
+- name: "Gather expiry-days & serial via Bash"
+  shell: |
+    exp=$(openssl x509 -enddate -noout \
+         -in {{ vcert_install_dir }}/{{ alias_entry.value }}.pem \
+         | cut -d= -f2)
+    days=$(( ( $(date -d "$exp" +%s) - $(date +%s) ) / 86400 ))
+    serial=$(openssl x509 -in {{ vcert_install_dir }}/{{ alias_entry.value }}.pem \
+           -serial -noout | cut -d= -f2)
+    echo "{{ alias_entry.value }} $days $serial"
+  args:
+    executable: /bin/bash
+  register: expiry_results
+  changed_when: false
+  delegate_to: localhost
+  loop: "{{ httpd_pickup_ids | dict2items }}"
+  loop_control:
+    loop_var: alias_entry
+    label: "{{ alias_entry.key }}"
+  tags:
+    - precheck
+    - expiry-check
+
+- name: "Build venafi_cert_info from results"
+  set_fact:
+    venafi_cert_info: >-
+      {{
+        venafi_cert_info | default({}) | combine({
+          (res_entry.stdout.split()[0]): {
+            "expiry_days": (res_entry.stdout.split()[1] | int),
+            "serial":      (res_entry.stdout.split()[2]),
+            "changed":     ((res_entry.stdout.split()[1] | int) <= cert_renew_threshold)
+          }
+        })
+      }}
+  loop: "{{ expiry_results.results }}"
+  loop_control:
+    loop_var: res_entry
+    label: "{{ res_entry.stdout.split()[0] }}"
+  tags:
+    - precheck
+    - expiry-check
+
+- name: "Debug venafi_cert_info"
+  debug:
+    var: venafi_cert_info
+  tags:
+    - precheck
+    - expiry-check
+Performs date arithmetic in Bash to avoid Jinja2 parsing issues 
+docs.ansible.com
+.
+
+Aggregates expiry data into a dict with a changed flag for each alias.
+
+7. tasks/locate_configs.yml
+yaml
+Copy
+Edit
+---
+- name: "Build list of HTTPD configs"
+  set_fact:
+    bpm_conf_files: "{{ httpd_pickup_ids | dict2items }}"
+  tags:
+    - config-discovery
+Prepares a list of { key, value } pairs for config parsing.
+
+8. tasks/extract_values.yml
+yaml
+Copy
+Edit
+---
+- name: "Initialize cert_configs list"
+  set_fact:
+    cert_configs: []
+  tags:
+    - extract
+    - config-parse
+
+- name: "Extract cert entries from each HTTPD config"
+  include_tasks: extract_one_conf.yml
+  loop: "{{ httpd_pickup_ids | dict2items }}"
+  loop_control:
+    loop_var: conf_entry
+    label: "{{ conf_entry.key }}"
+  tags:
+    - extract
+    - config-parse
+Uses include_tasks with loop to iterate per config without illegal block loops 
+docs.ansible.com
+.
+
+9. tasks/extract_one_conf.yml
+yaml
+Copy
+Edit
+---
+- name: "Check that {{ conf_entry.key }} exists"
+  stat:
+    path: "{{ conf_entry.key }}"
+  register: conf_stat
+  changed_when: false
+  tags:
+    - extract
+    - config-parse
+
+- name: "Skip {{ conf_entry.key }} if missing"
+  debug:
+    msg: "File {{ conf_entry.key }} not found, skipping."
+  when: not conf_stat.stat.exists
+  tags:
+    - extract
+    - config-parse
+
+- name: "Extract Keyfile paths"
+  shell: |
+    grep -E '^[[:space:]]*Keyfile' {{ conf_entry.key }} \
+      | grep -v '^[[:space:]]*#' \
+      | sed -E 's/^[[:space:]]*Keyfile[[:space:]]*=?[[:space:]]*//'
+  register: keyfiles_result
+  changed_when: false
+  when: conf_stat.stat.exists
+  tags:
+    - extract
+    - config-parse
+
+- name: "Extract SSLServerCert aliases"
+  shell: |
+    grep -E '^[[:space:]]*SSLServerCert' {{ conf_entry.key }} \
+      | grep -v '^[[:space:]]*#' \
+      | sed -E 's/^[[:space:]]*SSLServerCert[[:space:]]*=?[[:space:]]*//'
+  register: ssl_aliases_result
+  changed_when: false
+  when: conf_stat.stat.exists
+  tags:
+    - extract
+    - config-parse
+
+- name: "Extract first Listen port"
+  shell: |
+    grep -E '^[[:space:]]*Listen' {{ conf_entry.key }} \
+      | grep -v '^[[:space:]]*#' \
+      | head -n1 \
+      | sed -E 's/^[[:space:]]*Listen[[:space:]]+([0-9]+).*/\1/'
+  register: listen_ports_result
+  changed_when: false
+  when: conf_stat.stat.exists
+  tags:
+    - extract
+    - config-parse
+
+- name: "Append each Keyfile entry to cert_configs"
+  set_fact:
+    cert_configs: "{{ cert_configs + [ {
+      'config_file': conf_entry.key,
+      'kdb_file':    kdb,
+      'cert_alias':  conf_entry.value,
+      'listen_port': (listen_ports_result.stdout | default('443'))
+    } ] }}"
+  loop: "{{ keyfiles_result.stdout_lines | default([]) }}"
+  loop_control:
+    loop_var: kdb
+  when:
+    - conf_stat.stat.exists
+    - keyfiles_result.stdout_lines | length > 0
+  tags:
+    - extract
+    - config-parse
+
+- name: "Debug parsed entries"
+  debug:
+    msg: >-
+      Keyfiles={{ keyfiles_result.stdout_lines | default([]) }},
+      SSLServerCerts={{ ssl_aliases_result.stdout_lines | default([]) }},
+      ListenPort={{ listen_ports_result.stdout | default('443') }}
+  when: conf_stat.stat.exists
+  tags:
+    - extract
+    - config-parse
+Uses shell + grep + sed to reliably extract directive values and strips out comments and directive names 
+Fabian Lee
+.
+
+10. tasks/renew_cert.yml
+yaml
+Copy
+Edit
+---
+- name: "Set cert_alias fact for {{ cert_entry.cert_alias }}"
+  set_fact:
+    cert_alias: "{{ cert_entry.cert_alias }}"
+  tags:
+    - renew
+
+- name: "Notify handler to renew PFX for {{ cert_entry.cert_alias }}"
+  meta: noop
+  notify: "Renew PFX via VCert CLI"
+  tags:
+    - renew
+
+- name: "Flush handlers to execute renewal immediately"
+  meta: flush_handlers
+  tags:
+    - renew
+Isolated per-alias renewal logic; no loops here, iteration is in process_cert.yml 
+Work, and stuff
+.
+
+11. tasks/process_cert.yml
+yaml
+Copy
+Edit
+---
+# Begin renewal
+- include_tasks: renew_cert.yml
+  tags:
+    - renew
+
+# Backup existing KDB
+- name: "Backup existing KDB for {{ cert_entry.cert_alias }}"
+  copy:
+    src: "{{ cert_entry.kdb_file }}"
+    dest: "/install/MWVenafi/{{ env }}/{{ ansible_hostname }}/{{ cert_entry.kdb_file | basename }}"
+    backup: yes
+  tags:
+    - process
+
+# Deploy renewed PFX
+- name: "Deploy renewed PFX for {{ cert_entry.cert_alias }}"
+  copy:
+    src: "{{ vcert_install_dir }}/{{ cert_entry.cert_alias }}.pfx"
+    dest: "/tmp/vcert/{{ cert_entry.cert_alias }}.pfx"
+  delegate_to: localhost
+  tags:
+    - process
+
+# Replace certificate in KDB
+- name: "Replace certificate in KDB for {{ cert_entry.cert_alias }}"
+  command: >
+    {{ vcert_install_dir }}/vcert replace
+      --alias {{ cert_entry.cert_alias }}
+      --pfx /tmp/vcert/{{ cert_entry.cert_alias }}.pfx
+      --db {{ cert_entry.kdb_file }}
+      --password {{ vcert_password }}
+  tags:
+    - process
+
+# Trigger HTTP server restart
+- name: "Trigger HTTP server restart"
+  meta: flush_handlers
+  notify: "cert_replaced"
+  tags:
+    - process
+
+# Validate live serial
+- name: "Validate network serial for {{ cert_entry.cert_alias }}"
+  shell: |
+    echo | openssl s_client
+      -servername {{ ansible_hostname }}
+      -connect {{ ansible_hostname }}:{{ cert_entry.listen_port }}
+      2>/dev/null | openssl x509 -noout -serial
+  register: net_serial
+  changed_when: false
+  tags:
+    - process
+
+# Fail on mismatch
+- name: "Fail on serial mismatch for {{ cert_entry.cert_alias }}"
+  fail:
+    msg: >
+      Serial mismatch for {{ cert_entry.cert_alias }}:
+      Venafi={{ venafi_cert_info[cert_entry.cert_alias].serial }}
+      vs network={{ net_serial.stdout }}
+  when: venafi_cert_info[cert_entry.cert_alias].serial != net_serial.stdout
+  tags:
+    - process
+Consolidates per-alias end-to-end steps in one file—no loops on blocks, iteration via main.yml 
+Stack Overflow
+.
+
+12. tasks/cleanup.yml
+yaml
+Copy
+Edit
+---
+- name: "Cleanup VCert artifacts on control node"
+  file:
+    path: "{{ vcert_install_dir }}"
+    state: absent
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - cleanup
+Removes temporary CLI and certificate files, keeping the controller clean.
+
+13. tasks/send_report.yml
+yaml
+Copy
+Edit
+---
+- name: "Compose comprehensive certificate report"
+  set_fact:
+    comprehensive_report: |
+      Venafi Cert Renewal Report ({{ 'DRY RUN' if report_only else 'EXECUTION' }})
+      =====================================================
+      Host: {{ ansible_hostname }}
+
+      {% for alias, info in venafi_cert_info.items() %}
+      - Alias: {{ alias }}
+        Days Until Expiry: {{ info.expiry_days }}
+        Serial: {{ info.serial }}
+        Action: {{ 'Renewed' if info.changed else 'Skipped' }}
+      {% endfor %}
+
+- name: "Send email report"
+  mail:
+    host: "localhost"
+    to: "web@test.com"
+    subject: "Venafi Cert Renewal Report for {{ ansible_hostname }}"
+    body: "{{ comprehensive_report }}"
+  tags:
+    - report
+Generates and emails a run summary, always executed—even in dry-run mode.
+
+README.md
+markdown
+Copy
+Edit
+# venafi_cert_renew
+
+## Overview
+Automates IBM HTTP Server certificate pickup, expiry checks, config parsing, renewal via Venafi vcert CLI, KDB update, live validation, cleanup, and reporting.
+
+## Requirements
+- Ansible ≥ 2.9  
+- OpenSSL & Bash on controller and hosts
+
+## Workflow
+1. Download & install VCert CLI  
+2. Pickup PEMs per alias  
+3. Compute expiry & serial  
+4. Parse HTTPD configs for Keyfile/KDB & port  
+5. Loop per alias (renew → backup → replace → validate → restart)  
+6. Cleanup & email report  
+
+## Usage
+```yaml
+- hosts: all
+  roles:
+    - venafi_cert_renew
+Variables
+See vars/main.yml and group_vars/prod.yml.
+
+Tags
+--tags precheck, process, renew, cleanup, report
+
+License
+MIT
+
+pgsql
+Copy
+Edit
+
+---
+
+### Citations  
+1. include_tasks supports loop in Ansible 2.9 (unlike block) :contentReference[oaicite:16]{index=16}  
+2. loop variable conflicts can be avoided with loop_control.loop_var :contentReference[oaicite:17]{index=17}  
+3. dict2items + selectattr for dict filtering in conditions :contentReference[oaicite:18]{index=18}  
+4. get_url with `creates:` for idempotency :contentReference[oaicite:19]{index=19}  
+5. unarchive with `creates:` for idempotency :contentReference[oaicite:20]{index=20}  
+6. shell tasks with `changed_when: false` for read-only operations :contentReference[oaicite:21]{index=21}  
+7. `notify` + `meta: noop` to trigger handlers without side-effects :contentReference[oaicite:22]{index=22}  
+8. `meta: flush_handlers` for immediate handler execution :contentReference[oaicite:23]{index=23}  
+9. date arithmetic in Bash to avoid Jinja2 parsing issues :contentReference[oaicite:24]{index=24}  
+10. mail module for email reporting :contentReference[oaicite:25]{index=25}
+::contentReference[oaicite:26]{index=26}
+
+
+
+
+
