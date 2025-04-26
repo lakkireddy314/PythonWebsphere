@@ -686,3 +686,406 @@ Provides role documentation, usage instructions, variable references, and tag gu
 
 This role is now fully modular, idempotent, and compatible with Ansible 2.9, handling certificate renewal through GSKit, safe backups, config updates, and immediate service restarts.
 ::contentReference[oaicite:24]{index=24}
+
+
+###########################################################################################################
+
+Below is the entire venafi_cert_renew role, now updated so that new KDB files are named after the certificate alias (rather than re-using the original cert_entry.kdb_file), with complete backups of both the original KDB and httpd.conf into an adjacent Ansible_backup directory, followed by in-place updates of the config and an immediate restart. All loops remain on include_tasks for Ansible 2.9 compatibility, and each file includes a brief explanation.
+
+Directory Structure
+css
+Copy
+Edit
+venafi_cert_renew/
+├── group_vars/
+│   └── prod.yml
+├── vars/
+│   └── main.yml
+├── handlers/
+│   └── main.yml
+├── tasks/
+│   ├── main.yml
+│   ├── download_local_cert.yml
+│   ├── check_cert_expiry.yml
+│   ├── locate_configs.yml
+│   ├── extract_values.yml
+│   ├── extract_one_conf.yml
+│   ├── process_cert.yml       ← **updated**  
+│   ├── renew_cert.yml
+│   ├── cleanup.yml
+│   └── send_report.yml
+└── README.md
+1. group_vars/prod.yml
+yaml
+Copy
+Edit
+httpd_pickup_ids:
+  "/opt/ihs/conf/test1.conf": "cert_alias_test1"
+  "/opt/ihs/conf/test2.conf": "cert_alias_test2"
+Defines HTTPD config → Venafi alias mapping 
+IBM - United States
+.
+
+2. vars/main.yml
+yaml
+Copy
+Edit
+env: "prod"
+
+vcert_download_url: "https://localhost/Certs/vcert.zip"
+vcert_install_dir:  "/tmp/vcert"
+vcert_password:     "WEBASCh@ngeit"
+
+venafi_access_token: "REPLACE_WITH_ACCESS_TOKEN"
+venafi_pickupid:     "REPLACE_WITH_PICKUP_ID"
+
+cert_renew_threshold: 90
+
+httpd_config_path:  "/opt/ihs/85/conf/httpd.conf"
+
+report_only:        false
+Centralizes tunables: download URLs, credentials, thresholds, dry-run flag 
+IBM - United States
+.
+
+3. handlers/main.yml
+yaml
+Copy
+Edit
+---
+- name: "Renew PFX via VCert CLI"
+  command: >
+    {{ vcert_install_dir }}/vcert renew
+      --alias {{ cert_alias }}
+      --format pfx
+      --password {{ vcert_password }}
+      --chain full
+      --output {{ vcert_install_dir }}/{{ cert_alias }}.pfx
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ venafi_pickupid }}
+  args:
+    creates: "{{ vcert_install_dir }}/{{ cert_alias }}.pfx"
+  delegate_to: localhost
+  tags:
+    - renew
+    - vcert-renew
+
+- name: "Restart IBM HTTP Server"
+  command: "/opt/ihs/85/bin/apachectl -f {{ httpd_config_path }} -k restart"
+  listen: "cert_replaced"
+  tags:
+    - restart
+Renew handler uses creates: for idempotency—skips if PFX exists 
+idmdepot.com
+.
+
+Restart handler listens on cert_replaced to reload IHS when certs change 
+IBM - United States
+.
+
+4. tasks/main.yml
+yaml
+Copy
+Edit
+---
+- include_tasks: download_local_cert.yml
+
+- include_tasks: check_cert_expiry.yml
+  when: any_pickup_success
+  tags:
+    - precheck
+
+- name: "Set host_needs_renewal"
+  set_fact:
+    host_needs_renewal: >-
+      {{ venafi_cert_info
+         | dict2items
+         | selectattr('value.changed','equalto',true)
+         | list | length > 0 }}
+  tags:
+    - precheck
+
+- debug:
+    var: host_needs_renewal
+  tags:
+    - precheck
+
+- include_tasks: locate_configs.yml
+  when: host_needs_renewal
+  tags:
+    - config-discovery
+
+- include_tasks: extract_values.yml
+  when: host_needs_renewal
+  tags:
+    - extract
+
+- name: "Process each certificate end-to-end"
+  include_tasks: process_cert.yml
+  loop: "{{ cert_configs }}"
+  loop_control:
+    loop_var: cert_entry
+    label: "{{ cert_entry.cert_alias }}"
+  when: host_needs_renewal
+  tags:
+    - process
+
+- include_tasks: cleanup.yml
+  when: host_needs_renewal
+  tags:
+    - cleanup
+
+- include_tasks: send_report.yml
+  when: host_needs_renewal
+  tags:
+    - report
+Gates heavy tasks on host_needs_renewal, avoiding global skips, and loops only on include_tasks for Ansible 2.9 compatibility 
+IBM - United States
+ 
+FreeKB
+.
+
+5. tasks/download_local_cert.yml
+(Unchanged: installs VCert CLI and picks up PEMs idempotently via creates:)
+
+6. tasks/check_cert_expiry.yml
+(Unchanged: Bash-driven expiry & serial checks aggregated into venafi_cert_info)
+
+7. tasks/locate_configs.yml
+(Unchanged: converts dict → list via dict2items)
+
+8. tasks/extract_values.yml
+(Unchanged: loops include_tasks over extract_one_conf.yml to populate cert_configs)
+
+9. tasks/extract_one_conf.yml
+(Unchanged: stat, slurp/grep|sed to extract Keyfile, SSLServerCert, Listen port)
+
+10. tasks/renew_cert.yml
+(Unchanged: sets cert_alias, notifies renew handler, and flushes handlers immediately)
+
+11. tasks/process_cert.yml ← Updated to name new KDB after the alias
+yaml
+Copy
+Edit
+---
+# 1. Run renewal
+- include_tasks: renew_cert.yml
+  tags:
+    - process
+
+# 2. Back up original KDB
+- name: "Create backup dir beside original KDB"
+  file:
+    path: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    state: directory
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+- name: "Backup original KDB file"
+  copy:
+    src: "{{ cert_entry.kdb_file }}"
+    dest: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup/{{ cert_entry.kdb_file | basename }}"
+    backup: no
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+# 3. Back up httpd.conf
+- name: "Create backup dir beside httpd.conf"
+  file:
+    path: "{{ cert_entry.config_file | dirname }}/Ansible_backup"
+    state: directory
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+- name: "Backup original httpd.conf"
+  copy:
+    src: "{{ cert_entry.config_file }}"
+    dest: "{{ cert_entry.config_file | dirname }}/Ansible_backup/{{ cert_entry.config_file | basename }}"
+    backup: no
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+# 4. Define new KDB path (named by alias)
+- name: "Set new_kdb path"
+  set_fact:
+    new_kdb: "{{ cert_entry.kdb_file | dirname }}/{{ cert_entry.cert_alias }}.kdb"
+  tags:
+    - process
+
+# 5. Create new KDB named after alias
+- name: "Create new KDB file for {{ cert_entry.cert_alias }}"
+  command: >
+    gskcmd -keydb -create
+      -db {{ new_kdb }}
+      -pw {{ vcert_password }}
+      -type cms
+      -stash
+  args:
+    creates: "{{ new_kdb }}"
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process  
+# Uses GSKit’s gskcmd -keydb -create to make a CMS KDB :contentReference[oaicite:6]{index=6}
+
+# 6. Import renewed PFX into the new KDB
+- name: "Import renewed PFX for {{ cert_entry.cert_alias }} into new KDB"
+  command: >
+    gskcmd -cert -import
+      -db {{ new_kdb }}
+      -pw {{ vcert_password }}
+      -label {{ cert_entry.cert_alias }}
+      -file {{ vcert_install_dir }}/{{ cert_entry.cert_alias }}.pfx
+      -stash
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process  
+# Imports PKCS#12 PFX into the KDB as a personal cert :contentReference[oaicite:7]{index=7}
+
+# 7. Update httpd.conf to use the new KDB and alias
+- name: "Update Keyfile directive to new KDB in {{ cert_entry.config_file }}"
+  lineinfile:
+    path: "{{ cert_entry.config_file }}"
+    regexp: '^\s*Keyfile'
+    line: "Keyfile {{ new_kdb }}"
+    backrefs: no
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process  
+# Ensures HTTPD loads the alias-named KDB 
+
+- name: "Update SSLServerCert directive in {{ cert_entry.config_file }}"
+  lineinfile:
+    path: "{{ cert_entry.config_file }}"
+    regexp: '^\s*SSLServerCert'
+    line: "SSLServerCert {{ cert_entry.cert_alias }}"
+    backrefs: no
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process  
+# Points HTTPD at the correct alias 
+
+# 8. Restart IHS immediately
+- name: "Trigger HTTP server restart"
+  meta: flush_handlers
+  notify: "cert_replaced"
+  tags:
+    - process
+12. tasks/cleanup.yml
+yaml
+Copy
+Edit
+---
+- name: "Cleanup VCert artifacts on control node"
+  file:
+    path: "{{ vcert_install_dir }}"
+    state: absent
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - cleanup
+Removes the temporary CLI and PFX files to keep the controller clean.
+
+13. tasks/send_report.yml
+yaml
+Copy
+Edit
+---
+- name: "Compose certificate report"
+  set_fact:
+    comprehensive_report: |
+      Venafi Cert Renewal Report ({{ 'DRY RUN' if report_only else 'EXECUTION' }})
+      =====================================================
+      Host: {{ ansible_hostname }}
+
+      {% for alias, info in venafi_cert_info.items() %}
+      - Alias: {{ alias }}
+        Days Until Expiry: {{ info.expiry_days }}
+        Serial: {{ info.serial }}
+        Action: {{ 'Renewed' if info.changed else 'Skipped' }}
+      {% endfor %}
+
+- name: "Send email report"
+  mail:
+    host: "localhost"
+    to: "web@test.com"
+    subject: "Venafi Cert Renewal Report for {{ ansible_hostname }}"
+    body: "{{ comprehensive_report }}"
+  tags:
+    - report
+Emails a full summary of actions—even in dry-run mode—for operational visibility .
+
+14. README.md
+markdown
+Copy
+Edit
+# venafi_cert_renew
+
+## Overview
+Automates IBM HTTP Server certificate lifecycle with Venafi:
+- PEM pickup & expiry checks  
+- Config parsing for Keyfile & SSLServerCert  
+- New alias-named KDB creation & PFX import via `gskcmd`  
+- Backup of original files in `Ansible_backup`  
+- Config update & immediate restart  
+- Cleanup & email reporting  
+
+## Requirements
+- Ansible ≥ 2.9  
+- GSKit’s `gskcmd` on target hosts  
+- OpenSSL & Bash on controller  
+
+## Usage
+```yaml
+- hosts: all
+  roles:
+    - venafi_cert_renew
+Variables
+See group_vars/prod.yml and vars/main.yml.
+
+Tags
+precheck, extract, process, cleanup, report
+
+License
+MIT
+
+pgsql
+Copy
+Edit
+Provides comprehensive role documentation for operators and maintainers.
+
+---
+
+**Key Takeaways**  
+- New KDBs are named after the **certificate alias** (`cert_alias.kdb`), not the original file name.  
+- Both original KDB and `httpd.conf` are backed up into `Ansible_backup` subdirectories (same parent dir) via `file`+`copy` .  
+- GSKit’s `gskcmd -keydb -create` & `-cert -import` commands handle the new KDB creation and PFX import :contentReference[oaicite:8]{index=8}.  
+- `lineinfile` updates the HTTPD config to point at the new KDB and alias .  
+- Immediate service reload uses `notify: cert_replaced` + `meta: flush_handlers` for each alias, guaranteeing the new cert is active before proceeding :contentReference[oaicite:9]{index=9}.
+::contentReference[oaicite:10]{index=10}
+
+
+
+
+
+
+
+
+
+
+Search
+
+
+
+ChatGPT can make mistakes. 
