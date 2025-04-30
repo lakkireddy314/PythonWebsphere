@@ -1,0 +1,26 @@
+- name: Run initial command to list profiles and hostnames
+  shell: your_command_here
+  register: profiles_raw
+  changed_when: false
+
+- name: Build a dict from stdout lines like "profile: hostname"
+  set_fact:
+    profile_host_map: >-
+      {{ dict(
+           profiles_raw.stdout_lines
+           | map('split', ':', 1)
+           | map('map', 'trim')
+           | map('list')
+         )
+      }}
+
+- name: Debug – show the resulting dict
+  debug:
+    var: profile_host_map
+
+- name: Run a command on each hostname from the map
+  ansible.builtin.shell: your_followup_command --target {{ item.value }}
+  delegate_to: "{{ item.value }}"
+  loop: "{{ profile_host_map | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
