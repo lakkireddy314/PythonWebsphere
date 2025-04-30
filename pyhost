@@ -1,31 +1,35 @@
 # wsadmin Jython script to print hostnames of DMGR and Node Agents
 
-# Helper to strip the trailing ')' without using rstrip(arg)
+# Helper to strip the trailing ')' without using unsupported syntax
 def strip_trailing_paren(s):
-    return s[:-1] if s.endswith(')') else s
+    if s.endswith(')'):
+        return s[:-1]
+    else:
+        return s
 
 # List DMGR servers
 dmgrServers = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()
 for entry in dmgrServers:
     serverName = entry.split('(')[0]
+    # split once on '(', then drop the trailing ')'
     cfgPath    = strip_trailing_paren(entry.split('(', 1)[1])
-    nodePath   = cfgPath.split('|')[0]  # e.g., cells/myCell/nodes/myMgr01/servers/dmgr
+    nodePath   = cfgPath.split('|')[0]           # e.g., cells/myCell/nodes/myMgr01/servers/dmgr
     parts      = nodePath.split('/')
     cellName   = parts[1]
     nodeName   = parts[3]
-    nodeId     = AdminConfig.getid(f'/Cell:{cellName}/Node:{nodeName}/')
+    nodeId     = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
     hostName   = AdminConfig.showAttribute(nodeId, 'hostName')
-    print f'Deployment Manager {serverName} is running on host {hostName}'
+    print 'Deployment Manager %s is running on host %s' % (serverName, hostName)
 
 # List Node Agent servers
 nodeAgents = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()
 for entry in nodeAgents:
     serverName = entry.split('(')[0]
     cfgPath    = strip_trailing_paren(entry.split('(', 1)[1])
-    nodePath   = cfgPath.split('|')[0]  # e.g., cells/myCell/nodes/myNode01/servers/nodeagent
+    nodePath   = cfgPath.split('|')[0]           # e.g., cells/myCell/nodes/myNode01/servers/nodeagent
     parts      = nodePath.split('/')
     cellName   = parts[1]
     nodeName   = parts[3]
-    nodeId     = AdminConfig.getid(f'/Cell:{cellName}/Node:{nodeName}/')
+    nodeId     = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
     hostName   = AdminConfig.showAttribute(nodeId, 'hostName')
-    print f'Node Agent {serverName} on node {nodeName} is running on host {hostName}'
+    print 'Node Agent %s on node %s is running on host %s' % (serverName, nodeName, hostName)
