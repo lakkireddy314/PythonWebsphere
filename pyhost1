@@ -1,0 +1,32 @@
+# wsadmin Jython script to print nodeName: hostName for DMGR and Node Agents
+
+# Helper to drop a trailing ')' from a string
+def strip_trailing_paren(s):
+    if s.endswith(')'):
+        return s[:-1]
+    return s
+
+# Function to process a list of servers and print nodeName: hostName
+def printNodeHostMappings(serverList):
+    for entry in serverList:
+        # entry looks like "dmgr(cells/myCell/nodes/mgrNode/servers/dmgr|server.xml)"
+        cfgPath  = strip_trailing_paren(entry.split('(', 1)[1])
+        nodePath = cfgPath.split('|', 1)[0]             # e.g., cells/myCell/nodes/mgrNode/servers/dmgr
+        parts    = nodePath.split('/')
+        nodeName = parts[3]                              # the profile or node name
+        # Retrieve the Node configuration object
+        nodeId   = AdminConfig.getid('/Cell:%s/Node:%s/' % (parts[1], nodeName))
+        # Read its hostName attribute
+        hostName = AdminConfig.showAttribute(nodeId, 'hostName')
+        # Output in the format: nodeName: hostName
+        print '%s: %s' % (nodeName, hostName)
+
+# --- Main Execution ---
+
+# 1. Deployment Manager (DMGR) profile(s)
+dmgrEntries = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()
+printNodeHostMappings(dmgrEntries)
+
+# 2. Node Agents
+nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()
+printNodeHostMappings(nodeAgentEntries)
