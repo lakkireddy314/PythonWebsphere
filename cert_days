@@ -1,0 +1,21 @@
+- name: Extract expiration date via openssl
+  shell: |
+    openssl x509 -enddate -noout -in /path/to/1.crt \
+    | cut -d= -f2
+  register: end_date_raw
+
+- name: Convert expiration date to Unix timestamp
+  set_fact:
+    end_ts: "{{ lookup('pipe', 'date -d \"' + end_date_raw.stdout + '\" +%s') | int }}"
+
+- name: Get current timestamp
+  set_fact:
+    now_ts: "{{ lookup('pipe', 'date +%s') | int }}"
+
+- name: Compute days remaining
+  set_fact:
+    expiry_days: "{{ ((end_ts - now_ts) // 86400) }}"
+
+- name: Display days remaining
+  debug:
+    msg: "Certificate '1.crt' expires in {{ expiry_days }} days."
