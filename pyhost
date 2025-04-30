@@ -1,27 +1,31 @@
 # wsadmin Jython script to print hostnames of DMGR and Node Agents
 
+# Helper to strip the trailing ')' without using rstrip(arg)
+def strip_trailing_paren(s):
+    return s[:-1] if s.endswith(')') else s
+
 # List DMGR servers
 dmgrServers = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()
 for entry in dmgrServers:
     serverName = entry.split('(')[0]
-    cfgPath = entry.split('(')[1].rstrip(')')
-    nodePath = cfgPath.split('|')[0]  # e.g., cells/myCell/nodes/myMgr01/servers/dmgr
-    parts = nodePath.split('/')
-    cellName = parts[1]
-    nodeName = parts[3]
-    nodeId = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
-    hostName = AdminConfig.showAttribute(nodeId, 'hostName')
-    print 'Deployment Manager %s is running on host %s' % (serverName, hostName)
+    cfgPath    = strip_trailing_paren(entry.split('(', 1)[1])
+    nodePath   = cfgPath.split('|')[0]  # e.g., cells/myCell/nodes/myMgr01/servers/dmgr
+    parts      = nodePath.split('/')
+    cellName   = parts[1]
+    nodeName   = parts[3]
+    nodeId     = AdminConfig.getid(f'/Cell:{cellName}/Node:{nodeName}/')
+    hostName   = AdminConfig.showAttribute(nodeId, 'hostName')
+    print f'Deployment Manager {serverName} is running on host {hostName}'
 
 # List Node Agent servers
 nodeAgents = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()
 for entry in nodeAgents:
     serverName = entry.split('(')[0]
-    cfgPath = entry.split('(')[1].rstrip(')')
-    nodePath = cfgPath.split('|')[0]  # e.g., cells/myCell/nodes/myNode01/servers/nodeagent
-    parts = nodePath.split('/')
-    cellName = parts[1]
-    nodeName = parts[3]
-    nodeId = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
-    hostName = AdminConfig.showAttribute(nodeId, 'hostName')
-    print 'Node Agent %s on node %s is running on host %s' % (serverName, nodeName, hostName)
+    cfgPath    = strip_trailing_paren(entry.split('(', 1)[1])
+    nodePath   = cfgPath.split('|')[0]  # e.g., cells/myCell/nodes/myNode01/servers/nodeagent
+    parts      = nodePath.split('/')
+    cellName   = parts[1]
+    nodeName   = parts[3]
+    nodeId     = AdminConfig.getid(f'/Cell:{cellName}/Node:{nodeName}/')
+    hostName   = AdminConfig.showAttribute(nodeId, 'hostName')
+    print f'Node Agent {serverName} on node {nodeName} is running on host {hostName}'
