@@ -1,0 +1,27 @@
+# wsadmin Jython script to print hostnames of DMGR and Node Agents
+
+# List DMGR servers
+dmgrServers = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()
+for entry in dmgrServers:
+    serverName = entry.split('(')[0]
+    cfgPath = entry.split('(')[1].rstrip(')')
+    nodePath = cfgPath.split('|')[0]  # e.g., cells/myCell/nodes/myMgr01/servers/dmgr
+    parts = nodePath.split('/')
+    cellName = parts[1]
+    nodeName = parts[3]
+    nodeId = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
+    hostName = AdminConfig.showAttribute(nodeId, 'hostName')
+    print 'Deployment Manager %s is running on host %s' % (serverName, hostName)
+
+# List Node Agent servers
+nodeAgents = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()
+for entry in nodeAgents:
+    serverName = entry.split('(')[0]
+    cfgPath = entry.split('(')[1].rstrip(')')
+    nodePath = cfgPath.split('|')[0]  # e.g., cells/myCell/nodes/myNode01/servers/nodeagent
+    parts = nodePath.split('/')
+    cellName = parts[1]
+    nodeName = parts[3]
+    nodeId = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
+    hostName = AdminConfig.showAttribute(nodeId, 'hostName')
+    print 'Node Agent %s on node %s is running on host %s' % (serverName, nodeName, hostName)
