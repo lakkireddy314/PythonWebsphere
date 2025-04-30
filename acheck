@@ -1,0 +1,15 @@
+- name: Extract version from command output
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Run the command
+      ansible.builtin.command: echo "app version 1.0"
+      register: app_output
+
+    - name: Extract version using regex
+      ansible.builtin.set_fact:
+        app_version: "{{ app_output.stdout | regex_search('version\\s+(\\S+)', '\\1') }}"
+
+    - name: Display the extracted version
+      ansible.builtin.debug:
+        msg: "Extracted version: {{ app_version }}"
