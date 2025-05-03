@@ -1,3 +1,4 @@
+# listHostnamesComplete.py
 # wsadmin Jython script to print nodeName: hostName for DMGR, Node Agents, and Web Servers
 
 # Helper to drop a trailing ')' from a string
@@ -9,34 +10,35 @@ def strip_trailing_paren(s):
 # Function to process Deployment Manager and Node Agent entries
 def printNodeHostMappings(serverList):
     for entry in serverList:
+        # entry format: "<profileName>(cells/<cell>/nodes/<node>/servers/<profileName>|server.xml)"
         cfgPath  = strip_trailing_paren(entry.split('(', 1)[1])
-        nodePath = cfgPath.split('|', 1)[0]
+        nodePath = cfgPath.split('|', 1)[0]             # e.g., cells/myCell/nodes/myNode/servers/nodeagent
         parts    = nodePath.split('/')
+        cellName = parts[1]
         nodeName = parts[3]
-        nodeId   = AdminConfig.getid('/Cell:%s/Node:%s/' % (parts[1], nodeName))
+        nodeId   = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
         hostName = AdminConfig.showAttribute(nodeId, 'hostName')
         print '%s: %s' % (nodeName, hostName)
 
+# --- Main Execution ---
+
 # 1. Deployment Manager (DMGR)
-dmgrEntries      = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()
+dmgrEntries = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()
 printNodeHostMappings(dmgrEntries)
 
 # 2. Node Agents
 nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()
 printNodeHostMappings(nodeAgentEntries)
 
-# 3. Web Servers
-webEntries = AdminTask.listServers('[-serverType WEB_SERVER]').splitlines()
-for entry in webEntries:
-    serverName = entry.split('(')[0]
-    cfgPath    = strip_trailing_paren(entry.split('(', 1)[1])
-    nodePath   = cfgPath.split('|', 1)[0]
-    parts      = nodePath.split('/')
-    cellName   = parts[1]
-    nodeName   = parts[3]
+# 3. Web Servers (using AdminConfig.list('Server'))
+allServers = AdminConfig.list('Server').splitlines()
+for serverId in allServers:
+    # Filter only WEB_SERVER types
+    sType = AdminConfig.showAttribute(serverId, 'serverType')
+    if sType != 'WEB_SERVER':
+        continue
 
-    webServerId = AdminConfig.getid(
-        '/Cell:%s/Node:%s/WebServer:%s/' % (cellName, nodeName, serverName)
-    )                                       # :contentReference[oaicite:5]{index=5}
-    hostName    = AdminConfig.showAttribute(webServerId, 'hostName')  # :contentReference[oaicite:6]{index=6}
-    print '%s: %s' % (serverName, hostName)
+    # Retrieve logical server name and hostname
+    sName = AdminConfig.showAttribute(serverId, 'name')
+    host  = AdminConfig.showAttribute(serverId, 'hostName')
+    print '%s: %s' % (sName, host)
