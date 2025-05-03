@@ -8,12 +8,11 @@ def strip_trailing_paren(s):
         return s[:-1]
     return s
 
-# Function to process Deployment Manager and Node Agent entries
+# Function to print nodeName: hostName for DMGR and Node Agents
 def printNodeHostMappings(entries):
     for entry in entries:
-        # entry example: "dmgr(cells/myCell/nodes/mgrNode/servers/dmgr|server.xml)"
         cfgPath  = strip_trailing_paren(entry.split('(', 1)[1])
-        nodePath = cfgPath.split('|', 1)[0]               # "cells/<cell>/nodes/<node>/servers/<profile>"
+        nodePath = cfgPath.split('|', 1)[0]
         parts    = nodePath.split('/')
         cellName = parts[1]
         nodeName = parts[3]
@@ -24,35 +23,32 @@ def printNodeHostMappings(entries):
 # --- Main Execution ---
 
 # 1. Deployment Manager (DMGR)
-dmgrEntries      = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()  # Lists DMGR profiles :contentReference[oaicite:3]{index=3}
+dmgrEntries      = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()  # DMGR list :contentReference[oaicite:7]{index=7}
 printNodeHostMappings(dmgrEntries)
 
 # 2. Node Agents
-nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()           # Lists Node Agents :contentReference[oaicite:4]{index=4}
+nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()           # NodeAgents list :contentReference[oaicite:8]{index=8}
 printNodeHostMappings(nodeAgentEntries)
 
-# 3. Web Servers – get hostName from ServerIndex
-webEntries = AdminTask.listServers('[-serverType WEB_SERVER]').splitlines()  # list your Web servers :contentReference[oaicite:2]{index=2}
+# 3. Web Servers – fallback to Node hostName if no ServerIndex entry
+webEntries = AdminTask.listServers('[-serverType WEB_SERVER]').splitlines()                  # WebServers list :contentReference[oaicite:9]{index=9}
 for entry in webEntries:
-    # Parse out the logical server name and config path
     serverName = entry.split('(')[0]
     cfgPath    = strip_trailing_paren(entry.split('(', 1)[1])
-    nodePath   = cfgPath.split('|', 1)[0]                                  
+    nodePath   = cfgPath.split('|', 1)[0]
     parts      = nodePath.split('/')
     cellName   = parts[1]
     nodeName   = parts[3]
 
-    # Obtain the Server config ID for this Web server
-    serverId = AdminConfig.getid(
+    serverId   = AdminConfig.getid(
         '/Cell:%s/Node:%s/Server:%s/' % (cellName, nodeName, serverName)
-    )                                                                     # find the Server element :contentReference[oaicite:3]{index=3}
+    )                                         # containment path usage :contentReference[oaicite:10]{index=10}
 
-    # List its ServerIndex child and fetch hostName
-    siEntries = AdminConfig.list('ServerIndex', serverId).splitlines()    # hostName lives here :contentReference[oaicite:4]{index=4}
+    siEntries  = AdminConfig.list('ServerIndex', serverId).splitlines()  
     if siEntries:
         hostName = AdminConfig.showAttribute(siEntries[0], 'hostName')
     else:
-        hostName = 'Unknown'
+        nodeId   = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
+        hostName = AdminConfig.showAttribute(nodeId, 'hostName')           # Node hostName fallback :contentReference[oaicite:11]{index=11}
 
-    # Print in the format: WebServerName: hostName
     print '%s: %s' % (serverName, hostName)
