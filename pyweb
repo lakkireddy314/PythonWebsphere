@@ -8,53 +8,39 @@ def strip_trailing_paren(s):
         return s[:-1]
     return s
 
-# Function to print nodeName: hostName for DMGR and Node Agents
+# Function to process Deployment Manager and Node Agent entries
 def printNodeHostMappings(entries):
     for entry in entries:
         # entry example: "dmgr(cells/myCell/nodes/mgrNode/servers/dmgr|server.xml)"
         cfgPath  = strip_trailing_paren(entry.split('(', 1)[1])
-        nodePath = cfgPath.split('|', 1)[0]               # "cells/myCell/nodes/mgrNode/servers/dmgr"
+        nodePath = cfgPath.split('|', 1)[0]               # "cells/<cell>/nodes/<node>/servers/<profile>"
         parts    = nodePath.split('/')
         cellName = parts[1]
         nodeName = parts[3]
-        # Get the Node config object
         nodeId   = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
-        # Read its hostName attribute
-        hostName = AdminConfig.showAttribute(nodeId, 'hostName')  # on Node config :contentReference[oaicite:6]{index=6}
+        hostName = AdminConfig.showAttribute(nodeId, 'hostName')
         print '%s: %s' % (nodeName, hostName)
 
 # --- Main Execution ---
 
 # 1. Deployment Manager (DMGR)
-dmgrEntries      = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()  # list DMGR profiles :contentReference[oaicite:7]{index=7}
+dmgrEntries      = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()  # Lists DMGR profiles :contentReference[oaicite:3]{index=3}
 printNodeHostMappings(dmgrEntries)
 
 # 2. Node Agents
-nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()           # list Node Agents :contentReference[oaicite:8]{index=8}
+nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()           # Lists Node Agents :contentReference[oaicite:4]{index=4}
 printNodeHostMappings(nodeAgentEntries)
 
-# 3. Web Servers – hostName resides on the ServerIndex child object
-webEntries = AdminTask.listServers('[-serverType WEB_SERVER]').splitlines()                  # list Web Servers :contentReference[oaicite:9]{index=9}
-for entry in webEntries:
-    serverName = entry.split('(')[0]
-    cfgPath    = strip_trailing_paren(entry.split('(', 1)[1])
-    nodePath   = cfgPath.split('|', 1)[0]   # "cells/myCell/nodes/myNode/servers/WebSrv01"
-    parts      = nodePath.split('/')
-    cellName   = parts[1]
-    nodeName   = parts[3]
-
-    # 3a. Get the Server config object for this Web Server
-    serverId = AdminConfig.getid(
-        '/Cell:%s/Node:%s/Server:%s/' % (cellName, nodeName, serverName)
-    )                                         # AdminConfig.getid with containment path :contentReference[oaicite:10]{index=10}
-
-    # 3b. List its ServerIndex child object
-    siEntries = AdminConfig.list('ServerIndex', serverId).splitlines()  
-    if not siEntries:
-        hostName = 'Unknown'
+# 3. Web Servers (directly list WebServer config objects)
+webServerIds = AdminConfig.list('WebServer').splitlines()                                   # List WebServer objects :contentReference[oaicite:5]{index=5}
+for wsId in webServerIds:
+    # Attempt to read the initialized 'name' attribute
+    nameAttr = AdminConfig.showAttribute(wsId, 'name')
+    if nameAttr:
+        serverName = nameAttr
     else:
-        # 3c. Read the hostName attribute from ServerIndex
-        siId     = siEntries[0]
-        hostName = AdminConfig.showAttribute(siId, 'hostName')            # hostName is valid on ServerIndex :contentReference[oaicite:11]{index=11}
-
+        # Fallback: parse name from the config path in wsId
+        serverName = wsId.split('|', 1)[0].split('/')[-1]
+    # Read the hostName attribute directly from the WebServer object
+    hostName = AdminConfig.showAttribute(wsId, 'hostName')                                 # hostName valid on WebServer :contentReference[oaicite:6]{index=6}
     print '%s: %s' % (serverName, hostName)
