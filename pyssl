@@ -1,0 +1,48 @@
+# listHostnamesAndSSL.py — wsadmin Jython script to show nodeName:hostName + default keystore/truststore
+
+# Strip off a trailing ')' from a wsadmin path string
+def strip_trailing_paren(s):
+    if s.endswith(')'):
+        return s[:-1]
+    return s
+
+# Process a list of server entries and print nodeName:hostName with SSL info
+def printNodeSSLInfo(entries):
+    for entry in entries:
+        # entry → "serverName(cells/myCell/nodes/myNode/servers/serverType|server.xml)"
+        cfgPath  = strip_trailing_paren(entry.split('(', 1)[1])
+        parts    = cfgPath.split('|', 1)[0].split('/')  # → ['cells','myCell','nodes','myNode','servers','nodeagent']
+        cellName = parts[1]
+        nodeName = parts[3]
+
+        # 1. Retrieve hostName
+        nodeId   = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
+        hostName = AdminConfig.showAttribute(nodeId, 'hostName')
+
+        # 2. List SSL configs scoped to this node
+        sslList  = AdminTask.listSSLConfigs('[-scopeName (cell):%s:(node):%s]' % (cellName, nodeName)).splitlines()  # :contentReference[oaicite:3]{index=3}
+
+        # 3. Pick the default alias
+        sslAlias = next((s.split()[1] for s in sslList if 'NodeDefaultSSLSettings' in s), None)
+        if not sslAlias:
+            sslAlias = next((s.split()[1] for s in sslList if 'CellDefaultSSLSettings' in s), None)            # :contentReference[oaicite:4]{index=4}
+
+        # 4. Get the SSLConfig object and keystore/truststore names
+        sslId      = AdminTask.getSSLConfig('[-alias %s -scopeName (cell):%s:(node):%s]' %
+                                            (sslAlias, cellName, nodeName))
+        keyStore   = AdminConfig.showAttribute(sslId, 'keyStoreName')                                           # :contentReference[oaicite:5]{index=5}
+        trustStore = AdminConfig.showAttribute(sslId, 'trustStoreName')                                        # :contentReference[oaicite:6]{index=6}
+
+        # 5. Output in one line
+        print '%s: %s (keystore: %s, truststore: %s, sslAlias: %s)' % (
+            nodeName, hostName, keyStore, trustStore, sslAlias
+        )
+
+# --- Main ---
+# Deployment Manager(s)
+dmgrEntries       = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()
+printNodeSSLInfo(dmgrEntries)
+
+# Node Agents
+nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()
+printNodeSSLInfo(nodeAgentEntries)
