@@ -1,21 +1,24 @@
-- name: Extract expiration date via openssl
-  shell: |
-    openssl x509 -enddate -noout -in /path/to/1.crt \
-    | cut -d= -f2
-  register: end_date_raw
+- name: Load certificate info for 1.crt
+  community.crypto.x509_certificate_info:
+    path: "/path/to/1.crt"
+  register: cert_info
+  delegate_to: localhost
 
-- name: Convert expiration date to Unix timestamp
+- name: Parse certificate expiration into datetime
   set_fact:
-    end_ts: "{{ lookup('pipe', 'date -d \"' + end_date_raw.stdout + '\" +%s') | int }}"
+    expiry_date: "{{ cert_info.not_after | to_datetime('%Y%m%d%H%M%SZ') }}"
+# cert_info.not_after yields an ASN.1 TIME string like '20250701120000Z' :contentReference[oaicite:4]{index=4} :contentReference[oaicite:5]{index=5}
 
-- name: Get current timestamp
+- name: Parse current time into datetime
   set_fact:
-    now_ts: "{{ lookup('pipe', 'date +%s') | int }}"
+    current_date: "{{ ansible_date_time.iso8601 | to_datetime('%Y-%m-%dT%H:%M:%SZ') }}"
+# ansible_date_time.iso8601 provides current ISO8601 timestamp :contentReference[oaicite:6]{index=6}
 
-- name: Compute days remaining
+- name: Compute days until expiry
   set_fact:
-    expiry_days: "{{ ((end_ts - now_ts) // 86400) }}"
+    expiry_days: "{{ (expiry_date - current_date).days }}"
+# Subtracting two datetimes produces a timedelta; .days gives the whole days difference :contentReference[oaicite:7]{index=7}
 
-- name: Display days remaining
+- name: Show result
   debug:
-    msg: "Certificate '1.crt' expires in {{ expiry_days }} days."
+    msg: "1.crt expires in {{ expiry_days }} days."
