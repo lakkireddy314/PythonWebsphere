@@ -1,0 +1,16 @@
+- name: Retrieve profile and hostname mappings
+  command: /path/to/your_command.sh
+  register: profiles_raw
+
+- name: Build profiles dictionary from command output
+  set_fact:
+    profiles: "{{ dict(profiles_raw.stdout_lines | map('split', ': ') | list) }}"
+
+- name: Include cert tasks for each profile
+  include_tasks: cert.yml
+  loop: "{{ profiles | dict2items }}"
+  loop_control:
+    loop_var: profile_item
+  vars:
+    profile_name: "{{ profile_item.key }}"
+    hostname: "{{ profile_item.value }}"
