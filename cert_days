@@ -1,17 +1,23 @@
-- name: Get expiry timestamp in seconds since epoch
-  shell: |
-    date --date="$(openssl x509 -enddate -noout -in /path/to/1.crt | cut -d= -f2)" +%s
-  register: expiry_ts_raw
+- name: Get certificate expiry string for 1.crt
+  shell: openssl x509 -enddate -noout -in /path/to/1.crt | cut -d= -f2
+  register: end_date_raw
   changed_when: false
 
-- name: Convert expiry timestamp to integer
+- name: Parse expiry date into a datetime object
   set_fact:
-    expiry_ts: "{{ expiry_ts_raw.stdout | int }}"
+    expiry_date: >-
+      {{ end_date_raw.stdout
+         | ansible.builtin.to_datetime('%b %e %H:%M:%S %Y %Z') }}
+- name: Parse current time into a datetime object
+  set_fact:
+    current_date: >-
+      {{ ansible_date_time.iso8601
+         | ansible.builtin.to_datetime('%Y-%m-%dT%H:%M:%SZ') }}
 
-- name: Get current epoch from Ansible facts
+- name: Compute days until certificate expires
   set_fact:
-    now_ts: "{{ ansible_date_time.epoch | int }}"
+    expiry_days: "{{ (expiry_date - current_date).days }}"
 
-- name: Calculate days remaining via epoch arithmetic
-  set_fact:
-    expiry_days_epoch: "{{ (expiry_ts - now_ts) // 86400 }}"
+- name: Show days remaining until expiry
+  debug:
+    msg: "Certificate '1.crt' expires in {{ expiry_days }} days."
