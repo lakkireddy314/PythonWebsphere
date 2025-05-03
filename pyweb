@@ -1,18 +1,19 @@
 # listHostnamesComplete.py
-# wsadmin Jython script to print nodeName: hostName for DMGR, Node Agents, and Web Servers
+# wsadmin Jython script to print nodeName: hostName for
+# DMGR, Node Agents, and WebSphere Web Servers
 
-# Helper to drop a trailing ')' from a string
+# Helper to drop a trailing ')' from wsadmin output entries
 def strip_trailing_paren(s):
     if s.endswith(')'):
         return s[:-1]
     return s
 
-# Function to process Deployment Manager and Node Agent entries
-def printNodeHostMappings(serverList):
-    for entry in serverList:
-        # entry format: "<profileName>(cells/<cell>/nodes/<node>/servers/<profileName>|server.xml)"
+# Process DMGR and Node Agent entries
+def printNodeHostMappings(entries):
+    for entry in entries:
+        # entry example: "dmgr(cells/myCell/nodes/mgrNode/servers/dmgr|server.xml)"
         cfgPath  = strip_trailing_paren(entry.split('(', 1)[1])
-        nodePath = cfgPath.split('|', 1)[0]             # e.g., cells/myCell/nodes/myNode/servers/nodeagent
+        nodePath = cfgPath.split('|', 1)[0]               # "cells/myCell/nodes/mgrNode/servers/dmgr"
         parts    = nodePath.split('/')
         cellName = parts[1]
         nodeName = parts[3]
@@ -30,15 +31,11 @@ printNodeHostMappings(dmgrEntries)
 nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()
 printNodeHostMappings(nodeAgentEntries)
 
-# 3. Web Servers (using AdminConfig.list('Server'))
-allServers = AdminConfig.list('Server').splitlines()
-for serverId in allServers:
-    # Filter only WEB_SERVER types
-    sType = AdminConfig.showAttribute(serverId, 'serverType')
-    if sType != 'WEB_SERVER':
-        continue
-
-    # Retrieve logical server name and hostname
-    sName = AdminConfig.showAttribute(serverId, 'name')
-    host  = AdminConfig.showAttribute(serverId, 'hostName')
-    print '%s: %s' % (sName, host)
+# 3. WebSphere Web Servers
+#    List WebServer objects directly (Server objects lack hostName) :contentReference[oaicite:6]{index=6}
+webServers = AdminConfig.list('WebServer').splitlines()
+for wsId in webServers:
+    # wsId example: "(cells/cell1/nodes/node1/servers/WebServer01|server.xml#WebServer_...)" or similar
+    name   = AdminConfig.showAttribute(wsId, 'name')      # logical WebServer name :contentReference[oaicite:7]{index=7}
+    host   = AdminConfig.showAttribute(wsId, 'hostName')  # configured hostname :contentReference[oaicite:8]{index=8}
+    print '%s: %s' % (name, host)
