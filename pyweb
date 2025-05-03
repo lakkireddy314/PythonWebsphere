@@ -1,0 +1,49 @@
+# wsadmin Jython script to print nodeName: hostName for DMGR, Node Agents, and Web Servers
+
+# Helper to drop a trailing ')' from a string
+def strip_trailing_paren(s):
+    if s.endswith(')'):
+        return s[:-1]
+    return s
+
+# Function to process a list of server entries and print nodeName: hostName
+def printNodeHostMappings(serverList):
+    for entry in serverList:
+        cfgPath  = strip_trailing_paren(entry.split('(', 1)[1])
+        nodePath = cfgPath.split('|', 1)[0]
+        parts    = nodePath.split('/')
+        nodeName = parts[3]
+        nodeId   = AdminConfig.getid('/Cell:%s/Node:%s/' %
+                                     (parts[1], nodeName))
+        hostName = AdminConfig.showAttribute(nodeId, 'hostName')
+        print '%s: %s' % (nodeName, hostName)
+
+# --- Main Execution ---
+
+# 1. Deployment Manager (DMGR) profile(s)
+dmgrEntries      = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()  # :contentReference[oaicite:13]{index=13}
+printNodeHostMappings(dmgrEntries)
+
+# 2. Node Agents
+nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()           # :contentReference[oaicite:14]{index=14}
+printNodeHostMappings(nodeAgentEntries)
+
+# 3. Web Servers
+webEntries = AdminTask.listServers('[-serverType WEB_SERVER]').splitlines()                  # :contentReference[oaicite:15]{index=15}
+for entry in webEntries:
+    serverName = entry.split('(')[0]
+    cfgPath    = strip_trailing_paren(entry.split('(', 1)[1])
+    nodePath   = cfgPath.split('|', 1)[0]
+    parts      = nodePath.split('/')
+    cellName   = parts[1]
+    nodeName   = parts[3]
+
+    serverId   = AdminConfig.getid('/Cell:%s/Node:%s/Server:%s/' %
+                                   (cellName, nodeName, serverName))                # :contentReference[oaicite:16]{index=16}
+    idxEntries = AdminConfig.list('ServerIndex', serverId).splitlines()                  # :contentReference[oaicite:17]{index=17}
+    if idxEntries:
+        hostName = AdminConfig.showAttribute(idxEntries[0], 'hostName')                 # :contentReference[oaicite:18]{index=18}
+    else:
+        hostName = 'Unknown'
+
+    print '%s: %s' % (serverName, hostName)
