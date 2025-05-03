@@ -31,16 +31,28 @@ printNodeHostMappings(dmgrEntries)
 nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()           # Lists Node Agents :contentReference[oaicite:4]{index=4}
 printNodeHostMappings(nodeAgentEntries)
 
-# 3. Web Servers (directly list WebServer config objects)
-webServerIds = AdminConfig.list('WebServer').splitlines()                                   # List WebServer objects :contentReference[oaicite:5]{index=5}
-for wsId in webServerIds:
-    # Attempt to read the initialized 'name' attribute
-    nameAttr = AdminConfig.showAttribute(wsId, 'name')
-    if nameAttr:
-        serverName = nameAttr
+# 3. Web Servers – get hostName from ServerIndex
+webEntries = AdminTask.listServers('[-serverType WEB_SERVER]').splitlines()  # list your Web servers :contentReference[oaicite:2]{index=2}
+for entry in webEntries:
+    # Parse out the logical server name and config path
+    serverName = entry.split('(')[0]
+    cfgPath    = strip_trailing_paren(entry.split('(', 1)[1])
+    nodePath   = cfgPath.split('|', 1)[0]                                  
+    parts      = nodePath.split('/')
+    cellName   = parts[1]
+    nodeName   = parts[3]
+
+    # Obtain the Server config ID for this Web server
+    serverId = AdminConfig.getid(
+        '/Cell:%s/Node:%s/Server:%s/' % (cellName, nodeName, serverName)
+    )                                                                     # find the Server element :contentReference[oaicite:3]{index=3}
+
+    # List its ServerIndex child and fetch hostName
+    siEntries = AdminConfig.list('ServerIndex', serverId).splitlines()    # hostName lives here :contentReference[oaicite:4]{index=4}
+    if siEntries:
+        hostName = AdminConfig.showAttribute(siEntries[0], 'hostName')
     else:
-        # Fallback: parse name from the config path in wsId
-        serverName = wsId.split('|', 1)[0].split('/')[-1]
-    # Read the hostName attribute directly from the WebServer object
-    hostName = AdminConfig.showAttribute(wsId, 'hostName')                                 # hostName valid on WebServer :contentReference[oaicite:6]{index=6}
+        hostName = 'Unknown'
+
+    # Print in the format: WebServerName: hostName
     print '%s: %s' % (serverName, hostName)
