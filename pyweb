@@ -1,5 +1,5 @@
 # listHostnamesComplete.py
-# wsadmin Jython script to print nodeName: hostName for
+# wsadmin Jython script to print <name>: <hostName> for
 # DMGR, Node Agents, and WebSphere Web Servers
 
 # Helper to drop a trailing ')' from wsadmin output entries
@@ -8,7 +8,7 @@ def strip_trailing_paren(s):
         return s[:-1]
     return s
 
-# Process DMGR and Node Agent entries
+# Function to print nodeName: hostName for DMGR and Node Agents
 def printNodeHostMappings(entries):
     for entry in entries:
         # entry example: "dmgr(cells/myCell/nodes/mgrNode/servers/dmgr|server.xml)"
@@ -17,25 +17,44 @@ def printNodeHostMappings(entries):
         parts    = nodePath.split('/')
         cellName = parts[1]
         nodeName = parts[3]
+        # Get the Node config object
         nodeId   = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
-        hostName = AdminConfig.showAttribute(nodeId, 'hostName')
+        # Read its hostName attribute
+        hostName = AdminConfig.showAttribute(nodeId, 'hostName')  # on Node config :contentReference[oaicite:6]{index=6}
         print '%s: %s' % (nodeName, hostName)
 
 # --- Main Execution ---
 
 # 1. Deployment Manager (DMGR)
-dmgrEntries = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()
+dmgrEntries      = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()  # list DMGR profiles :contentReference[oaicite:7]{index=7}
 printNodeHostMappings(dmgrEntries)
 
 # 2. Node Agents
-nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()
+nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()           # list Node Agents :contentReference[oaicite:8]{index=8}
 printNodeHostMappings(nodeAgentEntries)
 
-# 3. WebSphere Web Servers
-#    List WebServer objects directly (Server objects lack hostName) :contentReference[oaicite:6]{index=6}
-webServers = AdminConfig.list('WebServer').splitlines()
-for wsId in webServers:
-    # wsId example: "(cells/cell1/nodes/node1/servers/WebServer01|server.xml#WebServer_...)" or similar
-    name   = AdminConfig.showAttribute(wsId, 'name')      # logical WebServer name :contentReference[oaicite:7]{index=7}
-    host   = AdminConfig.showAttribute(wsId, 'hostName')  # configured hostname :contentReference[oaicite:8]{index=8}
-    print '%s: %s' % (name, host)
+# 3. Web Servers – hostName resides on the ServerIndex child object
+webEntries = AdminTask.listServers('[-serverType WEB_SERVER]').splitlines()                  # list Web Servers :contentReference[oaicite:9]{index=9}
+for entry in webEntries:
+    serverName = entry.split('(')[0]
+    cfgPath    = strip_trailing_paren(entry.split('(', 1)[1])
+    nodePath   = cfgPath.split('|', 1)[0]   # "cells/myCell/nodes/myNode/servers/WebSrv01"
+    parts      = nodePath.split('/')
+    cellName   = parts[1]
+    nodeName   = parts[3]
+
+    # 3a. Get the Server config object for this Web Server
+    serverId = AdminConfig.getid(
+        '/Cell:%s/Node:%s/Server:%s/' % (cellName, nodeName, serverName)
+    )                                         # AdminConfig.getid with containment path :contentReference[oaicite:10]{index=10}
+
+    # 3b. List its ServerIndex child object
+    siEntries = AdminConfig.list('ServerIndex', serverId).splitlines()  
+    if not siEntries:
+        hostName = 'Unknown'
+    else:
+        # 3c. Read the hostName attribute from ServerIndex
+        siId     = siEntries[0]
+        hostName = AdminConfig.showAttribute(siId, 'hostName')            # hostName is valid on ServerIndex :contentReference[oaicite:11]{index=11}
+
+    print '%s: %s' % (serverName, hostName)
