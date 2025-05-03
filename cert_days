@@ -1,23 +1,44 @@
-- name: Get certificate expiry string for 1.crt
-  shell: openssl x509 -enddate -noout -in /path/to/1.crt | cut -d= -f2
-  register: end_date_raw
-  changed_when: false
+---
+- name: Check certificate expiry for 1.crt
+  hosts: all
+  gather_facts: yes
 
-- name: Parse expiry date into a datetime object
-  set_fact:
-    expiry_date: >-
-      {{ end_date_raw.stdout
-         | ansible.builtin.to_datetime('%b %e %H:%M:%S %Y %Z') }}
-- name: Parse current time into a datetime object
-  set_fact:
-    current_date: >-
-      {{ ansible_date_time.iso8601
-         | ansible.builtin.to_datetime('%Y-%m-%dT%H:%M:%SZ') }}
+  vars:
+    cert_path: "/path/to/1.crt"
 
-- name: Compute days until certificate expires
-  set_fact:
-    expiry_days: "{{ (expiry_date - current_date).days }}"
+  tasks:
+    - name: Get raw expiry string for 1.crt
+      shell: |
+        openssl x509 -enddate -noout -in {{ cert_path }} \
+          | cut -d= -f2
+      register: end_date_raw
+      changed_when: false
 
-- name: Show days remaining until expiry
-  debug:
-    msg: "Certificate '1.crt' expires in {{ expiry_days }} days."
+    - name: Fail if we got no expiry string
+      fail:
+        msg: >
+          Failed to read expiry from {{ cert_path }}—check that the file
+          exists and is a valid certificate.
+      when: end_date_raw.stdout | trim == ''
+
+    - name: Normalize OpenSSL date for Python parsing
+      set_fact:
+        expiry_str: >-
+          {{ end_date_raw.stdout
+             | regex_replace('^([A-Za-z]{3})\\s+(\\d)\\s', '\\1 0\\2 ') }}
+
+    - name: Parse certificate expiry into datetime
+      set_fact:
+        expiry_date: "{{ expiry_str | to_datetime('%b %d %H:%M:%S %Y %Z') }}"
+
+    - name: Parse current time into datetime
+      set_fact:
+        current_date: "{{ ansible_date_time.iso8601 | to_datetime('%Y-%m-%dT%H:%M:%SZ') }}"
+
+    - name: Compute days until expiry
+      set_fact:
+        expiry_days: "{{ (expiry_date - current_date).days }}"
+
+    - name: Show days until certificate expires
+      debug:
+        msg: "Certificate '{{ cert_path }}' expires in {{ expiry_days }} days."
