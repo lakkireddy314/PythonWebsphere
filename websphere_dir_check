@@ -1,0 +1,65 @@
+# roles/websphere_install/tasks/main.yml
+---
+
+- name: Validate that common_profile survey variable is provided
+  ansible.builtin.assert:
+    that:
+      - common_profile is defined
+      - common_profile != ''
+    fail_msg: "The survey variable 'common_profile' must be provided!"
+  tags: always
+
+- name: Set install root for profile 85
+  ansible.builtin.set_fact:
+    websphere_install_root: "/opt/websphere/85/common_profile"
+  when: common_profile | string == '85'
+
+- name: Set install root for profile 90
+  ansible.builtin.set_fact:
+    websphere_install_root: "/opt/websphere/90/common_profile"
+  when: common_profile | string == '90'
+
+- name: Discover install root for other profiles
+  ansible.builtin.include_tasks: discover_install_root.yml
+  when:
+    - common_profile is defined
+    - common_profile | string not in ['85', '90']
+    - common_profile != ''
+  check_mode: no
+yaml
+Copy
+Edit
+# roles/websphere_install/tasks/discover_install_root.yml
+---
+
+- name: Locate candidate WebSphere install directories
+  ansible.builtin.find:
+    paths: /opt/websphere
+    file_type: directory
+    patterns: "{{ common_profile }}*"
+    recurse: no
+  register: ws_roots
+  check_mode: yes
+
+- name: Fail if no matching install directories found
+  ansible.builtin.fail:
+    msg: "Could not find any WebSphere install directory matching '{{ common_profile }}*' under /opt/websphere"
+  when: ws_roots.files | length == 0
+
+- name: Select the latest matching directory as install root
+  ansible.builtin.set_fact:
+    websphere_install_root: "{{ (ws_roots.files | sort(attribute='path'))[-1].path }}"
+  when: ws_roots.files | length > 0
+Detailed Breakdown
+We use the assert module to fail early on missing input, which prevents cascading errors later in the play 
+Stack Overflow
+. The set_fact tasks for fixed profile values are inherently idempotent because they only run when their when conditions match 
+env0
+. The dynamic discovery uses the find module, which is idempotent and safe with check_mode, and registers results to select the appropriate install root 
+Red Hat Communities of Practice
+Ansible Documentation
+. We guard the discovery tasks behind a when conditional to skip them if the profile matches known values, minimizing unnecessary lookups 
+Ansible Documentation
+. Our pick of the “latest” directory via sorting of ws_roots.files ensures consistent selection across runs, following a known pattern for directory resolution 
+forum.ansible.com
+.
