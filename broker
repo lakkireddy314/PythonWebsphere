@@ -1,0 +1,47 @@
+- hosts: localhost
+  gather_facts: false
+  vars:
+    node_discovery_cmd:  "your_node_discovery_command"
+    server_discovery_cmd: "your_server_discovery_command {{ item }}"
+    target_cmd:           "my_command --broker {{ item.0.broker }} --server {{ item.1 }}"
+
+  tasks:
+
+    - name: Discover all nodes
+      shell: "{{ node_discovery_cmd }}"
+      register: nodes_output
+      changed_when: false
+    - name: Build list of brokers
+      set_fact:
+        brokers: "{{ nodes_output.stdout_lines }}"
+      # stdout_lines splits multiline output into a list :contentReference[oaicite:2]{index=2}
+
+    - name: Discover servers for each broker
+      shell: "{{ server_discovery_cmd }}"
+      register: server_results
+      changed_when: false
+      loop: "{{ brokers }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Map each broker to its servers
+      set_fact:
+        servers_map: >-
+          {{ dict(
+               server_results.results  | map(attribute='item')         | list,
+               server_results.results  | map(attribute='stdout_lines') | list
+             ) }}
+      # zips broker names and their stdout_lines into a dict :contentReference[oaicite:3]{index=3}
+
+    - name: Run command on every server of every broker
+      command: "{{ target_cmd }}"
+      # First convert to items named broker/servers, then expand each server
+      loop: >-
+        {{ 
+          servers_map
+            | dict2items(key_name='broker', value_name='servers')
+            | subelements('servers')
+        }}
+      loop_control:
+        label: "Broker {{ item.0.broker }}, Server {{ item.1 }}"
+      # item.0.broker is your node name, item.1 is the server :contentReference[oaicite:4]{index=4}
