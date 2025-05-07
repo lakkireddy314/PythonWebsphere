@@ -62,4 +62,36 @@ Ansible Documentation
 Ansible Documentation
 . Our pick of the “latest” directory via sorting of ws_roots.files ensures consistent selection across runs, following a known pattern for directory resolution 
 forum.ansible.com
+
+
+# roles/websphere_install/tasks/main.yml
+---
+
+- name: Validate that common_profile survey variable is provided (can be empty)
+  ansible.builtin.assert:
+    that:
+      - common_profile is defined
+    fail_msg: "The survey variable 'common_profile' must at least be defined (empty is allowed)"
+
+- name: Handle undefined or empty common_profile
+  ansible.builtin.include_tasks: discover_install_root.yml
+  when: common_profile is not defined or common_profile | length == 0
+
+- name: Set install root for profile 85
+  ansible.builtin.set_fact:
+    websphere_install_root: "/opt/websphere/85/common_profile"
+  when: common_profile | string == '85'
+
+- name: Set install root for profile 90
+  ansible.builtin.set_fact:
+    websphere_install_root: "/opt/websphere/90/common_profile"
+  when: common_profile | string == '90'
+
+- name: Handle any other non-empty common_profile value
+  ansible.builtin.include_tasks: discover_install_root.yml
+  when:
+    - common_profile is defined
+    - common_profile | length > 0
+    - common_profile | string not in ['85', '90']
+
 .
