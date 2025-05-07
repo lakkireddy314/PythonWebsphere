@@ -24,3 +24,49 @@
   loop: "{{ profile_host_map | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
+
+
+############################################################################
+
+---
+# roles/profile_cert/tasks/main.yml
+
+- name: Discover profile→hostname mappings
+  shell: /path/to/your_command.sh
+  register: profiles_raw
+  run_once: true
+  changed_when: false
+  failed_when: profiles_raw.rc not in [0, 1]
+  check_mode: no
+
+- name: Extract profile names list
+  set_fact:
+    profile_names: >-
+      {{ profiles_raw.stdout_lines
+         | map('split', ': ')
+         | map('first')
+         | list }}
+
+- name: Extract hostnames list
+  set_fact:
+    hostnames: >-
+      {{ profiles_raw.stdout_lines
+         | map('split', ': ')
+         | map('last')
+         | list }}
+
+- name: Combine names & hosts into dict
+  set_fact:
+    profiles: "{{ dict(profile_names | zip(hostnames)) }}"
+
+- name: Process certificates for each host
+  include_tasks: cert.yml
+  loop: "{{ profiles | dict2items }}"
+  loop_control:
+    loop_var: profile_entry       # <-- custom loop variable name
+  when:
+    - profile_entry.key is defined
+    - profile_entry.value is match('\\S+')
+  vars:
+    profile_name: "{{ profile_entry.key }}"
+    hostname:     "{{ profile_entry.value }}"
