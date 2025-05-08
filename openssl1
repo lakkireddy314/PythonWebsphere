@@ -1,0 +1,31 @@
+- hosts: localhost
+  gather_facts: false
+  vars:
+    cert_name: myserver
+    ca_cert: /etc/ssl/ca/CA.pem
+    ca_key: /etc/ssl/ca/CA.key
+
+  tasks:
+    - name: Generate private key and CSR with OpenSSL
+      ansible.builtin.command: >
+        openssl req -newkey rsa:2048 -nodes
+          -keyout /etc/ssl/private/{{ cert_name }}.key
+          -subj "/CN={{ cert_name }}.example.com"
+          -out /etc/ssl/csr/{{ cert_name }}.csr
+      args:
+        creates: "/etc/ssl/csr/{{ cert_name }}.csr"
+      # idempotent via 'creates' :contentReference[oaicite:9]{index=9}
+
+    - name: Sign the CSR using CA key and cert
+      ansible.builtin.command: >
+        openssl x509 -req
+          -in /etc/ssl/csr/{{ cert_name }}.csr
+          -CA {{ ca_cert }}
+          -CAkey {{ ca_key }}
+          -CAcreateserial
+          -out /etc/ssl/certs/{{ cert_name }}.crt
+          -days 365
+          -sha256
+      args:
+        creates: "/etc/ssl/certs/{{ cert_name }}.crt"
+      # uses 'openssl x509 -req' to sign CSR with CA files :contentReference[oaicite:10]{index=10}
