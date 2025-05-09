@@ -1,1 +1,33 @@
+- hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Define files to check
+      set_fact:
+        file_list:
+          - /opt/myapp/app.conf
+          - /opt/myapp/db.conf
+          - /opt/myapp/logging.conf
+
+    - name: Stat each file in the list
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ file_list }}"
+      loop_control:
+        loop_var: file_path
+      register: file_stats
+
+    - name: Report existing files
+      debug:
+        msg: "Present: {{ item.file_path }}"
+      loop: "{{ file_stats.results }}"
+      when: item.stat.exists and (item.stat.isreg | default(false))
+
+    - name: Copy missing files from templates
+      ansible.builtin.copy:
+        src: "templates/{{ item.file_path | basename }}"
+        dest: "{{ item.file_path }}"
+        mode: '0644'
+      loop: "{{ file_stats.results }}"
+      when: not item.stat.exists
 
