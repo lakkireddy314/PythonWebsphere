@@ -44,4 +44,39 @@
         if profiles_raw.results is defined else
         profiles_raw
       }}
+#################################
+
+- name: Gather profile→hostname mapping
+  hosts: all
+  gather_facts: false
+  vars:
+    profile_cmd: /path/to/your/profile-list-script.sh
+
+  tasks:
+    - name: Run profile-to-hostname command
+      ansible.builtin.command: "{{ profile_cmd }}"
+      register: profile_out
+      changed_when: false                        # doesn’t mark changed for data-gathering :contentReference[oaicite:9]{index=9}
+
+    - name: Consolidate stdout_lines (single-run or looped)
+      ansible.builtin.set_fact:
+        profile_lines: >-
+          {{
+            (profile_out.results | default([profile_out]))
+            | map(attribute='stdout_lines')
+            | flatten
+          }}
+
+    - name: Build profile_map from lines
+      ansible.builtin.set_fact:
+        profile_map: "{{ dict(profile_lines | map('split', ': ') | list) }}"
+
+    - name: Include cert tasks for each profile/host
+      ansible.builtin.include_tasks: cert.yml
+      loop: "{{ profile_map | dict2items }}"
+      loop_control:
+        loop_var: profile_item
+      vars:
+        profile_name: "{{ profile_item.key }}"
+        target_host: "{{ profile_item.value }}"
 
