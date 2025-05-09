@@ -37,8 +37,11 @@
 - name: Normalize profile lines
   set_fact:
     profile_lines: >-
-      {{
-        (profiles_raw | attribute('stdout_lines'))
-        | default((profiles_raw.results | default(profiles_raw))[0].stdout_lines, true)
+      {{ 
+        profiles_raw.stdout_lines 
+        if profiles_raw.stdout_lines is defined else
+        profiles_raw.results[0].stdout_lines 
+        if profiles_raw.results is defined else
+        profiles_raw
       }}
 
