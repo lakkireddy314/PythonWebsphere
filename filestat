@@ -46,7 +46,7 @@
       }}
 #################################
 
-- name: Gather profile→hostname mapping
+- name: Build profile_map via zip
   hosts: all
   gather_facts: false
   vars:
@@ -56,27 +56,13 @@
     - name: Run profile-to-hostname command
       ansible.builtin.command: "{{ profile_cmd }}"
       register: profile_out
-      changed_when: false                        # doesn’t mark changed for data-gathering :contentReference[oaicite:9]{index=9}
 
-    - name: Consolidate stdout_lines (single-run or looped)
+    - name: Extract and split keys and values
       ansible.builtin.set_fact:
-        profile_lines: >-
-          {{
-            (profile_out.results | default([profile_out]))
-            | map(attribute='stdout_lines')
-            | flatten
-          }}
+        keys:   "{{ profile_out.stdout_lines[1:] | map('split', ': ') | map('first') | list }}"
+        values: "{{ profile_out.stdout_lines[1:] | map('split', ': ') | map('last')  | list }}"
 
-    - name: Build profile_map from lines
+    - name: Combine keys and values into dict
       ansible.builtin.set_fact:
-        profile_map: "{{ dict(profile_lines | map('split', ': ') | list) }}"
-
-    - name: Include cert tasks for each profile/host
-      ansible.builtin.include_tasks: cert.yml
-      loop: "{{ profile_map | dict2items }}"
-      loop_control:
-        loop_var: profile_item
-      vars:
-        profile_name: "{{ profile_item.key }}"
-        target_host: "{{ profile_item.value }}"
+        profile_map: "{{ dict(keys | ansible.builtin.zip(values)) }}"
 
