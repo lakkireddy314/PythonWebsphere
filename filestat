@@ -31,3 +31,14 @@
       loop: "{{ file_stats.results }}"
       when: not item.stat.exists
 
+
+#########################
+
+- name: Normalize profile lines
+  set_fact:
+    profile_lines: >-
+      {{
+        (profiles_raw | attribute('stdout_lines'))
+        | default((profiles_raw.results | default(profiles_raw))[0].stdout_lines, true)
+      }}
+
