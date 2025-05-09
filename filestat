@@ -33,20 +33,7 @@
 
 
 #########################
-
-- name: Normalize profile lines
-  set_fact:
-    profile_lines: >-
-      {{ 
-        profiles_raw.stdout_lines 
-        if profiles_raw.stdout_lines is defined else
-        profiles_raw.results[0].stdout_lines 
-        if profiles_raw.results is defined else
-        profiles_raw
-      }}
-#################################
-
-- name: Build profile_map via zip
+- name: Build profile_map incrementally with custom loop_var
   hosts: all
   gather_facts: false
   vars:
@@ -57,12 +44,21 @@
       ansible.builtin.command: "{{ profile_cmd }}"
       register: profile_out
 
-    - name: Extract and split keys and values
+    - name: Filter out the header line
       ansible.builtin.set_fact:
-        keys:   "{{ profile_out.stdout_lines[1:] | map('split', ': ') | map('first') | list }}"
-        values: "{{ profile_out.stdout_lines[1:] | map('split', ': ') | map('last')  | list }}"
+        filtered_lines: "{{ profile_out.stdout_lines[1:] }}"
 
-    - name: Combine keys and values into dict
+    - name: Initialize empty profile_map
       ansible.builtin.set_fact:
-        profile_map: "{{ dict(keys | ansible.builtin.zip(values)) }}"
+        profile_map: {}
+
+    - name: Add each profile→hostname to profile_map
+      ansible.builtin.set_fact:
+        profile_map: "{{ profile_map | default({}) | combine({ (key): (value) }) }}"
+      loop: "{{ filtered_lines }}"
+      loop_control:
+        loop_var: profile_line
+      vars:
+        key:   "{{ profile_line.split(': ')[0] }}"
+        value: "{{ profile_line.split(': ')[1] }}"
 
