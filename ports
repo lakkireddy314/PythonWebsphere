@@ -1,0 +1,25 @@
+# getHostAndPorts.py
+# Retrieves hostname and HTTPS port for all application servers
+
+# List all server entries in the cell
+serverEntries = AdminConfig.list('ServerEntry').splitlines()
+
+for serverEntry in serverEntries:
+    # Extract server and node names
+    serverName = serverEntry.split('(')[0]
+    nodeName   = serverEntry.split('/nodes/')[1].split('/')[0]
+    
+    # List all NamedEndPoint objects under this server entry
+    namedEndpoints = AdminConfig.list('NamedEndPoint', serverEntry).splitlines()
+    
+    for ne in namedEndpoints:
+        epName = AdminConfig.showAttribute(ne, 'endPointName')
+        # Filter for secure endpoints (common names include WC_defaulthost_secure, WC_HTTPS_endpoint, etc.)
+        if 'secure' in epName.lower():
+            epRef = AdminConfig.showAttribute(ne, 'endPoint')
+            host  = AdminConfig.showAttribute(epRef, 'host')
+            port  = AdminConfig.showAttribute(epRef, 'port')
+            
+            print "Node: %s, Server: %s, Host: %s, Endpoint: %s, Port: %s" % (
+                nodeName, serverName, host, epName, port
+            )
