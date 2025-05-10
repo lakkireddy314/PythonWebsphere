@@ -1,34 +1,14 @@
-# getHostAndPorts.py
-# Fixed: strip brackets from epRefAttr and cast to Python str for safe methods
-
-# 1) List all ServerEntry configuration objects
-serverEntries = AdminConfig.list('ServerEntry').splitlines()                         # :contentReference[oaicite:5]{index=5}
-
-for serverEntry in serverEntries:
-    # 2) Parse server and node names
-    serverName = serverEntry.split('(')[0]                                          # :contentReference[oaicite:6]{index=6}
-    nodeName   = serverEntry.split('/nodes/')[1].split('/')[0]                      # :contentReference[oaicite:7]{index=7}
-
-    # 3) Get the Node config ID and actual hostName
-    nodeId     = AdminConfig.getid('/Node:%s/' % nodeName)                          # :contentReference[oaicite:8]{index=8}
-    hostName   = AdminConfig.showAttribute(nodeId, 'hostName')                      # :contentReference[oaicite:9]{index=9}
-
-    # 4) List NamedEndPoint objects under this server entry
-    namedEndpoints = AdminConfig.list('NamedEndPoint', serverEntry).splitlines()     # :contentReference[oaicite:10]{index=10}
-
-    for ne in namedEndpoints:
-        # 5) Retrieve and filter the endpoint name
-        epName    = str(AdminConfig.showAttribute(ne, 'endPointName'))               # :contentReference[oaicite:11]{index=11}
-
-        if epName.lower().find('secure') != -1:
-            # 6) Get the raw endpoint config ID and strip off brackets
-            epRefAttr = AdminConfig.showAttribute(ne, 'endPoint')                    # :contentReference[oaicite:12]{index=12}
-            epRef     = epRefAttr[1:-1]                                              # :contentReference[oaicite:13]{index=13}
-
-            # 7) Now retrieve host and port using the real config ID
-            host = AdminConfig.showAttribute(epRef, 'host')                          # :contentReference[oaicite:14]{index=14}
-            port = AdminConfig.showAttribute(epRef, 'port')                          # :contentReference[oaicite:15]{index=15}
-
-            print "Node: %s, Server: %s, Host: %s, Endpoint: %s, Port: %s" % (
-                nodeName, serverName, hostName, epName, port
-            )
+servers = AdminTask.listServers('[-serverType APPLICATION_SERVER]').splitlines()
+for entry in servers:
+    serverName = entry.split('(')[0]
+    nodeName   = entry.split('/nodes/')[1].split('/')[0]
+    # List only HTTPS ports
+    httpsPorts = AdminTask.listServerPorts(
+        '[-serverName %s -nodeName %s -protocol HTTPS]' % (serverName, nodeName)
+    ).strip()
+    # Retrieve actual host
+    nodeId   = AdminConfig.getid('/Node:%s/' % nodeName)
+    hostName = AdminConfig.showAttribute(nodeId, 'hostName')
+    print "Node: %s, Server: %s, Host: %s, HTTPS Port(s): %s" % (
+        nodeName, serverName, hostName, httpsPorts
+    )
