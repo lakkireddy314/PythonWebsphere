@@ -1,11 +1,13 @@
 # getHostAndPorts.py
 # Retrieves hostname and HTTPS port for all application servers
+# Fixes the “string member test needs char left operand” error
+# by using find() on a Python str()
 
-# List all server entries in the cell
+# List all ServerEntry configuration objects
 serverEntries = AdminConfig.list('ServerEntry').splitlines()
 
 for serverEntry in serverEntries:
-    # Extract server and node names
+    # Parse out server and node names
     serverName = serverEntry.split('(')[0]
     nodeName   = serverEntry.split('/nodes/')[1].split('/')[0]
     
@@ -13,12 +15,15 @@ for serverEntry in serverEntries:
     namedEndpoints = AdminConfig.list('NamedEndPoint', serverEntry).splitlines()
     
     for ne in namedEndpoints:
-        epName = AdminConfig.showAttribute(ne, 'endPointName')
-        # Filter for secure endpoints (common names include WC_defaulthost_secure, WC_HTTPS_endpoint, etc.)
-        if 'secure' in epName.lower():
+        # epName is a Java String; cast to Python str for safe methods
+        epName = str(AdminConfig.showAttribute(ne, 'endPointName'))
+        # look for “secure” (case-insensitive) via find()
+        if epName.lower().find('secure') != -1:
+            # epRef is the config ID of the actual endpoint object
             epRef = AdminConfig.showAttribute(ne, 'endPoint')
-            host  = AdminConfig.showAttribute(epRef, 'host')
-            port  = AdminConfig.showAttribute(epRef, 'port')
+            # Now retrieve host and port attributes
+            host = AdminConfig.showAttribute(epRef, 'host')
+            port = AdminConfig.showAttribute(epRef, 'port')
             
             print "Node: %s, Server: %s, Host: %s, Endpoint: %s, Port: %s" % (
                 nodeName, serverName, host, epName, port
