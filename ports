@@ -1,14 +1,37 @@
-servers = AdminTask.listServers('[-serverType APPLICATION_SERVER]').splitlines()
-for entry in servers:
-    serverName = entry.split('(')[0]
-    nodeName   = entry.split('/nodes/')[1].split('/')[0]
-    # List only HTTPS ports
-    httpsPorts = AdminTask.listServerPorts(
-        '[-serverName %s -nodeName %s -protocol HTTPS]' % (serverName, nodeName)
-    ).strip()
-    # Retrieve actual host
+# getHostAndPorts.py — fixed
+
+# List all ServerEntry config objects
+serverEntries = AdminConfig.list('ServerEntry').splitlines()
+
+for serverEntry in serverEntries:
+    serverName = serverEntry.split('(')[0]
+    nodeName   = serverEntry.split('/nodes/')[1].split('/')[0]
+
+    # Retrieve actual hostName from the Node config
     nodeId   = AdminConfig.getid('/Node:%s/' % nodeName)
-    hostName = AdminConfig.showAttribute(nodeId, 'hostName')
-    print "Node: %s, Server: %s, Host: %s, HTTPS Port(s): %s" % (
-        nodeName, serverName, hostName, httpsPorts
-    )
+    hostName = AdminConfig.showAttribute(nodeId, 'hostName')  # actual host, not '*'
+                                                          # :contentReference[oaicite:7]{index=7} :contentReference[oaicite:8]{index=8}
+
+    # Iterate NamedEndPoint children
+    namedEndpoints = AdminConfig.list('NamedEndPoint', serverEntry).splitlines()  # :contentReference[oaicite:9]{index=9}
+    for ne in namedEndpoints:
+        epName    = str(AdminConfig.showAttribute(ne, 'endPointName'))
+        if 'secure' not in epName.lower():
+            continue
+
+        # Get the raw endpoint reference (may be '[]')
+        epRefAttr = AdminConfig.showAttribute(ne, 'endPoint')
+        # Skip if empty list or empty string
+        if not epRefAttr or epRefAttr.strip() in ['[]', '']:
+            continue
+
+        # Strip surrounding brackets if present
+        epRef = epRefAttr[1:-1] if epRefAttr.startswith('[') and epRefAttr.endswith(']') else epRefAttr
+
+        # Now safe to retrieve host and port
+        host = AdminConfig.showAttribute(epRef, 'host')
+        port = AdminConfig.showAttribute(epRef, 'port')
+
+        print "Node: %s, Server: %s, Host: %s, Endpoint: %s, Port: %s" % (
+            nodeName, serverName, hostName, epName, port
+        )
