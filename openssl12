@@ -1,0 +1,87 @@
+Here’s how to embed the “kitchen-sink” extfile completely in your playbook using blockinfile, and then you can point your OpenSSL commands at it.
+
+yaml
+Copy
+Edit
+---
+- hosts: all
+  gather_facts: true
+
+  tasks:
+    - name: Create inline OpenSSL extfile with SAN, keyUsage, basicConstraints, etc.
+      blockinfile:
+        path: "/tmp/{{ inventory_hostname }}-ext.cnf"
+        create: yes
+        block: |
+          [ req ]
+          distinguished_name  = req_distinguished_name
+          req_extensions      = v3_req
+
+          [ req_distinguished_name ]
+          # Optionally set DN defaults:
+          # CN = {{ inventory_hostname }}
+          # O  = MyOrg
+
+          [ v3_req ]
+          # 1. Prevent this cert acting as a CA
+          basicConstraints        = CA:FALSE
+          # 2. Key usage for TLS
+          keyUsage                = digitalSignature, keyEncipherment
+          # 3. TLS usages
+          extendedKeyUsage        = serverAuth, clientAuth
+          # 4. Subject key identifier
+          subjectKeyIdentifier    = hash
+          # 5. Authority key identifier (for self-signing)
+          authorityKeyIdentifier  = keyid,issuer
+          # 6. SAN entries
+          subjectAltName          = @alt_names
+
+          [ alt_names ]
+          DNS.1   = {{ inventory_hostname }}
+          DNS.2   = www.{{ inventory_hostname }}
+          IP.1    = {{ ansible_default_ipv4.address }}
+What you get:
+
+A file at /tmp/{{ inventory_hostname }}-ext.cnf containing everything modern TLS stacks require.
+
+Idempotent behavior: the block is only updated if its content changes.
+
+You can now call OpenSSL like:
+
+yaml
+Copy
+Edit
+- name: Generate CSR using inline extfile
+  command: >
+    openssl req -new -newkey rsa:2048 -nodes
+    -keyout /etc/ssl/private/{{ inventory_hostname }}.key
+    -out /etc/ssl/csr/{{ inventory_hostname }}.csr
+    -subj "/CN={{ inventory_hostname }}"
+    -config /tmp/{{ inventory_hostname }}-ext.cnf
+    -extensions v3_req
+
+- name: Sign certificate preserving SANs and extensions
+  command: >
+    openssl x509 -req
+    -in /etc/ssl/csr/{{ inventory_hostname }}.csr
+    -CA /etc/ssl/ca/ca.pem -CAkey /etc/ssl/ca/ca.key -CAcreateserial
+    -out /etc/ssl/certs/{{ inventory_hostname }}.crt
+    -days 365
+    -extfile /tmp/{{ inventory_hostname }}-ext.cnf
+    -extensions v3_req
+Optionally, add a cleanup task:
+
+yaml
+Copy
+Edit
+- name: Remove temporary extfile
+  file:
+    path: "/tmp/{{ inventory_hostname }}-ext.cnf"
+    state: absent
+
+
+
+
+
+
+
