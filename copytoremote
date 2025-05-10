@@ -1,0 +1,32 @@
+---
+- name: Push local directory to remote host with ownership, group & permissions
+  hosts: app_servers
+  become: yes
+
+  vars:
+    # Path on the control node (local execution environment)
+    local_dir: "/path/on/control/node/my_app_static/"
+    # Desired path on the remote host
+    remote_dir: "/opt/myapp/static/"
+    # Ownership and permission settings
+    file_owner: "appuser"
+    file_group: "appgroup"
+    file_mode: "0755"
+
+  tasks:
+    - name: Ensure destination directory exists on remote
+      ansible.builtin.file:
+        path: "{{ remote_dir }}"
+        state: directory
+        owner: "{{ file_owner }}"
+        group: "{{ file_group }}"
+        mode: "{{ file_mode }}"
+
+    - name: Copy entire directory contents from control node to remote
+      ansible.builtin.copy:
+        src: "{{ local_dir }}"
+        dest: "{{ remote_dir }}"
+        owner: "{{ file_owner }}"
+        group: "{{ file_group }}"
+        mode: "{{ file_mode }}"
+        recurse: yes
