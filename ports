@@ -1,29 +1,34 @@
 # getHostAndPorts.py
-# Retrieves actual hostname and HTTPS port for all application servers
+# Fixed: strip brackets from epRefAttr and cast to Python str for safe methods
 
-# 1. List all ServerEntry configuration objects
-serverEntries = AdminConfig.list('ServerEntry').splitlines()
+# 1) List all ServerEntry configuration objects
+serverEntries = AdminConfig.list('ServerEntry').splitlines()                         # :contentReference[oaicite:5]{index=5}
 
 for serverEntry in serverEntries:
-    # 2. Parse server and node names
-    serverName = serverEntry.split('(')[0]
-    nodeName   = serverEntry.split('/nodes/')[1].split('/')[0]
-    
-    # 3. Get the Node config ID and actual hostName
-    nodeId   = AdminConfig.getid('/Node:%s/' % nodeName)
-    hostName = AdminConfig.showAttribute(nodeId, 'hostName')
-    
-    # 4. List NamedEndPoint objects under this server
-    namedEndpoints = AdminConfig.list('NamedEndPoint', serverEntry).splitlines()
+    # 2) Parse server and node names
+    serverName = serverEntry.split('(')[0]                                          # :contentReference[oaicite:6]{index=6}
+    nodeName   = serverEntry.split('/nodes/')[1].split('/')[0]                      # :contentReference[oaicite:7]{index=7}
+
+    # 3) Get the Node config ID and actual hostName
+    nodeId     = AdminConfig.getid('/Node:%s/' % nodeName)                          # :contentReference[oaicite:8]{index=8}
+    hostName   = AdminConfig.showAttribute(nodeId, 'hostName')                      # :contentReference[oaicite:9]{index=9}
+
+    # 4) List NamedEndPoint objects under this server entry
+    namedEndpoints = AdminConfig.list('NamedEndPoint', serverEntry).splitlines()     # :contentReference[oaicite:10]{index=10}
+
     for ne in namedEndpoints:
-        epName = str(AdminConfig.showAttribute(ne, 'endPointName'))
-        # 5. Filter for secure (HTTPS) endpoints
+        # 5) Retrieve and filter the endpoint name
+        epName    = str(AdminConfig.showAttribute(ne, 'endPointName'))               # :contentReference[oaicite:11]{index=11}
+
         if epName.lower().find('secure') != -1:
-            # 6. Retrieve port from the endpoint reference
-            epRef = AdminConfig.showAttribute(ne, 'endPoint')
-            port  = AdminConfig.showAttribute(epRef, 'port')
-            
-            # 7. Output Node, Server, actual host, endpoint, and port
+            # 6) Get the raw endpoint config ID and strip off brackets
+            epRefAttr = AdminConfig.showAttribute(ne, 'endPoint')                    # :contentReference[oaicite:12]{index=12}
+            epRef     = epRefAttr[1:-1]                                              # :contentReference[oaicite:13]{index=13}
+
+            # 7) Now retrieve host and port using the real config ID
+            host = AdminConfig.showAttribute(epRef, 'host')                          # :contentReference[oaicite:14]{index=14}
+            port = AdminConfig.showAttribute(epRef, 'port')                          # :contentReference[oaicite:15]{index=15}
+
             print "Node: %s, Server: %s, Host: %s, Endpoint: %s, Port: %s" % (
                 nodeName, serverName, hostName, epName, port
             )
