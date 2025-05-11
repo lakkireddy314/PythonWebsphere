@@ -1,0 +1,108 @@
+#!/usr/bin/env jython
+import sys, os
+from com.ibm.ws.scripting import ScriptingException
+
+# 1. Determine the cell name
+cell_ids = AdminConfig.list('Cell').split()
+cellName = AdminConfig.showAttribute(cell_ids[0], 'name') if cell_ids else None
+
+# 2. Retrieve all DMGR, NodeAgent, and WebServer IDs
+dmgr_ids      = AdminConfig.getid('DeploymentManager').split()
+node_ids      = AdminConfig.getid('NodeAgent').split()
+webserver_ids = AdminConfig.getid('WebServer').split()
+
+def find_profile(config_ids, target_name):
+    for cid in config_ids:
+        if AdminConfig.showAttribute(cid, 'name') == target_name:
+            return cid
+    return None
+
+# 3. Loop through each profile:host argument
+for arg in sys.argv[1:]:
+    if ':' not in arg:
+        continue
+    profile, host = arg.split(':', 1)
+    alias = f"{host}_subca_ss"
+    cert_path = f"/home/{os.environ.get('USER')}/Ansible_SelfSigned/{host}.pfx"
+
+    # 4a. Deployment Manager?
+    if find_profile(dmgr_ids, profile):
+        scope    = f"(cell):{cellName}"
+        ksName   = "CellDefaultKeyStore"
+        ssl_path = f"/Cell:{cellName}/Security:/SSLConfig:defaultSSLConfig/"
+
+    # 4b. Node Agent?
+    elif find_profile(node_ids, profile):
+        nodeName = profile.replace('_profile_name','')
+        scope    = f"(cell):{cellName}:(node):{nodeName}"
+        ksName   = "NodeDefaultKeyStore"
+        ssl_path = f"/Cell:{cellName}/Node:{nodeName}/Security:/SSLConfig:defaultSSLConfig/"
+
+    # 4c. WebServer?
+    elif (wsrv := find_profile(webserver_ids, profile)):
+        # WebServer keystore is CMSKeyStore, not NodeDefaultKeyStore
+        nodeName = AdminConfig.showAttribute(wsrv, 'nodeName')
+        scope    = f"(cell):{cellName}:(node):{nodeName}"
+        ksName   = "CMSKeyStore"
+        ssl_path = f"/Cell:{cellName}/Node:{nodeName}/Security:/SSLConfig:defaultSSLConfig/"
+
+        try:
+            # import into CMSKeyStore
+            AdminTask.importCertificate([
+                '-keyStoreName',            ksName,
+                '-keyStoreScope',           scope,
+                '-keyFilePath',             cert_path,
+                '-keyFilePassword',         '<keystorePassword>',
+                '-keyFileType',             'PKCS12',
+                '-certificateAliasFromKeyFile', alias
+            ])
+            # add CERTLABEL property to plugin-cfg.xml
+            pluginProps = AdminConfig.list('PluginProperties', wsrv).split()
+            if pluginProps:
+                AdminConfig.create(
+                    'Property',
+                    pluginProps[0],
+                    [['name', 'CERTLABEL'],
+                     ['value', alias]]
+                )
+            AdminConfig.save()
+
+            # regenerate & propagate plugin config
+            AdminTask.generatePluginCfg(['-serverName', profile, '-nodeName', nodeName])
+            AdminTask.propagatePluginCfg(['-serverName', profile, '-nodeName', nodeName])
+            AdminConfig.save()
+
+            print(f"✔ Profile {profile} (WebServer): imported alias '{alias}' and propagated plugin")
+
+        except ScriptingException as e:
+            print(f"✖ Error in WebServer '{profile}': {e}")
+            sys.exit(1)
+        continue
+
+    # 4d. Unrecognized profile
+    else:
+        print(f"✖ Profile '{profile}' not found as DMGR, Node, or WebServer")
+        sys.exit(1)
+
+    # 5. DMGR or Node import & SSLConfig update
+    try:
+        AdminTask.importCertificate([
+            '-keyStoreName',            ksName,
+            '-keyStoreScope',           scope,
+            '-keyFilePath',             cert_path,
+            '-keyFilePassword',         '<keystorePassword>',
+            '-keyFileType',             'PKCS12',
+            '-certificateAliasFromKeyFile', alias
+        ])
+        ssl_id_list = AdminConfig.getid(ssl_path).split()
+        if ssl_id_list:
+            AdminConfig.modify(ssl_id_list[0], [
+                ['keyStoreName',   ksName],
+                ['keyStoreScope',  scope],
+                ['certificateAlias', alias]
+            ])
+        AdminConfig.save()
+        print(f"✔ Profile {profile} ({'DMGR' if profile in dmgr_ids else 'Node'}): imported alias '{alias}'")
+    except ScriptingException as e:
+        print(f"✖ Error in profile '{profile}': {e}")
+        sys.exit(1)
