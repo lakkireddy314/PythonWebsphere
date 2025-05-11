@@ -1,0 +1,38 @@
+---
+- name: Ensure target directory and file idempotently
+  hosts: all
+  gather_facts: false
+
+  vars:
+    target_dir: /path/to/remote/dir
+    target_file: myfile.conf
+
+  tasks:
+    - name: Check if remote directory exists
+      ansible.builtin.stat:
+        path: "{{ target_dir }}"
+      register: dir_check
+
+    - name: Fail if target directory does not exist
+      ansible.builtin.fail:
+        msg: "Remote directory {{ target_dir }} is missing"
+      when: not (dir_check.stat.exists and dir_check.stat.isdir)
+
+    - name: Check if file already exists in target directory
+      ansible.builtin.stat:
+        path: "{{ target_dir }}/{{ target_file }}"
+      register: file_check
+      when: dir_check.stat.exists and dir_check.stat.isdir
+
+    - name: Copy configuration file if missing (idempotent)
+      ansible.builtin.copy:
+        src: files/{{ target_file }}
+        dest: "{{ target_dir }}/{{ target_file }}"
+        owner: root
+        group: root
+        mode: '0644'
+        force: no
+      when:
+        - dir_check.stat.exists
+        - dir_check.stat.isdir
+        - not file_check.stat.exists
