@@ -1,5 +1,5 @@
 ---
-- name: Ensure target directory and file idempotently
+- name: Ensure directory exists and copy file
   hosts: all
   gather_facts: false
 
@@ -8,31 +8,19 @@
     target_file: myfile.conf
 
   tasks:
-    - name: Check if remote directory exists
-      ansible.builtin.stat:
+    - name: Create target directory if it does not exist
+      ansible.builtin.file:
         path: "{{ target_dir }}"
-      register: dir_check
+        state: directory
+        mode: '0755'
+      # The file module will create all intermediates as needed :contentReference[oaicite:3]{index=3}
 
-    - name: Fail if target directory does not exist
-      ansible.builtin.fail:
-        msg: "Remote directory {{ target_dir }} is missing"
-      when: not (dir_check.stat.exists and dir_check.stat.isdir)
-
-    - name: Check if file already exists in target directory
-      ansible.builtin.stat:
-        path: "{{ target_dir }}/{{ target_file }}"
-      register: file_check
-      when: dir_check.stat.exists and dir_check.stat.isdir
-
-    - name: Copy configuration file if missing (idempotent)
+    - name: Copy file into target directory
       ansible.builtin.copy:
-        src: files/{{ target_file }}
+        src: "files/{{ target_file }}"
         dest: "{{ target_dir }}/{{ target_file }}"
         owner: root
         group: root
         mode: '0644'
         force: no
-      when:
-        - dir_check.stat.exists
-        - dir_check.stat.isdir
-        - not file_check.stat.exists
+      # By default, copy is idempotent—only changes if the file is missing or content has changed :contentReference[oaicite:4]{index=4}
