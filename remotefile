@@ -1,0 +1,23 @@
+- name: Ensure directory exists before copying file
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Check if remote directory exists
+      ansible.builtin.stat:
+        path: /path/to/remote/dir
+      register: dir_check
+
+    - name: Fail if target directory does not exist
+      ansible.builtin.fail:
+        msg: "Remote directory /path/to/remote/dir is missing"
+      when: not (dir_check.stat.exists and dir_check.stat.isdir)
+
+    - name: Copy configuration file into remote directory
+      ansible.builtin.copy:
+        src: files/myfile.conf
+        dest: /path/to/remote/dir/myfile.conf
+        owner: root
+        group: root
+        mode: '0644'
+      when: dir_check.stat.exists and dir_check.stat.isdir
