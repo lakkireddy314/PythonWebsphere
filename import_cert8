@@ -78,7 +78,7 @@ print "DEBUG node_map:", node_map
 print "DEBUG web_map :", web_map
 
 # 8) Determine profile type & scope
-is_web = False
+is_web = 0
 if profile in dmgr_map:
     info     = dmgr_map[profile]
     scope    = "(cell):%s" % info['cellName']
@@ -91,7 +91,7 @@ elif profile in node_map:
     ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (info['cellName'], info['nodeName'])
 elif profile in web_map:
     info     = web_map[profile]
-    is_web   = True
+    is_web   = 1
     scope    = "(cell):%s:(node):%s" % (info['cellName'], info['nodeName'])
     ksName   = "CMSKeyStore"
     ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (info['cellName'], info['nodeName'])
