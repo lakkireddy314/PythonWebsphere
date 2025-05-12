@@ -9,10 +9,10 @@ if len(sys.argv) < 4:
     sys.exit(1)
 
 # 2) Parse arguments
-profile            = sys.argv[0]      # exact profile name or nodeName
-host               = sys.argv[1]      # hostname
-keystore_password  = sys.argv[2]      # PKCS12 password
-was_user           = sys.argv[3]      # WAS admin user
+profile           = sys.argv[0]      # exact profile name or nodeName
+host              = sys.argv[1]      # hostname
+keystore_password = sys.argv[2]      # PKCS12 password
+was_user          = sys.argv[3]      # WAS admin user
 
 # 3) Build alias and certificate path
 alias     = host + "_SUBCA_SS"
@@ -147,14 +147,6 @@ try:
         ])
         print "✔ Imported alias '%s' into '%s'" % (alias, ksName)
 
-    # Save and sync active nodes
-    AdminConfig.save()
-    try:
-        AdminNodeManagement.syncActiveNodes()
-        print "✔ Synchronized all active nodes"
-    except Exception, syncErr:
-        print "✖ Node sync failed: %s" % syncErr
-
     # 9b) If WebServer, update plugin-cfg.xml
     if is_web:
         props = AdminConfig.list('PluginProperties', wsrv_id).split()
@@ -163,11 +155,6 @@ try:
                 ['name', 'CERTLABEL'], ['value', alias]
             ])
         AdminConfig.save()
-        try:
-            AdminNodeManagement.syncActiveNodes()
-            print "✔ Synchronized all active nodes"
-        except Exception, syncErr:
-            print "✖ Node sync failed: %s" % syncErr
         AdminTask.generatePluginCfg([
             '-serverName', profile,
             '-nodeName',   info['nodeName']
@@ -177,11 +164,6 @@ try:
             '-nodeName',   info['nodeName']
         ])
         AdminConfig.save()
-        try:
-            AdminNodeManagement.syncActiveNodes()
-            print "✔ Synchronized all active nodes"
-        except Exception, syncErr:
-            print "✖ Node sync failed: %s" % syncErr
         print "✔ Profile %s (WebServer): propagated plugin with alias '%s'" % (profile, alias)
     else:
         # 9c) Modify SSLConfig defaults
@@ -192,6 +174,14 @@ try:
             '-serverKeyAlias',  alias
         ])
         print "ModifySSLConfig result for '%s': %s" % (profile, result)
+
+        # Save config and sync active nodes
+        AdminConfig.save()
+        try:
+            AdminNodeManagement.syncActiveNodes()
+            print "✔ Synchronized all active nodes"
+        except Exception, syncErr:
+            print "✖ Node sync failed: %s" % syncErr
 
     sys.exit(0)
 except ScriptingException, e:
