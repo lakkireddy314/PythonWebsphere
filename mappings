@@ -1,75 +1,71 @@
 # listHostnamesComplete.py
 # wsadmin Jython script to collect mappings of <name>: {cellName, nodeName, hostName}
 
-# Dictionary to hold all mappings
-mappings = {}
-
 # Helper to drop a trailing ')' from wsadmin output entries
 def strip_trailing_paren(s):
     if s.endswith(')'):
         return s[:-1]
     return s
 
-# Function to process DMGR and Node Agent entries and populate mappings
+# Function to process DMGR and Node Agent entries and return a map
 def addNodeMappings(entries):
+    result = {}
     for entry in entries:
-        # entry example: "dmgr(cells/myCell/nodes/mgrNode/servers/dmgr|server.xml)"
         cfgPath   = strip_trailing_paren(entry.split('(', 1)[1])
-        nodePath  = cfgPath.split('|', 1)[0]  # "cells/<cell>/nodes/<node>/servers/<profile>"
+        nodePath  = cfgPath.split('|', 1)[0]
         parts     = nodePath.split('/')
         cellName  = parts[1]
         nodeName  = parts[3]
-        # Retrieve the Node config object and its hostName
         nodeId    = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
         hostName  = AdminConfig.showAttribute(nodeId, 'hostName')
-        # Add to mappings
-        mappings[nodeName] = {
+        result[nodeName] = {
             'cellName': cellName,
             'nodeName': nodeName,
             'hostName': hostName
         }
+    return result
 
-# Function to process Web Server entries and populate mappings
+# Function to process Web Server entries and return a map
 def addWebMappings(entries):
+    result = {}
     for entry in entries:
         webName   = entry.split('(')[0]
         cfgPath   = strip_trailing_paren(entry.split('(', 1)[1])
-        nodePath  = cfgPath.split('|', 1)[0]  # "cells/<cell>/nodes/<node>/servers/<WebServerName>"
+        nodePath  = cfgPath.split('|', 1)[0]
         parts     = nodePath.split('/')
         cellName  = parts[1]
         nodeName  = parts[3]
-        # Get the Server config object for this WebServer
         serverId  = AdminConfig.getid(
             '/Cell:%s/Node:%s/Server:%s/' % (cellName, nodeName, webName)
         )
-        # Try reading hostName from ServerIndex child
         siEntries = AdminConfig.list('ServerIndex', serverId).splitlines()
         if siEntries:
             hostName = AdminConfig.showAttribute(siEntries[0], 'hostName')
         else:
-            # Fallback: use the Node's hostName
             nodeId   = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
             hostName = AdminConfig.showAttribute(nodeId, 'hostName')
-        # Add to mappings
-        mappings[webName] = {
+        result[webName] = {
             'cellName': cellName,
             'nodeName': nodeName,
             'hostName': hostName
         }
+    return result
 
 # --- Main Execution ---
+
 # 1. Deployment Manager (DMGR)
 dmgrEntries      = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()
-addNodeMappings(dmgrEntries)
+dmgr_map         = addNodeMappings(dmgrEntries)
 
 # 2. Node Agents
 nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()
-addNodeMappings(nodeAgentEntries)
+node_map         = addNodeMappings(nodeAgentEntries)
 
 # 3. Web Servers
 webEntries       = AdminTask.listServers('[-serverType WEB_SERVER]').splitlines()
-addWebMappings(webEntries)
+web_map          = addWebMappings(webEntries)
 
-# (Optional) Print out the collected mappings
-for name, info in mappings.items():
-    print "%s: %s" % (name, info['hostName'])
+# Debug output
+print 'DEBUG dmgr_map:', dmgr_map
+print 'DEBUG node_map:', node_map
+print 'DEBUG web_map:', web_map
