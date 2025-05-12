@@ -2,89 +2,129 @@
 import sys, os
 from com.ibm.ws.scripting import ScriptingException
 
-# 1. Validate inputs: wsadmin Jython sys.argv excludes the script name
+# 1) Validate arguments (wsadmin drops the script name)
 if len(sys.argv) < 3:
     print "✖ Usage: importCerts.py profile:host keystorePassword was_user"
     sys.exit(1)
 
-# 2. Extract arguments
-profile_host      = sys.argv[0]
-keystore_password = sys.argv[1]
-was_user          = sys.argv[2]
+# 2) Parse inputs
+profile_host      = sys.argv[0]                  # e.g. dmgr_profile_name:hostname.test.com
+keystore_password = sys.argv[1]                  # your PKCS12 password
+was_user          = sys.argv[2]                  # e.g. wasadmin
 
 if ':' not in profile_host:
     print "✖ Invalid argument '%s', expected profile:host" % profile_host
     sys.exit(1)
+profile, host = profile_host.split(':',1)
 
-profile, host = profile_host.split(':', 1)
-alias = host + "_subca_ss"
+alias     = host + "_subca_ss"
 cert_path = "/home/%s/Ansible_SelfSigned/%s.pfx" % (was_user, host)
 
-# 3. Discover the cell
+# 3) Discover the cell
 cell_ids = AdminConfig.list('Cell').split()
 if not cell_ids:
     print "✖ No Cell found!"
     sys.exit(1)
 cellName = AdminConfig.showAttribute(cell_ids[0], 'name')
 
-# 4. Gather profile IDs
-dmgr_ids      = AdminConfig.getid('DeploymentManager').split()
-node_ids      = AdminConfig.getid('NodeAgent').split()
-websrv_ids    = AdminConfig.getid('WebServer').split()
+# 4) Gather config IDs
+server_ids    = AdminConfig.list('Server').split()       # all servers :contentReference[oaicite:7]{index=7}
+node_ids      = AdminConfig.getid('NodeAgent').split()   # node agents :contentReference[oaicite:8]{index=8}
+websrv_ids    = AdminConfig.getid('WebServer').split()   # web servers :contentReference[oaicite:9]{index=9}
 
-def find_profile(ids, name):
-    for cid in ids:
-        if AdminConfig.showAttribute(cid, 'name') == name:
-            return cid
-    return None
+def match(attr, cid, val):
+    return AdminConfig.showAttribute(cid, attr) == val
 
-# 5. Determine profile type & keystore
-if find_profile(dmgr_ids, profile):
+# 5) Identify Deployment Manager by serverType
+dmgr_id = None
+for sid in server_ids:
+    if match('name', sid, profile) and match('serverType', sid, 'DEPLOYMENT_MANAGER'):
+        dmgr_id = sid
+        break
+
+# 6) Determine scope & keystore based on profile type
+if dmgr_id:
     # Deployment Manager
-    scope = "(cell):%s" % cellName
-    ksName = "CellDefaultKeyStore"
+    scope    = "(cell):%s"     % cellName
+    ksName   = "CellDefaultKeyStore"
     ssl_path = "/Cell:%s/Security:/SSLConfig:defaultSSLConfig/" % cellName
 
-elif find_profile(node_ids, profile):
+elif profile in [ AdminConfig.showAttribute(n, 'name') for n in node_ids ]:
     # Node Agent
     nodeName = profile.replace('_profile_name','')
-    scope = "(cell):%s:(node):%s" % (cellName, nodeName)
-    ksName = "NodeDefaultKeyStore"
+    scope    = "(cell):%s:(node):%s" % (cellName, nodeName)
+    ksName   = "NodeDefaultKeyStore"
     ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (cellName, nodeName)
 
 else:
     # WebServer
-    wsrv = find_profile(websrv_ids, profile)
-    if not wsrv:
+    wsrv_id = None
+    for ws in websrv_ids:
+        if match('name', ws, profile):
+            wsrv_id = ws; break
+    if not wsrv_id:
         print "✖ Profile '%s' not found as DMGR, Node, or WebServer" % profile
         sys.exit(1)
-    nodeName = AdminConfig.showAttribute(wsrv, 'nodeName')
-    scope = "(cell):%s:(node):%s" % (cellName, nodeName)
-    ksName = "CMSKeyStore"
+
+    nodeName = AdminConfig.showAttribute(wsrv_id, 'nodeName')
+    scope    = "(cell):%s:(node):%s" % (cellName, nodeName)
+    ksName   = "CMSKeyStore"
     ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (cellName, nodeName)
 
-# 6. Import certificate into the determined keystore
+    try:
+        # Import into CMSKeyStore
+        AdminTask.importCertificate([
+            '-keyStoreName',            ksName,
+            '-keyStoreScope',           scope,
+            '-keyFilePath',             cert_path,
+            '-keyFilePassword',         keystore_password,
+            '-keyFileType',             'PKCS12',
+            '-certificateAliasFromKeyFile', alias
+        ])  # batch import :contentReference[oaicite:10]{index=10}
+
+        # Add CERTLABEL to plugin-cfg.xml
+        props = AdminConfig.list('PluginProperties', wsrv_id).split()
+        if props:
+            AdminConfig.create(
+                'Property', props[0],
+                [['name', 'CERTLABEL'], ['value', alias]]
+            )
+        AdminConfig.save()
+
+        # Regenerate & propagate plugin-cfg.xml
+        AdminTask.generatePluginCfg(['-serverName', profile, '-nodeName', nodeName])      # :contentReference[oaicite:11]{index=11}
+        AdminTask.propagatePluginCfg(['-serverName', profile, '-nodeName', nodeName])   # :contentReference[oaicite:12]{index=12}
+        AdminConfig.save()
+
+        print "✔ Profile %s (WebServer): imported alias '%s' and propagated plugin" % (profile, alias)
+        sys.exit(0)
+
+    except ScriptingException, e:
+        print "✖ Error in WebServer '%s': %s" % (profile, e)
+        sys.exit(1)
+
+# 7) Import & update SSLConfig for DMGR or NodeAgent
 try:
     AdminTask.importCertificate([
-        '-keyStoreName',           ksName,
-        '-keyStoreScope',          scope,
-        '-keyFilePath',            cert_path,
-        '-keyFilePassword',        keystore_password,
-        '-keyFileType',            'PKCS12',
+        '-keyStoreName',            ksName,
+        '-keyStoreScope',           scope,
+        '-keyFilePath',             cert_path,
+        '-keyFilePassword',         keystore_password,
+        '-keyFileType',             'PKCS12',
         '-certificateAliasFromKeyFile', alias
-    ])  # batch import into keystore :contentReference[oaicite:7]{index=7}
+    ])  # :contentReference[oaicite:13]{index=13}
 
-    # 7. Update SSLConfig default alias
     ssl_ids = AdminConfig.getid(ssl_path).split()
     if ssl_ids:
         AdminConfig.modify(ssl_ids[0], [
-            ['keyStoreName',    ksName],
-            ['keyStoreScope',   scope],
-            ['certificateAlias',alias]
-        ])  # modify defaultSSLConfig :contentReference[oaicite:8]{index=8}
-    AdminConfig.save()  # persist changes :contentReference[oaicite:9]{index=9}
+            ['keyStoreName',     ksName],
+            ['keyStoreScope',    scope],
+            ['certificateAlias', alias]
+        ])  # :contentReference[oaicite:14]{index=14}
 
+    AdminConfig.save()
     print "✔ Profile %s: imported alias '%s'" % (profile, alias)
+    sys.exit(0)
 
 except ScriptingException, e:
     print "✖ Error in profile '%s': %s" % (profile, e)
