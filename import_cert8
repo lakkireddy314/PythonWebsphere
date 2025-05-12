@@ -72,6 +72,11 @@ web_map  = parseServerEntries(
     AdminTask.listServers('[-serverType WEB_SERVER ]').splitlines()
 )
 
+# DEBUG: print maps to verify contents
+print "DEBUG dmgr_map:", dmgr_map
+print "DEBUG node_map:", node_map
+print "DEBUG web_map :", web_map
+
 # 8) Determine profile type & scope
 is_web = False
 if profile in dmgr_map:
