@@ -1,0 +1,199 @@
+#!/usr/bin/env jython
+import sys, os
+from com.ibm.ws.scripting import ScriptingException
+from com.ibm.ws.runtime import AdminNodeManagement
+
+# 1) Validate inputs (wsadmin drops the script name)
+if len(sys.argv) < 4:
+    print "✖ Usage: importCerts.py profile_name host keystorePassword was_user"
+    sys.exit(1)
+
+# 2) Parse arguments
+profile           = sys.argv[0]      # exact profile name or nodeName
+host              = sys.argv[1]      # hostname
+keystore_password = sys.argv[2]      # PKCS12 password
+was_user          = sys.argv[3]      # WAS admin user
+
+# 3) Build alias and certificate path
+alias     = host + "_SUBCA_SS"
+cert_path = "/home/%s/Ansible_SelfSigned/%s.pfx" % (was_user, host)
+
+# 4) Discover the cell name
+cell_ids = AdminConfig.list('Cell').split()
+if not cell_ids:
+    print "✖ No Cell found!"
+    sys.exit(1)
+cellName = AdminConfig.showAttribute(cell_ids[0], 'name')
+
+# 5) Helper to strip trailing parenthesis
+def strip_trailing_paren(s):
+    if s.endswith(')'):
+        return s[:-1]
+    return s
+
+# 6) Parse listServers output to map profile → info
+def parseServerEntries(entries):
+    mapping = {}
+    for entry in entries:
+        if '(' not in entry or '|' not in entry:
+            continue
+        try:
+            name, rest = entry.split('(', 1)
+            cfgPath     = strip_trailing_paren(rest)
+            _, nodePath = cfgPath.split('|', 1)
+            parts       = nodePath.split('/')
+            if len(parts) < 4:
+                continue
+            cName    = parts[1]
+            nName    = parts[3]
+            nodeId   = AdminConfig.getid('/Cell:%s/Node:%s/' % (cName, nName))
+            hostName = AdminConfig.showAttribute(nodeId, 'hostName')
+            mapping[name] = {
+                'cellName': cName,
+                'nodeName': nName,
+                'hostName': hostName
+            }
+        except:
+            continue
+    return mapping
+
+# 7) Build profile → info maps for each serverType
+dmgr_map = parseServerEntries(
+    AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER ]').splitlines()
+)
+node_map = parseServerEntries(
+    AdminTask.listServers('[-serverType NODE_AGENT ]').splitlines()
+)
+web_map  = parseServerEntries(
+    AdminTask.listServers('[-serverType WEB_SERVER ]').splitlines()
+)
+
+# DEBUG: print mappings
+print "DEBUG dmgr_map:", dmgr_map
+print "DEBUG node_map:", node_map
+print "DEBUG web_map :", web_map
+
+# 8) Determine profile type & scope (including check by nodeName)
+info     = None
+is_web   = False
+scope    = None
+ksName   = None
+ssl_path = None
+
+# Try Deployment Manager
+for key, val in dmgr_map.items():
+    if profile == key or profile == val['nodeName']:
+        info     = val
+        scope    = "(cell):%s" % val['cellName']
+        ksName   = "CellDefaultKeyStore"
+        ssl_path = "/Cell:%s/Security:/SSLConfig:defaultSSLConfig/" % val['cellName']
+        break
+
+# If not DMGR, try Node Agent
+if not info:
+    for key, val in node_map.items():
+        if profile == key or profile == val['nodeName']:
+            info     = val
+            scope    = "(cell):%s:(node):%s" % (val['cellName'], val['nodeName'])
+            ksName   = "NodeDefaultKeyStore"
+            ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (
+                val['cellName'], val['nodeName']
+            )
+            break
+
+# If still not found, try WebServer
+if not info:
+    for key, val in web_map.items():
+        if profile == key or profile == val['nodeName']:
+            info     = val
+            is_web   = True
+            scope    = "(cell):%s:(node):%s" % (val['cellName'], val['nodeName'])
+            ksName   = "CMSKeyStore"
+            ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (
+                val['cellName'], val['nodeName']
+            )
+            # locate WebServer config ID for plugin updates
+            for wid in AdminConfig.list('WebServer').split():
+                if AdminConfig.showAttribute(wid, 'name') == key:
+                    wsrv_id = wid
+                    break
+            break
+
+# If still no info, error out
+if not info:
+    print "✖ Profile '%s' not found as DMGR, NodeAgent, or WebServer" % profile
+    sys.exit(1)
+
+# 9) Import certificate and apply configuration
+try:
+    # 9a) Check for existing alias
+    certs_str  = AdminTask.listPersonalCertificates([
+        '-keyStoreName',  ksName,
+        '-keyStoreScope', scope
+    ])
+    certs_list = certs_str.splitlines()
+    if alias in certs_list:
+        print "✔ Alias '%s' already exists in keystore '%s', skipping import" % (
+            alias, ksName
+        )
+    else:
+        AdminTask.importCertificate([
+            '-keyStoreName',           ksName,
+            '-keyStoreScope',          scope,
+            '-keyFilePath',            cert_path,
+            '-keyFilePassword',        keystore_password,
+            '-keyFileType',            'PKCS12',
+            '-certificateAliasFromKeyFile', alias
+        ])
+        print "✔ Imported alias '%s' into '%s'" % (alias, ksName)
+
+    # Save config and sync active nodes
+    AdminConfig.save()
+    try:
+        AdminNodeManagement.syncActiveNodes()
+        print "✔ Synchronized all active nodes"
+    except Exception, syncErr:
+        print "✖ Node sync failed: %s" % syncErr
+
+    # 9b) If WebServer, update plugin-cfg.xml
+    if is_web:
+        props = AdminConfig.list('PluginProperties', wsrv_id).split()
+        if props:
+            AdminConfig.create('Property', props[0], [
+                ['name', 'CERTLABEL'], ['value', alias]
+            ])
+        AdminConfig.save()
+        try:
+            AdminNodeManagement.syncActiveNodes()
+            print "✔ Synchronized all active nodes"
+        except Exception, syncErr:
+            print "✖ Node sync failed: %s" % syncErr
+        AdminTask.generatePluginCfg([
+            '-serverName', profile,
+            '-nodeName',   info['nodeName']
+        ])
+        AdminTask.propagatePluginCfg([
+            '-serverName', profile,
+            '-nodeName',   info['nodeName']
+        ])
+        AdminConfig.save()
+        try:
+            AdminNodeManagement.syncActiveNodes()
+            print "✔ Synchronized all active nodes"
+        except Exception, syncErr:
+            print "✖ Node sync failed: %s" % syncErr
+        print "✔ Profile %s (WebServer): propagated plugin with alias '%s'" % (profile, alias)
+    else:
+        # 9c) For DMGR/NodeAgent, set default aliases via modifySSLConfig
+        result = AdminTask.modifySSLConfig([
+            '-alias',          'NodeDefaultSSLSettings',
+            '-scopeName',      scope,
+            '-clientKeyAlias', alias,
+            '-serverKeyAlias', alias
+        ])
+        print "ModifySSLConfig result for '%s': %s" % (profile, result)
+
+    sys.exit(0)
+except ScriptingException, e:
+    print "✖ Error in profile '%s': %s" % (profile, e)
+    sys.exit(1)
