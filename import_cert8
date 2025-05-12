@@ -32,21 +32,36 @@ def strip_trailing_paren(s):
         return s[:-1]
     return s
 
-# 6) Parse listServers output to map profile to nodeName only
+# 6) Parse listServers output to map profile to full info
 
 def parseServerEntries(entries):
     mapping = {}
     for entry in entries:
-        name, rest = entry.split('(', 1)
-        cfgPath    = strip_trailing_paren(rest)
-        _, nodePath = cfgPath.split('|', 1)
-        parts      = nodePath.split('/')
-        nodeName   = parts[3]
-        mapping[name] = nodeName
+        # Only parse if format is correct
+        if '(' not in entry or '|' not in entry:
+            continue
+        try:
+            name, rest = entry.split('(', 1)
+            cfgPath    = strip_trailing_paren(rest)
+            _, nodePath = cfgPath.split('|', 1)
+            parts      = nodePath.split('/')
+            if len(parts) < 4:
+                continue
+            cName       = parts[1]
+            nName       = parts[3]
+            nodeId      = AdminConfig.getid('/Cell:%s/Node:%s/' % (cName, nName))
+            hostName    = AdminConfig.showAttribute(nodeId, 'hostName')
+            # Return full mapping
+            mapping[name] = {
+                'cellName': cName,
+                'nodeName': nName,
+                'hostName': hostName
+            }
+        except Exception:
+            continue
     return mapping
 
-# 7) Build profile→nodeName maps for each serverType
-
+# 7) Build profile→info maps for each serverType
 dmgr_map = parseServerEntries(
     AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER ]').splitlines()
 )
@@ -57,26 +72,24 @@ web_map  = parseServerEntries(
     AdminTask.listServers('[-serverType WEB_SERVER ]').splitlines()
 )
 
-# 8) Determine profile type and set keystore parameters
+# 8) Determine profile type & scope
 is_web = False
 if profile in dmgr_map:
-    nodeName = dmgr_map[profile]
-    scope    = "(cell):%s" % cellName
+    info     = dmgr_map[profile]
+    scope    = "(cell):%s" % info['cellName']
     ksName   = "CellDefaultKeyStore"
-    ssl_path = "/Cell:%s/Security:/SSLConfig:defaultSSLConfig/" % cellName
-
+    ssl_path = "/Cell:%s/Security:/SSLConfig:defaultSSLConfig/" % info['cellName']
 elif profile in node_map:
-    nodeName = node_map[profile]
-    scope    = "(cell):%s:(node):%s" % (cellName, nodeName)
+    info     = node_map[profile]
+    scope    = "(cell):%s:(node):%s" % (info['cellName'], info['nodeName'])
     ksName   = "NodeDefaultKeyStore"
-    ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (cellName, nodeName)
-
+    ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (info['cellName'], info['nodeName'])
 elif profile in web_map:
-    nodeName = web_map[profile]
+    info     = web_map[profile]
     is_web   = True
-    scope    = "(cell):%s:(node):%s" % (cellName, nodeName)
+    scope    = "(cell):%s:(node):%s" % (info['cellName'], info['nodeName'])
     ksName   = "CMSKeyStore"
-    ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (cellName, nodeName)
+    ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (info['cellName'], info['nodeName'])
     # find the WebServer config ID to update plugin properties
     wsrv_id = None
     for wid in AdminConfig.list('WebServer').split():
@@ -110,15 +123,14 @@ try:
         AdminConfig.save()
         AdminTask.generatePluginCfg([
             '-serverName', profile,
-            '-nodeName',   nodeName
+            '-nodeName',   info['nodeName']
         ])
         AdminTask.propagatePluginCfg([
             '-serverName', profile,
-            '-nodeName',   nodeName
+            '-nodeName',   info['nodeName']
         ])
         AdminConfig.save()
         print "✔ Profile %s (WebServer): imported alias '%s' and propagated plugin" % (profile, alias)
-
     else:
         # For DMGR/NodeAgent, update defaultSSLConfig
         ssl_ids = AdminConfig.getid(ssl_path).split()
@@ -130,9 +142,7 @@ try:
             ])
         AdminConfig.save()
         print "✔ Profile %s: imported alias '%s'" % (profile, alias)
-
     sys.exit(0)
-
 except ScriptingException, e:
     print "✖ Error in profile '%s': %s" % (profile, e)
     sys.exit(1)
