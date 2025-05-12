@@ -8,9 +8,9 @@ if len(sys.argv) < 3:
     sys.exit(1)
 
 # 2) Parse inputs
-profile_host      = sys.argv[0]                  # e.g. dmgr_profile_name:hostname.test.com
-keystore_password = sys.argv[1]                  # your PKCS12 password
-was_user          = sys.argv[2]                  # e.g. wasadmin
+profile_host      = sys.argv[0]      # e.g. "node1_profile:hostname2"
+keystore_password = sys.argv[1]      # your PKCS12 password
+was_user          = sys.argv[2]      # e.g. "wasadmin"
 
 if ':' not in profile_host:
     print "✖ Invalid argument '%s', expected profile:host" % profile_host
@@ -20,59 +20,56 @@ profile, host = profile_host.split(':',1)
 alias     = host + "_subca_ss"
 cert_path = "/home/%s/Ansible_SelfSigned/%s.pfx" % (was_user, host)
 
-# 3) Discover the cell
+# 3) Determine the cell name
 cell_ids = AdminConfig.list('Cell').split()
 if not cell_ids:
     print "✖ No Cell found!"
     sys.exit(1)
 cellName = AdminConfig.showAttribute(cell_ids[0], 'name')
 
-# 4) Gather config IDs
-server_ids    = AdminConfig.list('Server').split()       # all servers :contentReference[oaicite:7]{index=7}
-node_ids      = AdminConfig.getid('NodeAgent').split()   # node agents :contentReference[oaicite:8]{index=8}
-websrv_ids    = AdminConfig.getid('WebServer').split()   # web servers :contentReference[oaicite:9]{index=9}
+# 4) List all Server objects (DMGR, node agents, application servers)
+server_ids = AdminConfig.list('Server').split()  # All servers in the cell :contentReference[oaicite:5]{index=5}
 
-def match(attr, cid, val):
-    return AdminConfig.showAttribute(cid, attr) == val
+# Helper to find a Server ID by matching both name & type
+def find_server_by_type(target_name, target_type):
+    for sid in server_ids:
+        if (AdminConfig.showAttribute(sid, 'name') == target_name and
+            AdminConfig.showAttribute(sid, 'serverType') == target_type):
+            return sid
+    return None
 
-# 5) Identify Deployment Manager by serverType
-dmgr_id = None
-for sid in server_ids:
-    if match('name', sid, profile) and match('serverType', sid, 'DEPLOYMENT_MANAGER'):
-        dmgr_id = sid
-        break
+# 5) Detect profile type
+dmgr_id  = find_server_by_type(profile, 'DEPLOYMENT_MANAGER')
+node_id  = find_server_by_type(profile, 'NODE_AGENT')
+wsrv_id  = None
+if not dmgr_id and not node_id:
+    # WebServer definitions are separate config objects
+    wsrv_ids = AdminConfig.getid('WebServer').split()
+    for wid in wsrv_ids:
+        if AdminConfig.showAttribute(wid, 'name') == profile:
+            wsrv_id = wid
+            break
 
-# 6) Determine scope & keystore based on profile type
+# 6) Build scope, keystore name, and SSLConfig path
 if dmgr_id:
-    # Deployment Manager
-    scope    = "(cell):%s"     % cellName
+    scope    = "(cell):%s" % cellName
     ksName   = "CellDefaultKeyStore"
     ssl_path = "/Cell:%s/Security:/SSLConfig:defaultSSLConfig/" % cellName
 
-elif profile in [ AdminConfig.showAttribute(n, 'name') for n in node_ids ]:
-    # Node Agent
+elif node_id:
     nodeName = profile.replace('_profile_name','')
     scope    = "(cell):%s:(node):%s" % (cellName, nodeName)
     ksName   = "NodeDefaultKeyStore"
     ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (cellName, nodeName)
 
-else:
-    # WebServer
-    wsrv_id = None
-    for ws in websrv_ids:
-        if match('name', ws, profile):
-            wsrv_id = ws; break
-    if not wsrv_id:
-        print "✖ Profile '%s' not found as DMGR, Node, or WebServer" % profile
-        sys.exit(1)
-
+elif wsrv_id:
     nodeName = AdminConfig.showAttribute(wsrv_id, 'nodeName')
     scope    = "(cell):%s:(node):%s" % (cellName, nodeName)
     ksName   = "CMSKeyStore"
     ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (cellName, nodeName)
 
     try:
-        # Import into CMSKeyStore
+        # 7a) Import certificate into the WebServer’s CMSKeyStore
         AdminTask.importCertificate([
             '-keyStoreName',            ksName,
             '-keyStoreScope',           scope,
@@ -80,9 +77,9 @@ else:
             '-keyFilePassword',         keystore_password,
             '-keyFileType',             'PKCS12',
             '-certificateAliasFromKeyFile', alias
-        ])  # batch import :contentReference[oaicite:10]{index=10}
+        ])  # batch import :contentReference[oaicite:6]{index=6}
 
-        # Add CERTLABEL to plugin-cfg.xml
+        # 7b) Add CERTLABEL property to plugin-cfg.xml
         props = AdminConfig.list('PluginProperties', wsrv_id).split()
         if props:
             AdminConfig.create(
@@ -91,9 +88,9 @@ else:
             )
         AdminConfig.save()
 
-        # Regenerate & propagate plugin-cfg.xml
-        AdminTask.generatePluginCfg(['-serverName', profile, '-nodeName', nodeName])      # :contentReference[oaicite:11]{index=11}
-        AdminTask.propagatePluginCfg(['-serverName', profile, '-nodeName', nodeName])   # :contentReference[oaicite:12]{index=12}
+        # 7c) Regenerate & propagate plugin-cfg.xml
+        AdminTask.generatePluginCfg(['-serverName', profile, '-nodeName', nodeName])      # plugin generation :contentReference[oaicite:7]{index=7}
+        AdminTask.propagatePluginCfg(['-serverName', profile, '-nodeName', nodeName])    # plugin propagation :contentReference[oaicite:8]{index=8}
         AdminConfig.save()
 
         print "✔ Profile %s (WebServer): imported alias '%s' and propagated plugin" % (profile, alias)
@@ -103,7 +100,11 @@ else:
         print "✖ Error in WebServer '%s': %s" % (profile, e)
         sys.exit(1)
 
-# 7) Import & update SSLConfig for DMGR or NodeAgent
+else:
+    print "✖ Profile '%s' not found as DMGR, Node Agent, or WebServer" % profile
+    sys.exit(1)
+
+# 8) For DMGR or NodeAgent: import & update SSLConfig
 try:
     AdminTask.importCertificate([
         '-keyStoreName',            ksName,
@@ -112,7 +113,7 @@ try:
         '-keyFilePassword',         keystore_password,
         '-keyFileType',             'PKCS12',
         '-certificateAliasFromKeyFile', alias
-    ])  # :contentReference[oaicite:13]{index=13}
+    ])  # batch import :contentReference[oaicite:9]{index=9}
 
     ssl_ids = AdminConfig.getid(ssl_path).split()
     if ssl_ids:
@@ -120,7 +121,7 @@ try:
             ['keyStoreName',     ksName],
             ['keyStoreScope',    scope],
             ['certificateAlias', alias]
-        ])  # :contentReference[oaicite:14]{index=14}
+        ])  # modify SSLConfig :contentReference[oaicite:10]{index=10}
 
     AdminConfig.save()
     print "✔ Profile %s: imported alias '%s'" % (profile, alias)
