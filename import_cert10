@@ -9,10 +9,10 @@ if len(sys.argv) < 4:
     sys.exit(1)
 
 # 2) Parse arguments
-profile           = sys.argv[0]      # exact profile name or nodeName
-host              = sys.argv[1]      # hostname
-keystore_password = sys.argv[2]      # PKCS12 password
-was_user          = sys.argv[3]      # WAS admin user
+profile            = sys.argv[0]      # exact profile name or nodeName
+host               = sys.argv[1]      # hostname
+keystore_password  = sys.argv[2]      # PKCS12 password
+was_user           = sys.argv[3]      # WAS admin user
 
 # 3) Build alias and certificate path
 alias     = host + "_SUBCA_SS"
@@ -31,7 +31,7 @@ def strip_trailing_paren(s):
         return s[:-1]
     return s
 
-# 6) Parse listServers output to map profile → info
+# 6) Parse listServers output to map profile → details
 def parseServerEntries(entries):
     mapping = {}
     for entry in entries:
@@ -57,7 +57,7 @@ def parseServerEntries(entries):
             continue
     return mapping
 
-# 7) Build profile → info maps for each serverType
+# 7) Build maps for each serverType
 dmgr_map = parseServerEntries(
     AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER ]').splitlines()
 )
@@ -73,30 +73,31 @@ print "DEBUG dmgr_map:", dmgr_map
 print "DEBUG node_map:", node_map
 print "DEBUG web_map :", web_map
 
-# 8) Determine profile type & scope (including check by nodeName)
-info     = None
-is_web   = False
-scope    = None
-ksName   = None
-ssl_path = None
+# 8) Determine profile type & scope
+info      = None
+is_web    = False
+scope     = None
+ksName    = None
+ssl_path  = None
+wsrv_id   = None
 
 # Try Deployment Manager
 for key, val in dmgr_map.items():
     if profile == key or profile == val['nodeName']:
-        info     = val
-        scope    = "(cell):%s" % val['cellName']
-        ksName   = "CellDefaultKeyStore"
-        ssl_path = "/Cell:%s/Security:/SSLConfig:defaultSSLConfig/" % val['cellName']
+        info      = val
+        scope     = "(cell):%s" % val['cellName']
+        ksName    = "CellDefaultKeyStore"
+        ssl_path  = "/Cell:%s/Security:/SSLConfig:defaultSSLConfig/" % val['cellName']
         break
 
 # If not DMGR, try Node Agent
 if not info:
     for key, val in node_map.items():
         if profile == key or profile == val['nodeName']:
-            info     = val
-            scope    = "(cell):%s:(node):%s" % (val['cellName'], val['nodeName'])
-            ksName   = "NodeDefaultKeyStore"
-            ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (
+            info      = val
+            scope     = "(cell):%s:(node):%s" % (val['cellName'], val['nodeName'])
+            ksName    = "NodeDefaultKeyStore"
+            ssl_path  = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (
                 val['cellName'], val['nodeName']
             )
             break
@@ -105,14 +106,13 @@ if not info:
 if not info:
     for key, val in web_map.items():
         if profile == key or profile == val['nodeName']:
-            info     = val
-            is_web   = True
-            scope    = "(cell):%s:(node):%s" % (val['cellName'], val['nodeName'])
-            ksName   = "CMSKeyStore"
-            ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (
+            info      = val
+            is_web    = True
+            scope     = "(cell):%s:(node):%s" % (val['cellName'], val['nodeName'])
+            ksName    = "CMSKeyStore"
+            ssl_path  = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (
                 val['cellName'], val['nodeName']
             )
-            # locate WebServer config ID for plugin updates
             for wid in AdminConfig.list('WebServer').split():
                 if AdminConfig.showAttribute(wid, 'name') == key:
                     wsrv_id = wid
@@ -126,10 +126,10 @@ if not info:
 
 # 9) Import certificate and apply configuration
 try:
-    # 9a) Check for existing alias
+    # 9a) Check if alias exists
     certs_str  = AdminTask.listPersonalCertificates([
-        '-keyStoreName',  ksName,
-        '-keyStoreScope', scope
+        '-keyStoreName',   ksName,
+        '-keyStoreScope',  scope
     ])
     certs_list = certs_str.splitlines()
     if alias in certs_list:
@@ -147,7 +147,7 @@ try:
         ])
         print "✔ Imported alias '%s' into '%s'" % (alias, ksName)
 
-    # Save config and sync active nodes
+    # Save and sync active nodes
     AdminConfig.save()
     try:
         AdminNodeManagement.syncActiveNodes()
@@ -184,12 +184,12 @@ try:
             print "✖ Node sync failed: %s" % syncErr
         print "✔ Profile %s (WebServer): propagated plugin with alias '%s'" % (profile, alias)
     else:
-        # 9c) For DMGR/NodeAgent, set default aliases via modifySSLConfig
+        # 9c) Modify SSLConfig defaults
         result = AdminTask.modifySSLConfig([
-            '-alias',          'NodeDefaultSSLSettings',
-            '-scopeName',      scope,
-            '-clientKeyAlias', alias,
-            '-serverKeyAlias', alias
+            '-alias',           'NodeDefaultSSLSettings',
+            '-scopeName',       scope,
+            '-clientKeyAlias',  alias,
+            '-serverKeyAlias',  alias
         ])
         print "ModifySSLConfig result for '%s': %s" % (profile, result)
 
