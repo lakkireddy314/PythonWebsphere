@@ -1,0 +1,139 @@
+#!/usr/bin/env jython
+import sys, os
+from com.ibm.ws.scripting import ScriptingException
+
+# 1) Validate inputs (wsadmin drops the script name)
+if len(sys.argv) < 4:
+    print "✖ Usage: importCerts.py profile_name host keystorePassword was_user"
+    sys.exit(1)
+
+# 2) Parse arguments
+profile           = sys.argv[0]      # exact profile name, e.g. "dmgr_profile_name"
+host              = sys.argv[1]      # hostname, e.g. "hostname1.test.com"
+keystore_password = sys.argv[2]      # your PKCS12 password
+was_user          = sys.argv[3]      # e.g. "wasadmin"
+
+# 3) Build alias and certificate path
+alias     = host + "_SUBCA_SS"
+cert_path = "/home/%s/Ansible_SelfSigned/%s.pfx" % (was_user, host)
+
+# 4) Discover the cell name
+cell_ids = AdminConfig.list('Cell').split()
+if not cell_ids:
+    print "✖ No Cell found!"
+    sys.exit(1)
+cellName = AdminConfig.showAttribute(cell_ids[0], 'name')
+
+# 5) Helper to strip trailing parenthesis
+def strip_trailing_paren(s):
+    if s.endswith(')'):
+        return s[:-1]
+    return s
+
+# 6) Parse listServers output to map profile → info
+def parseServerEntries(entries):
+    mapping = {}
+    for entry in entries:
+        if '(' not in entry or '|' not in entry:
+            continue
+        try:
+            name, rest = entry.split('(', 1)
+            cfgPath     = strip_trailing_paren(rest)
+            _, nodePath = cfgPath.split('|', 1)
+            parts       = nodePath.split('/')
+            if len(parts) < 4:
+                continue
+            cName       = parts[1]
+            nName       = parts[3]
+            nodeId      = AdminConfig.getid('/Cell:%s/Node:%s/' % (cName, nName))
+            hostName    = AdminConfig.showAttribute(nodeId, 'hostName')
+            mapping[name] = {'cellName': cName, 'nodeName': nName, 'hostName': hostName}
+        except Exception:
+            continue
+    return mapping
+
+# 7) Build profile → info maps for each serverType
+entries_dmgr = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER ]').splitlines()
+entries_node = AdminTask.listServers('[-serverType NODE_AGENT ]').splitlines()
+entries_web  = AdminTask.listServers('[-serverType WEB_SERVER ]').splitlines()
+
+dmgr_map = parseServerEntries(entries_dmgr)
+node_map = parseServerEntries(entries_node)
+web_map  = parseServerEntries(entries_web)
+
+# DEBUG: print maps to verify contents
+print "DEBUG dmgr_map:", dmgr_map
+print "DEBUG node_map:", node_map
+print "DEBUG web_map :", web_map
+
+# 8) Determine profile type & scope
+is_web = False
+if profile in dmgr_map:
+    info     = dmgr_map[profile]
+    scope    = "(cell):%s" % info['cellName']
+    ksName   = "CellDefaultKeyStore"
+    ssl_path = "/Cell:%s/Security:/SSLConfig:defaultSSLConfig/" % info['cellName']
+elif profile in node_map:
+    info     = node_map[profile]
+    scope    = "(cell):%s:(node):%s" % (info['cellName'], info['nodeName'])
+    ksName   = "NodeDefaultKeyStore"
+    ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (info['cellName'], info['nodeName'])
+elif profile in web_map:
+    is_web   = True
+    info     = web_map[profile]
+    scope    = "(cell):%s:(node):%s" % (info['cellName'], info['nodeName'])
+    ksName   = "CMSKeyStore"
+    ssl_path = "/Cell:%s/Node:%s/Security:/SSLConfig:defaultSSLConfig/" % (info['cellName'], info['nodeName'])
+    wsrv_id  = None
+    for wid in AdminConfig.list('WebServer').split():
+        if AdminConfig.showAttribute(wid, 'name') == profile:
+            wsrv_id = wid
+            break
+else:
+    print "✖ Profile '%s' not found as DMGR, NodeAgent, or WebServer" % profile
+    sys.exit(1)
+
+# 9) Import certificate and apply configuration
+try:
+    # 9a) Check if alias already exists in the keystore
+    certs = AdminTask.listCertificates([
+        '-keyStoreName',  ksName,
+        '-keyStoreScope', scope
+    ])
+    if alias in certs:
+        print "✔ Alias '%s' already exists in keystore '%s', skipping import" % (alias, ksName)
+    else:
+        AdminTask.importCertificate([
+            '-keyStoreName',            ksName,
+            '-keyStoreScope',           scope,
+            '-keyFilePath',             cert_path,
+            '-keyFilePassword',         keystore_password,
+            '-keyFileType',             'PKCS12',
+            '-certificateAliasFromKeyFile', alias
+        ])
+        print "✔ Imported alias '%s' into '%s'" % (alias, ksName)
+
+    # 9b) If web server, update plugin-cfg.xml
+    if is_web:
+        props = AdminConfig.list('PluginProperties', wsrv_id).split()
+        if props:
+            AdminConfig.create('Property', props[0], [['name','CERTLABEL'], ['value', alias]])
+        AdminConfig.save()
+        AdminTask.generatePluginCfg(['-serverName', profile, '-nodeName', info['nodeName']])
+        AdminTask.propagatePluginCfg(['-serverName', profile, '-nodeName', info['nodeName']])
+        AdminConfig.save()
+        print "✔ Profile %s (WebServer): propagated plugin with alias '%s'" % (profile, alias)
+    else:
+        # 9c) For DMGR/NodeAgent, use modifySSLConfig to set default aliases
+        result = AdminTask.modifySSLConfig(
+            '[scopeName %s] [name NodeDefaultSSLSettings] '
+            '[defaultServerCertificateAlias %s] '
+            '[defaultClientCertificateAlias %s]'
+            % (scope, alias, alias)
+        )
+        print "ModifySSLConfig result for '%s': %s" % (profile, result)
+
+    sys.exit(0)
+except ScriptingException, e:
+    print "✖ Error in profile '%s': %s" % (profile, e)
+    sys.exit(1)
