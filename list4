@@ -3,20 +3,20 @@
 import sys
 
 # --- Input Argument Parsing ---
-# Expects four positional arguments after the script name:
+# Expects four positional arguments:
 #   1) profile_name
 #   2) host_name
 #   3) password
 #   4) was_user
-if len(sys.argv) < 5:
+if len(sys.argv) < 4:
     print "Usage: wsadmin.sh -lang jython -f listHostnamesComplete.py <profile_name> <host_name> <password> <was_user>"
     sys.exit(1)
 
-# Assign arguments (sys.argv[0] is the script name)
-profile_name = sys.argv[1]
-host_name    = sys.argv[2]
-password     = sys.argv[3]
-was_user     = sys.argv[4]
+# Assign arguments
+profile_name = sys.argv[0]
+host_name    = sys.argv[1]
+password     = sys.argv[2]
+was_user     = sys.argv[3]
 
 # --- Helper Functions ---
 def strip_trailing_paren(s):
@@ -31,13 +31,13 @@ def addNodeMappings(entries):
         return result
     for entry in entries:
         try:
-            cfgPath  = strip_trailing_paren(entry.split('(', 1)[1])
-            nodePath = cfgPath.split('|', 1)[0]
-            parts    = nodePath.split('/')
-            cellName = parts[1]
-            nodeName = parts[3]
-            nodeId   = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
-            hostName = AdminConfig.showAttribute(nodeId, 'hostName')
+            cfgPath   = strip_trailing_paren(entry.split('(', 1)[1])
+            nodePath  = cfgPath.split('|', 1)[0]
+            parts     = nodePath.split('/')    
+            cellName  = parts[1]
+            nodeName  = parts[3]
+            nodeId    = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
+            hostName  = AdminConfig.showAttribute(nodeId, 'hostName')
             result[nodeName] = {
                 'cellName': cellName,
                 'nodeName': nodeName,
@@ -54,13 +54,13 @@ def addWebMappings(entries):
         return result
     for entry in entries:
         try:
-            webName  = entry.split('(')[0]
-            cfgPath  = strip_trailing_paren(entry.split('(', 1)[1])
-            nodePath = cfgPath.split('|', 1)[0]
-            parts    = nodePath.split('/')
-            cellName = parts[1]
-            nodeName = parts[3]
-            serverId = AdminConfig.getid(
+            webName   = entry.split('(')[0]
+            cfgPath   = strip_trailing_paren(entry.split('(', 1)[1])
+            nodePath  = cfgPath.split('|', 1)[0]
+            parts     = nodePath.split('/')    
+            cellName  = parts[1]
+            nodeName  = parts[3]
+            serverId  = AdminConfig.getid(
                 '/Cell:%s/Node:%s/Server:%s/' % (cellName, nodeName, webName)
             )
             siList   = AdminConfig.list('ServerIndex', serverId).splitlines()
