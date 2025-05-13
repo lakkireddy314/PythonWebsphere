@@ -1,0 +1,117 @@
+# listHostnamesComplete.py
+# wsadmin Jython script to collect mappings of <name>: {cellName, nodeName, hostName}
+import sys
+
+# --- Input Argument Parsing ---
+# Expects four positional arguments after the script name:
+#   1) profile_name
+#   2) host_name
+#   3) password
+#   4) was_user
+if len(sys.argv) < 5:
+    print "Usage: wsadmin.sh -lang jython -f listHostnamesComplete.py <profile_name> <host_name> <password> <was_user>"
+    sys.exit(1)
+
+# Assign arguments (sys.argv[0] is the script name)
+profile_name = sys.argv[1]
+host_name    = sys.argv[2]
+password     = sys.argv[3]
+was_user     = sys.argv[4]
+
+# --- Helper Functions ---
+def strip_trailing_paren(s):
+    if s.endswith(')'):
+        return s[:-1]
+    return s
+
+# Process DMGR and Node Agent entries and return a mapping dict
+def addNodeMappings(entries):
+    result = {}
+    if not entries:
+        return result
+    for entry in entries:
+        try:
+            cfgPath  = strip_trailing_paren(entry.split('(', 1)[1])
+            nodePath = cfgPath.split('|', 1)[0]
+            parts    = nodePath.split('/')
+            cellName = parts[1]
+            nodeName = parts[3]
+            nodeId   = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
+            hostName = AdminConfig.showAttribute(nodeId, 'hostName')
+            result[nodeName] = {
+                'cellName': cellName,
+                'nodeName': nodeName,
+                'hostName': hostName
+            }
+        except Exception:
+            continue
+    return result
+
+# Process Web Server entries and return a mapping dict
+def addWebMappings(entries):
+    result = {}
+    if not entries:
+        return result
+    for entry in entries:
+        try:
+            webName  = entry.split('(')[0]
+            cfgPath  = strip_trailing_paren(entry.split('(', 1)[1])
+            nodePath = cfgPath.split('|', 1)[0]
+            parts    = nodePath.split('/')
+            cellName = parts[1]
+            nodeName = parts[3]
+            serverId = AdminConfig.getid(
+                '/Cell:%s/Node:%s/Server:%s/' % (cellName, nodeName, webName)
+            )
+            siList   = AdminConfig.list('ServerIndex', serverId).splitlines()
+            if siList:
+                hostName = AdminConfig.showAttribute(siList[0], 'hostName')
+            else:
+                nodeId   = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
+                hostName = AdminConfig.showAttribute(nodeId, 'hostName')
+            result[webName] = {
+                'cellName': cellName,
+                'nodeName': nodeName,
+                'hostName': hostName
+            }
+        except Exception:
+            continue
+    return result
+
+# --- Main Execution ---
+# 1. Deployment Manager (DMGR)
+dmgrEntries      = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()
+dmgr_map         = addNodeMappings(dmgrEntries)
+
+# 2. Node Agents
+nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()
+node_map         = addNodeMappings(nodeAgentEntries)
+
+# 3. Web Servers
+webEntries       = AdminTask.listServers('[-serverType WEB_SERVER]').splitlines()
+web_map          = addWebMappings(webEntries)
+
+# --- Profile Matching and Variable Assignment ---
+if profile_name in dmgr_map.keys():
+    print 'Profile matched DMGR'
+    mapping = dmgr_map.get(profile_name)
+    kcName  = 'CellDefaultKeystore'
+    scName  = 'CellDefaultSSLSettings'
+elif profile_name in node_map.keys():
+    print 'Profile matched Node Agent'
+    mapping = node_map.get(profile_name)
+    kcName  = 'NodeDefaultKeystore'
+    scName  = 'NodeDefaultSSLSettings'
+elif profile_name in web_map.keys():
+    print 'Profile matched Web Server'
+    mapping = web_map.get(profile_name)
+    kcName  = 'CMSKeystore'
+    scName  = None
+else:
+    print 'Profile %s not found in DMGR, Node Agents, or Web Servers' % profile_name
+    sys.exit(1)
+
+# --- Output Results ---
+print 'Mapping details: %s' % mapping
+print 'KeyStore Name: %s' % kcName
+print 'SSL Config Name: %s' % scName
