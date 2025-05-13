@@ -1,0 +1,98 @@
+# listHostnamesComplete.py
+# wsadmin Jython script: map profiles and import certificates
+import sys
+
+# --- Input Argument Parsing ---
+# Usage:
+#   wsadmin.sh -lang jython -f listHostnamesComplete.py <profile_name> <host_name> <password> <was_user>
+if len(sys.argv) < 4:
+    print "Usage: wsadmin.sh -lang jython -f listHostnamesComplete.py <profile_name> <host_name> <password> <was_user>"
+    sys.exit(1)
+
+# Note: wsadmin Jython sys.argv excludes the script name
+profile_name = sys.argv[0]
+host_name    = sys.argv[1]
+password     = sys.argv[2]
+was_user     = sys.argv[3]
+
+# Cert details
+pfx_path     = '/home/%s/Ansible_self_signed/%s.pfx' % (was_user, host_name)
+alias        = '%s_subca_ss' % host_name
+
+# --- Helper Functions ---
+def strip_paren(s):
+    return s[:-1] if s.endswith(')') else s
+
+def addNodeMappings(entries):
+    result = {}
+    for entry in entries:
+        cfg    = strip_paren(entry.split('(',1)[1])
+        parts  = cfg.split('|',1)[0].split('/')
+        cell, node = parts[1], parts[3]
+        result[node] = {'cellName':cell, 'nodeName':node}
+    return result
+
+def addWebMappings(entries):
+    result = {}
+    for entry in entries:
+        web   = entry.split('(')[0]
+        cfg   = strip_paren(entry.split('(',1)[1])
+        parts = cfg.split('|',1)[0].split('/')
+        cell, node = parts[1], parts[3]
+        result[web] = {'cellName':cell, 'nodeName':node}
+    return result
+
+# --- Main Execution: build maps ---
+dmgr_map  = addNodeMappings(AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines())
+node_map  = addNodeMappings(AdminTask.listServers('[-serverType NODE_AGENT]').splitlines())
+web_map   = addWebMappings(  AdminTask.listServers('[-serverType WEB_SERVER]').splitlines())
+
+# --- Certificate Import & Config Modification ---
+def importToNode(nodeName, info):
+    scope = 'Node:%s' % nodeName
+    print 'Importing PFX for node %s...' % nodeName
+    AdminTask.importKeyStore(['-keyStoreFile', pfx_path,
+                               '-keyStorePassword', password,
+                               '-format', 'PKCS12',
+                               '-alias', alias,
+                               '-mapEntries', 'true'])
+    print 'Updating SSL for alias %s on %s...' % (alias, scope)
+    AdminTask.modifySSLConfig(['-alias', 'NodeDefaultSSLSettings',
+                                '-scopeName', scope,
+                                '-clientKeyAlias', alias,
+                                '-serverKeyAlias', alias])
+    AdminConfig.save()
+    AdminNodeManagement.syncActiveNodes()
+    print 'Node %s SSL updated.' % nodeName
+
+
+def importToWeb(webName, info):
+    cell, node = info['cellName'], info['nodeName']
+    serverId = AdminConfig.getid('/Cell:%s/Node:%s/Server:%s/' % (cell, node, webName))
+    print 'Importing PFX for web server %s...' % webName
+    AdminTask.importKeyStore(['-keyStoreFile', pfx_path,
+                               '-keyStorePassword', password,
+                               '-format', 'PKCS12',
+                               '-alias', alias,
+                               '-targetKeyStore', '/opt/IBM/WebSphere/Plugins/etc/pluginKey.kdb',
+                               '-targetKeyStorePassword', password])
+    print 'Adding plugin custom property CERTLABEL...' 
+    AdminConfig.create('Property', serverId, [['name','CERTLABEL'],['value',alias]])
+    AdminConfig.save()
+    print 'Regenerating and publishing plugin...'   
+    AdminTask.generatePlugInCfg(['-serverName', webName])
+    AdminTask.publishPlugInCfg(['-serverName', webName])
+    print 'Web server %s plugin updated.' % webName
+
+# --- Matching & Execution ---
+def matchAndImport(name, mapping, label, func):
+    if name in mapping:
+        print 'Profile matched %s: %s' % (label, name)
+        func(name, mapping[name])
+        return True
+    return False
+
+if not matchAndImport(profile_name, dmgr_map, 'DMGR', importToNode):
+    if not matchAndImport(profile_name, node_map, 'Node Agent', importToNode):
+        if not matchAndImport(profile_name, web_map, 'Web Server', importToWeb):
+            print 'Profile %s not found.' % profile_name
