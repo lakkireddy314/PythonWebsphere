@@ -1,0 +1,43 @@
+- name: Run the profile-hostname mapping command
+  shell: /path/to/your/command
+  register: profile_output
+
+- name: Convert output lines (“key: value”) into a dict
+  set_fact:
+    profile_mappings: >-
+      {{ dict(profile_output.stdout_lines | map('split', ': ') | list) }}
+
+- name: Generate PFX files for each profile
+  include_tasks: cert.yml
+  loop: "{{ profile_mappings | dict2items }}"
+  loop_control:
+    loop_var: mapping
+  vars:
+    profile_name: "{{ mapping.key }}"
+    host_name:    "{{ mapping.value }}"
+    cert_dir:     "/home/{{ was_usr }}/Ansible_SelfSigned"
+    cert_file:    "{{ cert_dir }}/{{ host_name }}.pfx"
+    cert_alias:   "hostname_subca_ss"
+  # dict2items turns a dict into a list of {key,value} dicts :contentReference[oaicite:0]{index=0}
+  # include_tasks supports loops with loop_var to avoid collisions :contentReference[oaicite:1]{index=1}
+
+- name: Import each PFX into WebSphere via wsadmin.sh
+  vars:
+    wsadmin_bin: "{{ websphere_install_root }}/bin/wsadmin.sh"
+    wsadmin_opts: >-
+      -lang jython
+      -conntype SOAP
+      -host {{ dmgr_host }}
+      -port {{ dmgr_port }}
+      -user {{ dmgr_user }}
+      -password {{ dmgr_password }}
+      -f {{ playbook_dir }}/importCerts.py --
+  shell: >
+    "{{ wsadmin_bin }}" {{ wsadmin_opts }} {{ mapping.key }}:{{ mapping.value }}
+  register: wsadmin_results
+  failed_when: wsadmin_results.rc != 0
+  changed_when: "'✔ Imported' in wsadmin_results.stdout"
+  loop: "{{ profile_mappings | dict2items }}"
+  loop_control:
+    loop_var: mapping
+  # Using -- separates wsadmin flags from your script args :contentReference[oaicite:2]{index=2}
