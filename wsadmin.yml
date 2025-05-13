@@ -23,7 +23,9 @@
 
 - name: Import each PFX into WebSphere via wsadmin.sh
   vars:
-    wsadmin_bin: "{{ websphere_install_root }}/bin/wsadmin.sh"
+    profile_name: "{{ mapping.key }}"
+    host_name:    "{{ mapping.value }}"
+    wsadmin_bin:  "{{ websphere_install_root }}/bin/wsadmin.sh"
     wsadmin_opts: >-
       -lang jython
       -conntype SOAP
@@ -33,7 +35,7 @@
       -password {{ dmgr_password }}
       -f {{ playbook_dir }}/importCerts.py --
   shell: >
-    "{{ wsadmin_bin }}" {{ wsadmin_opts }} {{ mapping.key }}:{{ mapping.value }}
+    "{{ wsadmin_bin }}" {{ wsadmin_opts }} {{ profile_name }}:{{ host_name }}
   register: wsadmin_results
   failed_when: "'✔ Imported' not in wsadmin_results.stdout"
   changed_when: "'✔ Imported' in wsadmin_results.stdout"
