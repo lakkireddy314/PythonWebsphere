@@ -1,0 +1,96 @@
+# listHostnamesComplete.py
+# wsadmin Jython script to collect mappings of <name>: {cellName, nodeName, hostName}
+import sys
+
+# --- Input Argument Parsing ---
+# Expects four positional arguments after the script:
+#   1) profile_name
+#   2) host_name
+#   3) password
+#   4) was_user
+if len(sys.argv) < 4:
+    print "Usage: wsadmin.sh -lang jython -f listHostnamesComplete.py <profile_name> <host_name> <password> <was_user>"
+    sys.exit()
+
+# Assign arguments
+profile_name = sys.argv[0]
+host_name    = sys.argv[1]
+password     = sys.argv[2]
+was_user     = sys.argv[3]
+
+# --- Helper Functions ---
+# Drop trailing ')' from wsadmin output entries
+def strip_trailing_paren(s):
+    if s.endswith(')'):
+        return s[:-1]
+    return s
+
+# Process DMGR and Node Agent entries and return a mapping dict
+def addNodeMappings(entries):
+    result = {}
+    for entry in entries:
+        cfgPath   = strip_trailing_paren(entry.split('(', 1)[1])
+        nodePath  = cfgPath.split('|', 1)[0]
+        parts     = nodePath.split('/')    
+        cellName  = parts[1]
+        nodeName  = parts[3]
+        nodeId    = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
+        hostName  = AdminConfig.showAttribute(nodeId, 'hostName')
+        result[nodeName] = {
+            'cellName': cellName,
+            'nodeName': nodeName,
+            'hostName': hostName
+        }
+    return result
+
+# Process Web Server entries and return a mapping dict
+def addWebMappings(entries):
+    result = {}
+    for entry in entries:
+        webName   = entry.split('(')[0]
+        cfgPath   = strip_trailing_paren(entry.split('(', 1)[1])
+        nodePath  = cfgPath.split('|', 1)[0]
+        parts     = nodePath.split('/')
+        cellName  = parts[1]
+        nodeName  = parts[3]
+        serverId  = AdminConfig.getid(
+            '/Cell:%s/Node:%s/Server:%s/' % (cellName, nodeName, webName)
+        )
+        siEntries = AdminConfig.list('ServerIndex', serverId).splitlines()
+        if siEntries:
+            hostName = AdminConfig.showAttribute(siEntries[0], 'hostName')
+        else:
+            nodeId   = AdminConfig.getid('/Cell:%s/Node:%s/' % (cellName, nodeName))
+            hostName = AdminConfig.showAttribute(nodeId, 'hostName')
+        result[webName] = {
+            'cellName': cellName,
+            'nodeName': nodeName,
+            'hostName': hostName
+        }
+    return result
+
+# --- Main Execution ---
+# 1. Deployment Manager (DMGR)
+dmgrEntries      = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()
+dmgr_map         = addNodeMappings(dmgrEntries)
+
+# 2. Node Agents
+nodeAgentEntries = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()
+node_map         = addNodeMappings(nodeAgentEntries)
+
+# 3. Web Servers
+webEntries       = AdminTask.listServers('[-serverType WEB_SERVER]').splitlines()
+web_map          = addWebMappings(webEntries)
+
+# --- Profile Matching Logic ---
+if profile_name in dmgr_map:
+    print 'Profile matched DMGR'
+    print dmgr_map[profile_name]
+elif profile_name in node_map:
+    print 'Profile matched Node Agent'
+    print node_map[profile_name]
+elif profile_name in web_map:
+    print 'Profile matched Web Server'
+    print web_map[profile_name]
+else:
+    print 'Profile %s not found in DMGR, Node Agents, or Web Servers' % profile_name
