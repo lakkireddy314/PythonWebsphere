@@ -1,0 +1,144 @@
+# listHostnamesComplete.py
+# wsadmin Jython script: map profiles, import certificates, and configure SSL
+import sys
+
+# --- Input Argument Parsing ---
+# Usage:
+#   wsadmin.sh -lang jython -f listHostnamesComplete.py <profile_name> <host_name> <password> <was_user>
+if len(sys.argv) < 4:
+    print "Usage: wsadmin.sh -lang jython -f listHostnamesComplete.py <profile_name> <host_name> <password> <was_user>"
+    sys.exit(1)
+
+# wsadmin Jython sys.argv excludes the script name
+profile_name = sys.argv[0]
+host_name    = sys.argv[1]
+password     = sys.argv[2]
+was_user     = sys.argv[3]
+
+# Certificate path and alias
+pfx_path = '/home/%s/Ansible_self_signed/%s.pfx' % (was_user, host_name)
+alias_subca = '%s_subca_ss' % host_name
+
+# Drop trailing ')' from wsadmin output entries
+def strip_paren(s):
+    if s and s.endswith(')'):
+        return s[:-1]
+    return s or ""
+
+# Process DMGR and Node Agent entries into a mapping dict
+def addNodeMappings(entries):
+    result = {}
+    for entry in entries:
+        parts = strip_paren(entry.split('(',1)[1]).split('|',1)[0].split('/')
+        cell, node = parts[1], parts[3]
+        result[node] = {'cellName': cell, 'nodeName': node}
+    return result
+
+# Process Web Server entries into a mapping dict, including serverName
+def addWebMappings(entries):
+    result = {}
+    for entry in entries:
+        server = entry.split('(')[0]
+        parts  = strip_paren(entry.split('(',1)[1]).split('|',1)[0].split('/')
+        cell, node = parts[1], parts[3]
+        result[server] = {'serverName': server, 'cellName': cell, 'nodeName': node}
+    return result
+
+# Build Profile Maps ---
+# 1. Deployment Manager (DMGR)
+dmgr_map        = addNodeMappings(
+    AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]')
+)
+# 2. Node Agents
+node_map        = addNodeMappings(
+    AdminTask.listServers('[-serverType NODE_AGENT]')
+)
+# 3. Web Servers
+web_map         = addWebMappings(
+    AdminTask.listServers('[-serverType WEB_SERVER]')
+)
+
+# Certificate Import & SSL Config Functions
+def importToNode(name, info, label):
+    cell = info['cellName']
+    node = info['nodeName']
+    if label == 'DMGR':
+        keyStoreName     = 'CellDefaultKeystore'
+        alias_ssl_config = 'CellDefaultSSLSettings'
+        scope            = '(cell):%s' % cell
+    else:
+        keyStoreName     = 'NodeDefaultKeystore'
+        alias_ssl_config = 'NodeDefaultSSLSettings'
+        scope            = '(cell):%s:(node):%s' % (cell, node)
+    print 'Importing certificate to %s on %s...' % (keyStoreName, name)
+    AdminTask.importCertificate([
+        '-keyStoreName', keyStoreName,
+        '-keyStoreScope', scope,
+        '-keyFilePath', pfx_path,
+        '-keyFilePassword', password,
+        '-keyFileType', 'PKCS12',
+        '-certificateAliasFromKeyFile', alias_subca
+    ])
+    print 'Modifying SSL config alias %s...' % alias_ssl_config
+    AdminTask.modifySSLConfig([
+        '-alias', alias_ssl_config,
+        '-scopeName', label == 'DMGR' and 'Cell' or 'Node:%s' % node,
+        '-clientKeyAlias', alias_subca,
+        '-serverKeyAlias', alias_subca
+    ])
+    AdminConfig.save()
+    AdminNodeManagement.syncActiveNodes()
+    print '%s %s SSL updated.' % (alias_ssl_config, name)
+
+
+def importToWeb(name, info, label):
+    cell   = info['cellName']
+    node   = info['nodeName']
+    server = info['serverName']
+    keyStoreName = 'CMSKeystore'
+    # scope includes server for web
+    scope        = '(cell):%s:(node):%s:(server):%s' % (cell, node, server)
+    print 'Importing certificate to %s for web server %s...' % (keyStoreName, name)
+    AdminTask.importCertificate([
+        '-keyStoreName', keyStoreName,
+        '-keyStoreScope', scope,
+        '-keyFilePath', pfx_path,
+        '-keyFilePassword', password,
+        '-keyFileType', 'PKCS12',
+        '-certificateAliasFromKeyFile', alias_subca
+    ])
+    # Locate PluginProperties object under the Server for adding custom properties
+    serverId      = AdminConfig.getid('/Cell:%s/Node:%s/Server:%s/' % (cell, node, server))
+        propsIds = AdminConfig.list('PluginProperties', serverId).splitlines()
+    if propsIds:
+        pluginPropsId = propsIds[0]
+        print 'Checking for existing CERTLABEL property...'
+        # List existing properties under PluginProperties
+        propEntries = AdminConfig.list('Property', pluginPropsId).splitlines()
+        found = False
+        for propId in propEntries:
+            propName = AdminConfig.showAttribute(propId, 'name')
+            if propName == 'CERTLABEL':
+                print 'Updating existing CERTLABEL property value to %s...' % alias_subca
+                AdminConfig.modify(propId, [['value', alias_subca]])
+                found = True
+                break
+        if not found:
+            print 'CERTLABEL not found; creating new property...'
+            AdminConfig.create('Property', pluginPropsId, [['name','CERTLABEL'], ['value', alias_subca], ['description',''], ['validationExpression',''], ['required','false']])
+    else:
+        print 'No PluginProperties found for %s; skipping custom property creation.'
+# Profile Matching & Execution
+
+def matchAndImport(name, mapping, label, func):
+    info = mapping.get(name)
+    if info:
+        print 'Profile matched %s: %s' % (label, name)
+        func(name, info, label)
+        return True
+    return False
+
+if not matchAndImport(profile_name, dmgr_map, 'DMGR', importToNode):
+    if not matchAndImport(profile_name, node_map, 'Node Agent', importToNode):
+        if not matchAndImport(profile_name, web_map, 'Web Server', importToWeb):
+            print 'Profile %s not found.' % profile_name
