@@ -35,9 +35,8 @@
   shell: >
     "{{ wsadmin_bin }}" {{ wsadmin_opts }} {{ mapping.key }}:{{ mapping.value }}
   register: wsadmin_results
-  failed_when: wsadmin_results.rc != 0
+  failed_when: "'✔ Imported' not in wsadmin_results.stdout"
   changed_when: "'✔ Imported' in wsadmin_results.stdout"
   loop: "{{ profile_mappings | dict2items }}"
   loop_control:
     loop_var: mapping
-  # Using -- separates wsadmin flags from your script args :contentReference[oaicite:2]{index=2}
