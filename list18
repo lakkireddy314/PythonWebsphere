@@ -1,0 +1,146 @@
+# listHostnamesComplete.py
+# wsadmin Jython script to:
+#  1. Build maps of DMGR, Node Agents, and Web Servers
+#  2. Match a given profile_name
+#  3. Import a .pfx certificate into the appropriate keystore
+#     • For DMGR: CellDefaultKeystore / CellDefaultSSLSettings
+#     • For Node Agent: NodeDefaultKeystore / NodeDefaultSSLSettings
+#     • For Web Server: CMSKeystore + update CERTLABEL property on the plugin
+
+import sys
+if len(sys.argv) != 5:
+    print "Usage: wsadmin -lang jython -f listHostnamesComplete.py <profile_name> <host_name> <password> <was_user>"
+    sys.exit(1)
+_, profile_name, host_name, passwd, was_user = sys.argv
+
+# Helper to drop trailing ')' from wsadmin output
+def strip_paren(s):
+    if s and s.endswith(')'):
+        return s[:-1]
+    return s or ""
+
+# Build mappings for DMGR & Node Agents
+def addNodeMappings(entries):
+    m = {}
+    for entry in entries:
+        cfg = strip_paren(entry.split('(',1)[1]).split('|',1)[0]
+        parts = cfg.split('/')
+        cell, node, name = parts[1], parts[3], parts[5]
+        cfgId    = AdminConfig.getid('/Cell:%s/Node:%s/' % (cell, node))
+        hostName = AdminConfig.showAttribute(cfgId, 'hostName')
+        m[name] = {'cellName': cell, 'nodeName': node, 'hostName': hostName}
+    return m
+
+# Build mappings for Web Servers
+def addWebMappings(entries):
+    m = {}
+    for entry in entries:
+        webName = entry.split('(')[0]
+        cfg     = strip_paren(entry.split('(',1)[1]).split('|',1)[0]
+        parts   = cfg.split('/')
+        cell, node = parts[1], parts[3]
+        cfgId = AdminConfig.getid('/Cell:%s/Node:%s/Server:%s/' % (cell, node, webName))
+        si    = AdminConfig.list('ServerIndex', cfgId).splitlines()
+        if si:
+            hostName = AdminConfig.showAttribute(si[0], 'hostName')
+        else:
+            nid      = AdminConfig.getid('/Cell:%s/Node:%s/' % (cell, node))
+            hostName = AdminConfig.showAttribute(nid, 'hostName')
+        m[webName] = {'cellName': cell, 'nodeName': node, 'serverName': webName, 'hostName': hostName}
+    return m
+
+# Import certificate into DMGR or Node keystores
+def importToNode(profile, data, alias, passwd, was_user):
+    cell, node, host = data['cellName'], data['nodeName'], data['hostName']
+    if profile == 'DMGR':
+        ksName   = 'CellDefaultKeystore'
+        sslAlias = 'CellDefaultSSLSettings'
+        scope    = 'Cell:%s' % cell
+    else:
+        ksName   = 'NodeDefaultKeystore'
+        sslAlias = 'NodeDefaultSSLSettings'
+        scope    = '(cell):%s:(node):%s' % (cell, node)
+    existing = AdminTask.listPersonalCertificates(['-keyStoreName', ksName, '-keyStoreScope', scope]).splitlines()
+    if alias in existing:
+        print 'Alias %s already present in %s' % (alias, ksName)
+    else:
+        pfx = '/home/%s/Ansible_self_signed/%s.pfx' % (was_user, host)
+        AdminTask.importCertificate([
+            '-keyStoreName', ksName,
+            '-keyStoreScope', scope,
+            '-certificateFile', pfx,
+            '-certificatePassword', passwd,
+            '-alias', alias
+        ])
+        print 'Imported alias %s into %s' % (alias, ksName)
+    AdminTask.modifySSLConfig([
+        '-alias', sslAlias,
+        '-scopeName', scope,
+        '-clientKeyAlias', alias,
+        '-serverKeyAlias', alias
+    ])
+    AdminConfig.save()
+    AdminNodeManagement.syncActiveNodes()
+    print '%s SSL updated for %s' % (sslAlias, profile)
+
+# Import certificate and update plugin for Web Servers
+def importToWeb(profile, data, alias, passwd, was_user):
+    cell, node, server, host = data['cellName'], data['nodeName'], data['serverName'], data['hostName']
+    ksName = 'CMSKeystore'
+    scope  = '(cell):%s:(node):%s:(server):%s' % (cell, node, server)
+    existing = AdminTask.listPersonalCertificates(['-keyStoreName', ksName, '-keyStoreScope', scope]).splitlines()
+    if alias in existing:
+        print 'Alias %s already present in %s' % (alias, ksName)
+    else:
+        pfx = '/home/%s/Ansible_self_signed/%s.pfx' % (was_user, host)
+        AdminTask.importCertificate([
+            '-keyStoreName', ksName,
+            '-keyStoreScope', scope,
+            '-certificateFile', pfx,
+            '-certificatePassword', passwd,
+            '-alias', alias
+        ])
+        print 'Imported alias %s into %s' % (alias, ksName)
+    AdminTask.modifySSLConfig([
+        '-alias', 'PluginSSLSettings',
+        '-scopeName', scope,
+        '-clientKeyAlias', alias,
+        '-serverKeyAlias', alias
+    ])
+    props    = AdminConfig.list('PluginProperties', AdminConfig.getid('/Cell:%s/Node:%s/Server:%s/' % (cell, node, server))).splitlines()
+    if props:
+        propParent = props[0]
+        for propId in AdminConfig.list('Property', propParent).splitlines():
+            if AdminConfig.showAttribute(propId, 'name') == 'CERTLABEL':
+                AdminConfig.modify(propId, [['value', alias]])
+                break
+        else:
+            AdminConfig.create('Property', propParent, [['name', 'CERTLABEL'], ['value', alias]])
+    else:
+        print 'WARNING: no PluginProperties for %s' % server
+    AdminConfig.save()
+    print 'Plugin updated for web server %s' % server
+
+# Match profile and run import
+entries_dmgr = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()
+dmgr_map     = addNodeMappings(entries_dmgr)
+entries_node = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()
+node_map     = addNodeMappings(entries_node)
+entries_web  = AdminTask.listServers('[-serverType WEB_SERVER]').splitlines()
+web_map      = addWebMappings(entries_web)
+
+matched = False
+if matchAndImport(profile_name, dmgr_map, 'DMGR', importToNode):
+    print 'Profile matched DMGR, operation complete.'
+    matched = True
+elif matchAndImport(profile_name, node_map, 'NodeAgent', importToNode):
+    print 'Profile matched Node Agent, operation complete.'
+    matched = True
+elif matchAndImport(profile_name, web_map, 'WebServer', importToWeb):
+    print 'Profile matched Web Server, operation complete.'
+    matched = True
+else:
+    print 'No matching profile "%s" found.' % profile_name
+
+if matched:
+    print 'All Steps completed successfully for SSL'
