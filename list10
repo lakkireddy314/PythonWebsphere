@@ -61,63 +61,63 @@ webEntries       = AdminTask.listServers('[-serverType WEB_SERVER]')
 web_map          = addWebMappings(webEntries)
 
 # --- Certificate Import & SSL Config Functions ---
- def importToNode(name, info, label):
-     cell, node = info['cellName'], info['nodeName']
-     # Determine keystore and SSL config alias based on profile type
-     if label == 'DMGR':
-         keyStoreName     = 'CellDefaultKeystore'
-         alias_ssl_config = 'CellDefaultSSLSettings'
-     else:
-         keyStoreName     = 'NodeDefaultKeystore'
-         alias_ssl_config = 'NodeDefaultSSLSettings'
-     # Determine scope: only cell for DMGR, cell+node otherwise
-     if label == 'DMGR':
-         scope = '(cell):%s' % cell
-     else:
-         scope = '(cell):%s:(node):%s' % (cell, node)
-     print 'Importing certificate to %s on %s...' % (keyStoreName, name)
-     AdminTask.importCertificate(
-         ['-keyStoreName', keyStoreName,
-          '-keyStoreScope', scope,
-          '-keyFilePath', pfx_path,
-          '-keyFilePassword', password,
-          '-keyFileType', 'PKCS12',
-          '-certificateAliasFromKeyFile', alias]
-     )
-     print 'Modifying SSL config alias %s...' % alias_ssl_config
-     AdminTask.modifySSLConfig(
-         ['-alias', alias_ssl_config,
-          '-scopeName', 'Node:%s' % node,
-          '-clientKeyAlias', alias,
-          '-serverKeyAlias', alias]
-     )
-     AdminConfig.save()
-     AdminNodeManagement.syncActiveNodes()
-     print '%s %s SSL updated.' % (alias_ssl_config, name)
+def importToNode(name, info, label):
+    cell, node = info['cellName'], info['nodeName']
+    # Determine keystore and SSL config alias based on profile type
+    if label == 'DMGR':
+        keyStoreName     = 'CellDefaultKeystore'
+        alias_ssl_config = 'CellDefaultSSLSettings'
+    else:
+        keyStoreName     = 'NodeDefaultKeystore'
+        alias_ssl_config = 'NodeDefaultSSLSettings'
+    # Determine scope: only cell for DMGR, cell+node otherwise
+    if label == 'DMGR':
+        scope = '(cell):%s' % cell
+    else:
+        scope = '(cell):%s:(node):%s' % (cell, node)
+    print 'Importing certificate to %s on %s...' % (keyStoreName, name)
+    AdminTask.importCertificate(
+        ['-keyStoreName', keyStoreName,
+        '-keyStoreScope', scope,
+        '-keyFilePath', pfx_path,
+        '-keyFilePassword', password,
+        '-keyFileType', 'PKCS12',
+        '-certificateAliasFromKeyFile', alias]
+    )
+    print 'Modifying SSL config alias %s...' % alias_ssl_config
+    AdminTask.modifySSLConfig(
+        ['-alias', alias_ssl_config,
+        '-scopeName', 'Node:%s' % node,
+        '-clientKeyAlias', alias,
+        '-serverKeyAlias', alias]
+    )
+    AdminConfig.save()
+    AdminNodeManagement.syncActiveNodes()
+    print '%s %s SSL updated.' % (alias_ssl_config, name)
 
- def importToWeb(name, info, label):
-     cell, node = info['cellName'], info['nodeName']
-     keyStoreName = 'CMSKeystore'
-     scope = '(cell):%s:(node):%s' % (cell, node)
-     print 'Importing certificate to %s for web server %s...' % (keyStoreName, name)
-     AdminTask.importCertificate(
-         ['-keyStoreName', keyStoreName,
-          '-keyStoreScope', scope,
-          '-keyFilePath', pfx_path,
-          '-keyFilePassword', password,
-          '-keyFileType', 'PKCS12',
-          '-certificateAliasFromKeyFile', alias]
-     )
-     serverId = AdminConfig.getid(
-         '/Cell:%s/Node:%s/Server:%s/' % (cell, node, name)
-     )
-     print 'Adding plugin custom property CERTLABEL with alias %s...' % alias
-     AdminConfig.create('Property', serverId, [['name','CERTLABEL'], ['value', alias]])
-     AdminConfig.save()
-     print 'Regenerating and publishing plugin configuration for %s...' % name
-     AdminTask.generatePlugInCfg(['-serverName', name])
-     AdminTask.publishPlugInCfg(['-serverName', name])
-     print 'Web server %s plugin updated.' % name
+def importToWeb(name, info, label):
+    cell, node = info['cellName'], info['nodeName']
+    keyStoreName = 'CMSKeystore'
+    scope = '(cell):%s:(node):%s' % (cell, node)
+    print 'Importing certificate to %s for web server %s...' % (keyStoreName, name)
+    AdminTask.importCertificate(
+        ['-keyStoreName', keyStoreName,
+        '-keyStoreScope', scope,
+        '-keyFilePath', pfx_path,
+        '-keyFilePassword', password,
+        '-keyFileType', 'PKCS12',
+        '-certificateAliasFromKeyFile', alias]
+    )
+    serverId = AdminConfig.getid(
+        '/Cell:%s/Node:%s/Server:%s/' % (cell, node, name)
+    )
+    print 'Adding plugin custom property CERTLABEL with alias %s...' % alias
+    AdminConfig.create('Property', serverId, [['name','CERTLABEL'], ['value', alias]])
+    AdminConfig.save()
+    print 'Regenerating and publishing plugin configuration for %s...' % name
+    AdminTask.generatePlugInCfg(['-serverName', name])
+    AdminTask.publishPlugInCfg(['-serverName', name])
+    print 'Web server %s plugin updated.' % name
 
 # --- Profile Matching & Execution ---
 def matchAndImport(name, mapping, label, func):
