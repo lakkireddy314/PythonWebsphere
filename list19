@@ -1,0 +1,28 @@
+    # … before this point you have ksName, scope, alias, passwd …
+
+    # 1) get the raw output
+    raw = AdminTask.listPersonalCertificates(
+        '-keyStoreName %s -keyStoreScope %s' % (ksName, scope)
+    )  # :contentReference[oaicite:0]{index=0}
+
+    # 2) normalize it to a pure list of aliases
+    clean = raw.replace('[', '').replace(']', '').replace(',', ' ')
+    existing_aliases = [a.strip() for a in clean.split() if a.strip()]
+
+    # 3) check for your alias
+    if alias in existing_aliases:
+        print 'Alias %s already present in %s: %s' % (
+            alias, ksName, existing_aliases
+        )
+    else:
+        # importCertificate call as before…
+        AdminTask.importCertificate(
+            ['-keyStoreName',       ksName,
+             '-keyStoreScope',      scope,
+             '-certificateFile',    pfx,
+             '-certificatePassword',passwd,
+             '-alias',              alias]
+        )
+        print 'Imported %s into %s' % (alias, ksName)
+
+    # … followed by modifySSLConfig / save / etc.
