@@ -1,0 +1,122 @@
+Step 1: Prepare the wsadmin Jython Script
+First, create a Jython script that uses wsadmin to extract the hostnames and WC_defaulthost_secure ports for all servers:
+
+python
+Copy
+Edit
+# wsadmin_jython_script.py
+
+import java
+
+lineSeparator = java.lang.System.getProperty('line.separator')
+
+def get_secure_ports():
+    servers = AdminConfig.list('ServerEntry').splitlines()
+    for server in servers:
+        server_name = server.split('(')[0]
+        node_name = AdminConfig.showAttribute(server, 'nodeName')
+        named_endpoints = AdminConfig.list('NamedEndPoint', server).split(lineSeparator)
+        for endpoint in named_endpoints:
+            endpoint_name = AdminConfig.showAttribute(endpoint, 'endPointName')
+            if endpoint_name == 'WC_defaulthost_secure':
+                endpoint_details = AdminConfig.showAttribute(endpoint, 'endPoint')
+                host = AdminConfig.showAttribute(endpoint_details, 'host')
+                port = AdminConfig.showAttribute(endpoint_details, 'port')
+                print(f"{server_name},{node_name},{host},{port}")
+
+get_secure_ports()
+Save this script as wsadmin_jython_script.py.
+
+Step 2: Create the Ansible Playbook
+Next, create an Ansible playbook that performs the following tasks:
+
+Transfers the wsadmin_jython_script.py to the target WebSphere server.
+
+Executes the script using wsadmin and captures the output.
+
+Parses the output to extract server details.
+
+Uses openssl to retrieve the SSL certificate serial number from each server.
+
+Compares the retrieved serial number with the expected value.
+
+Here's the playbook:
+
+yaml
+Copy
+Edit
+# validate_ssl_certificates.yml
+
+- name: Validate SSL Certificates on WebSphere Servers
+  hosts: websphere_servers
+  gather_facts: false
+  vars:
+    wsadmin_path: /opt/IBM/WebSphere/AppServer/bin/wsadmin.sh
+    jython_script: /tmp/wsadmin_jython_script.py
+    expected_serials:
+      server1: "ABCD1234"
+      server2: "EFGH5678"
+      # Add other expected serial numbers here
+
+  tasks:
+    - name: Transfer wsadmin Jython script to the server
+      copy:
+        src: wsadmin_jython_script.py
+        dest: "{{ jython_script }}"
+        mode: '0755'
+
+    - name: Execute wsadmin script and capture output
+      shell: "{{ wsadmin_path }} -lang jython -f {{ jython_script }}"
+      register: wsadmin_output
+
+    - name: Parse wsadmin output into a list
+      set_fact:
+        server_list: "{{ wsadmin_output.stdout_lines }}"
+
+    - name: Validate SSL certificate serial numbers
+      vars:
+        server_details: "{{ item.split(',') }}"
+        server_name: "{{ server_details[0] }}"
+        node_name: "{{ server_details[1] }}"
+        host: "{{ server_details[2] }}"
+        port: "{{ server_details[3] }}"
+        expected_serial: "{{ expected_serials[server_name] | default('') }}"
+      loop: "{{ server_list }}"
+      loop_control:
+        label: "{{ server_name }}"
+      tasks:
+        - name: Retrieve SSL certificate serial number
+          shell: |
+            echo | openssl s_client -connect {{ host }}:{{ port }} -servername {{ host }} 2>/dev/null | openssl x509 -noout -serial
+          register: cert_serial_output
+          failed_when: false
+
+        - name: Extract actual serial number
+          set_fact:
+            actual_serial: "{{ cert_serial_output.stdout | regex_search('serial=([A-F0-9]+)', '\\1') | default('') }}"
+
+        - name: Compare serial numbers
+          debug:
+            msg: >-
+              Server {{ server_name }}: Expected serial {{ expected_serial }},
+              Actual serial {{ actual_serial }}
+          failed_when: actual_serial != expected_serial
+Notes:
+
+Replace /opt/IBM/WebSphere/AppServer/bin/wsadmin.sh with the actual path to your wsadmin executable if it's different.
+
+Ensure that the expected_serials dictionary is populated with the correct expected serial numbers for each server.
+
+The playbook assumes that the target hosts are defined in your Ansible inventory under the group websphere_servers.
+
+Execution:
+
+To run the playbook, execute the following command:
+
+bash
+Copy
+Edit
+ansible-playbook -i inventory_file validate_ssl_certificates.yml
+Replace inventory_file with the path to your Ansible inventory file.
+
+This approach automates the retrieval and validation of SSL certificates across your WebSphere environment, ensuring that each server's certificate matches the expected serial number.
