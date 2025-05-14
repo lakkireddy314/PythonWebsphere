@@ -1,0 +1,161 @@
+# listHostnamesComplete.py
+# wsadmin Jython script to:
+#  1. Build mappings of DMGR, Node Agents, and Web Servers
+#  2. Match a given profile_name
+#  3. Import a .pfx certificate into the appropriate keystore
+#  4. For Web Servers: update plugin properties and regenerate/propagate plugin via AdminControl
+
+import sys
+# Usage check: expecting 5 arguments after script name
+if len(sys.argv) != 6:
+    print "Usage: wsadmin -lang jython -f listHostnamesComplete.py <configRoot> <profile_name> <host_name> <password> <was_user>"
+    sys.exit(1)
+
+# Parse arguments
+_, configRoot, profile_name, host_name, passwd, was_user = sys.argv
+
+# Helper: Drop trailing ')' from wsadmin output entries
+def strip_paren(s):
+    if s and s.endswith(')'):
+        return s[:-1]
+    return s or ""
+
+# Build mappings for DMGR & Node Agents
+def addNodeMappings(entries):
+    m = {}
+    for entry in entries:
+        cfg = strip_paren(entry.split('(',1)[1]).split('|',1)[0]
+        parts = cfg.split('/')
+        cell, node, name = parts[1], parts[3], parts[5]
+        cid    = AdminConfig.getid('/Cell:%s/Node:%s/' % (cell, node))
+        host   = AdminConfig.showAttribute(cid, 'hostName')
+        m[name] = {'cellName': cell, 'nodeName': node, 'hostName': host}
+    return m
+
+# Build mappings for Web Servers
+def addWebMappings(entries):
+    m = {}
+    for entry in entries:
+        webName = entry.split('(')[0]
+        cfg     = strip_paren(entry.split('(',1)[1]).split('|',1)[0]
+        parts   = cfg.split('/')
+        cell, node = parts[1], parts[3]
+        sid  = AdminConfig.getid('/Cell:%s/Node:%s/Server:%s/' % (cell, node, webName))
+        si   = AdminConfig.list('ServerIndex', sid).splitlines()
+        if si:
+            host = AdminConfig.showAttribute(si[0], 'hostName')
+        else:
+            nid  = AdminConfig.getid('/Cell:%s/Node:%s/' % (cell, node))
+            host = AdminConfig.showAttribute(nid, 'hostName')
+        m[webName] = {'cellName': cell, 'nodeName': node, 'serverName': webName, 'hostName': host}
+    return m
+
+# Import certificate into DMGR or Node keystores
+def importToNode(profile, data, alias, passwd, was_user):
+    cell, node, host = data['cellName'], data['nodeName'], data['hostName']
+    if profile == 'DMGR':
+        ksName, sslAlias = 'CellDefaultKeystore', 'CellDefaultSSLSettings'
+        scope            = 'Cell:%s' % cell
+    else:
+        ksName, sslAlias = 'NodeDefaultKeystore', 'NodeDefaultSSLSettings'
+        scope            = '(cell):%s:(node):%s' % (cell, node)
+    raw = AdminTask.listPersonalCertificates(
+        '-keyStoreName %s -keyStoreScope %s' % (ksName, scope)
+    )
+    existing = raw.replace('[','').replace(']','').replace(',',' ').split()
+    if alias in existing:
+        print 'Alias %s already in %s' % (alias, ksName)
+    else:
+        pfx = '/home/%s/Ansible_self_signed/%s.pfx' % (was_user, host)
+        AdminTask.importCertificate([
+            '-keyStoreName', ksName,
+            '-keyStoreScope', scope,
+            '-certificateFile', pfx,
+            '-certificatePassword', passwd,
+            '-alias', alias
+        ])
+        print 'Imported %s into %s' % (alias, ksName)
+    AdminTask.modifySSLConfig([
+        '-alias', sslAlias,
+        '-scopeName', scope,
+        '-clientKeyAlias', alias,
+        '-serverKeyAlias', alias
+    ])
+    AdminConfig.save()
+    AdminNodeManagement.syncActiveNodes()
+    print '%s SSL updated for %s' % (sslAlias, profile)
+
+# Import certificate and update plugin for Web Servers, then regenerate plugin
+def importToWeb(profile, data, alias, passwd, was_user):
+    cell, node, server, host = data['cellName'], data['nodeName'], data['serverName'], data['hostName']
+    ksName = 'CMSKeystore'
+    scope  = '(cell):%s:(node):%s:(server):%s' % (cell, node, server)
+    raw    = AdminTask.listPersonalCertificates(
+        '-keyStoreName %s -keyStoreScope %s' % (ksName, scope)
+    )
+    existing = raw.replace('[','').replace(']','').replace(',',' ').split()
+    if alias in existing:
+        print 'Alias %s already in %s' % (alias, ksName)
+    else:
+        pfx = '/home/%s/Ansible_self_signed/%s.pfx' % (was_user, host)
+        AdminTask.importCertificate([
+            '-keyStoreName', ksName,
+            '-keyStoreScope', scope,
+            '-certificateFile', pfx,
+            '-certificatePassword', passwd,
+            '-alias', alias
+        ])
+        print 'Imported %s into %s' % (alias, ksName)
+    AdminTask.modifySSLConfig([
+        '-alias', 'PluginSSLSettings',
+        '-scopeName', scope,
+        '-clientKeyAlias', alias,
+        '-serverKeyAlias', alias
+    ])
+    props = AdminConfig.list('PluginProperties', AdminConfig.getid(
+        '/Cell:%s/Node:%s/Server:%s/' % (cell, node, server)
+    )).splitlines()
+    if props:
+        propParent = props[0]
+        for pid in AdminConfig.list('Property', propParent).splitlines():
+            if AdminConfig.showAttribute(pid, 'name') == 'CERTLABEL':
+                AdminConfig.modify(pid, [['value', alias]])
+                break
+        else:
+            AdminConfig.create('Property', propParent, [['name','CERTLABEL'], ['value',alias]])
+    else:
+        print 'WARNING: no PluginProperties for %s' % server
+    AdminConfig.save()
+    print 'Plugin SSL settings updated for %s' % server
+    # Regenerate and propagate plugin via PluginCfgGenerator MBean
+    generator = AdminControl.completeObjectName('WebSphere:type=PluginCfgGenerator,*')
+    AdminControl.invoke(
+        generator,
+        'generate',
+        '%s %s %s %s true true' % (configRoot, cell, node, server)
+    )
+    print 'Plugin generation triggered via MBean for %s' % server
+
+# Main execution
+entries_dmgr = AdminTask.listServers('[-serverType DEPLOYMENT_MANAGER]').splitlines()
+dmgr_map     = addNodeMappings(entries_dmgr)
+entries_node = AdminTask.listServers('[-serverType NODE_AGENT]').splitlines()
+node_map     = addNodeMappings(entries_node)
+entries_web  = AdminTask.listServers('[-serverType WEB_SERVER]').splitlines()
+web_map      = addWebMappings(entries_web)
+
+matched = False
+if profile_name in dmgr_map:
+    importToNode('DMGR', dmgr_map[profile_name], profile_name + '_subca_ss', passwd, was_user)
+    matched = True
+elif profile_name in node_map:
+    importToNode('NodeAgent', node_map[profile_name], profile_name + '_subca_ss', passwd, was_user)
+    matched = True
+elif profile_name in web_map:
+    importToWeb('WebServer', web_map[profile_name], profile_name + '_subca_ss', passwd, was_user)
+    matched = True
+else:
+    print 'No matching profile "%s" found.' % profile_name
+
+if matched:
+    print 'All Steps completed successfully for SSL'
