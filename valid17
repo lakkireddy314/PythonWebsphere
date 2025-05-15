@@ -1,0 +1,28 @@
+# getSecurePorts_entry.py
+# Usage: wsadmin.sh -lang jython -f getSecurePorts_entry.py [-conntype SOAP -host dmgrHost -port dmgrPort]
+
+import java
+
+sep = java.lang.System.getProperty('line.separator')
+
+# 1. Get the cell name
+cellId   = AdminConfig.list('Cell').splitlines()[0]
+cellName = cellId.split('(')[0]  # e.g., "MyCell" :contentReference[oaicite:2]{index=2}
+
+# 2. Iterate all ServerEntry objects (includes app servers + dmgr)
+for srvEntry in AdminConfig.list('ServerEntry').splitlines():  # list ServerEntry :contentReference[oaicite:3]{index=3}
+    srvName = srvEntry.split('(', 1)[0]
+    # 3. For each NamedEndPoint under that entry
+    for nep in AdminConfig.list('NamedEndPoint', srvEntry).split(sep):
+        if not nep.strip(): 
+            continue
+        name = AdminConfig.showAttribute(nep, 'endPointName')
+        if name == 'WC_defaulthost_secure':
+            # nested EndPoint object
+            epRef = AdminConfig.showAttribute(nep, 'endPoint')
+            host  = AdminConfig.showAttribute(epRef, 'host')
+            port  = AdminConfig.showAttribute(epRef, 'port')
+            print "%s %s %s %s" % (cellName,  # cell
+                                  AdminConfig.showAttribute(srvEntry, 'nodeName'),  # node :contentReference[oaicite:4]{index=4}
+                                  srvName, 
+                                  port)
