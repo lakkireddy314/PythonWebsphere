@@ -1,0 +1,37 @@
+# getSecurePorts.py
+# Usage: wsadmin.sh -lang jython -f getSecurePorts.py
+
+import java
+
+# Line separator for splitting list outputs
+lineSep = java.lang.System.getProperty('line.separator')
+
+# 1. Get the cell name
+cellId = AdminConfig.list("Cell").splitlines()[0]
+cellName = cellId.split("(")[0]  # e.g., "MyCell" :contentReference[oaicite:8]{index=8}
+
+# 2. Iterate over all nodes
+for nodeId in AdminConfig.list("Node").splitlines():  # list of Node config IDs :contentReference[oaicite:9]{index=9}
+    nodeName = nodeId.split("(")[0]
+
+    # 3. Iterate over all servers (DMGR + app servers) in the node
+    for srvId in AdminConfig.list("Server", nodeId).splitlines():  # scoped list :contentReference[oaicite:10]{index=10}
+        srvName = srvId.split("(")[0]
+
+        # --- Approach 1: Direct Attribute Access ---
+        for ep in AdminConfig.list("NamedEndPoint", srvId).split(lineSep):  # list endpoints :contentReference[oaicite:11]{index=11}
+            if not ep.strip():
+                continue
+            name = AdminConfig.showAttribute(ep, "endPointName")
+            if name == "WC_defaulthost_secure":
+                port = AdminConfig.showAttribute(ep, "port")  # direct port :contentReference[oaicite:12]{index=12}
+                print "%s %s %s %s" % (cellName, nodeName, srvName, port)
+
+        # --- Approach 2: Containment-Path Lookup ---
+        path = '/Cell:%s/Node:%s/Server:%s/NamedEndPoint:WC_defaulthost_secure/' % (
+            cellName, nodeName, srvName)
+        epId = AdminConfig.getid(path)  # getid lookup :contentReference[oaicite:13]{index=13}
+        if epId:
+            ep0 = epId.splitlines()[0]
+            port = AdminConfig.showAttribute(ep0, "port")
+            print "%s %s %s %s" % (cellName, nodeName, srvName, port)
