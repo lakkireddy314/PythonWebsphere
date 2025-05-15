@@ -1,0 +1,57 @@
+# wsadmin_jython_script.py
+import java
+
+# System line separator
+ls = java.lang.System.getProperty('line.separator')
+
+# Get the current cell name (assumes a single cell)
+cellObj = AdminConfig.getid('/Cell:/')
+cellName = AdminConfig.showAttribute(cellObj, 'name')
+
+def get_secure_ports():
+    # List all node config objects
+    nodeList = AdminConfig.list('Node').split(ls)
+    for node in nodeList:
+        if not node:
+            continue
+        nodeName = AdminConfig.showAttribute(node, 'name')
+
+        # For each node, list all servers
+        serverList = AdminConfig.list('Server', node).split(ls)
+        for server in serverList:
+            if not server:
+                continue
+            srvName = AdminConfig.showAttribute(server, 'name')
+            srvType = AdminConfig.showAttribute(server, 'serverType')
+
+            # Only consider application servers and dmgr
+            if srvType not in ['APPLICATION_SERVER', 'DEPLOYMENT_MANAGER']:
+                continue
+
+            # Build the full path to the NamedEndPoint
+            epPath = '/Cell:%s/Node:%s/Server:%s/NamedEndPoint:WC_defaulthost_secure/' % (
+                cellName, nodeName, srvName
+            )
+
+            # Fetch the NamedEndPoint config ID
+            epId = AdminConfig.getid(epPath)
+
+            if not epId:
+                # Debug: no secure endpoint defined
+                print "DEBUG: No WC_defaulthost_secure endpoint for %s on node %s" % (
+                    srvName, nodeName
+                )
+                continue
+
+            # Retrieve the endpoint object and its host/port
+            endpoint = AdminConfig.showAttribute(epId, 'endPoint')
+            host = AdminConfig.showAttribute(endpoint, 'host')
+            port = AdminConfig.showAttribute(endpoint, 'port')
+
+            # Output CSV: server,node,type,host,port
+            print "%s,%s,%s,%s,%s" % (
+                srvName, nodeName, srvType, host, port
+            )
+
+# Execute the function
+get_secure_ports()
