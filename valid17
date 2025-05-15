@@ -1,94 +1,54 @@
-# getSecurePorts_debug2.py
-# Debug-mode Jython (Python 2.7) script for WC_defaulthost_secure ports
+# getSecurePorts_fixed.py
+# wsadmin Jython (Python 2.7) script to list WC_defaulthost_secure ports with real hostnames
 # Usage:
-#   wsadmin.sh -lang jython -conntype SOAP -host <dmgrHost> -port <dmgrPort> \
-#     -f getSecurePorts_debug2.py
+#   wsadmin.sh -lang jython \
+#     -conntype SOAP -host <dmgrHost> -port <dmgrPort> \
+#     -f getSecurePorts_fixed.py
 
 import java
-import sys
 
-# For splitting list() results
+# Java line separator for splitting list() results
 sep = java.lang.System.getProperty('line.separator')
 
-def debug(msg):
-    # Print debug messages to stdout so you can trace them
-    print "DEBUG>", msg
-
-# 1. Cell lookup
+# 1. Retrieve the cell name
 cells = AdminConfig.list('Cell').splitlines()
-if not cells:
-    debug("No Cell found; check connection parameters")
-    sys.exit(1)
-cellId   = cells[0]
-cellName = AdminConfig.showAttribute(cellId, 'name')
-debug("Cell: %s (id=%s)" % (cellName, cellId))
+if cells:
+    cellId = cells[0]
+    cellName = AdminConfig.showAttribute(cellId, 'name')
+else:
+    cellName = 'UNKNOWN'
 
-# 2. Node loop: build a list of (nodeName, hostName)
-nodes = []
-for nodeId in AdminConfig.list('Node').splitlines():
-    nName = AdminConfig.showAttribute(nodeId, 'name')
-    hName = AdminConfig.showAttribute(nodeId, 'hostName')
-    nodes.append((nName, hName))
-    debug("Found node: %s  hostName: %s  nodeId: %s" % (nName, hName, nodeId))
-
-# 3. ServerEntry loop: match each ServerEntry to its node
+# 2. Iterate each ServerEntry (includes app servers + dmgr)
 for srvEntry in AdminConfig.list('ServerEntry').splitlines():
+    # Extract serverName
     srvName = srvEntry.split('(', 1)[0]
-    debug("Processing ServerEntry: %s" % srvEntry)
 
-    # figure out which node this entry belongs to
-    nodeName = None
-    hostName = None
-    for nName, hName in nodes:
-        if '/nodes/%s/' % nName in srvEntry:
-            nodeName = nName
-            hostName = hName
-            break
-
-    if not nodeName:
-        debug("  → cannot map to any known node, skipping")
+    # 3. Extract nodeName by parsing the config path
+    try:
+        nodeName = srvEntry.split('/nodes/')[1].split('/')[0]
+    except IndexError:
+        # Unexpected format—skip
         continue
 
-    debug("  → server \"%s\" is on node \"%s\" (host %s)" % (srvName, nodeName, hostName))
-
-    # 4. Try the AdminTask.listServerPorts using list-form args
-    try:
-        raw = AdminTask.listServerPorts(srvName, ['-nodeName', nodeName])
-        debug("  listServerPorts raw result:\n" + raw.replace(sep, "\n    "))
-    except Exception, e:
-        debug("  listServerPorts threw exception: %s" % e)
-
-    # 5. Parse for WC_defaulthost_secure
-    for line in raw.split(sep):
-        parts = line.split()
-        # many WAS versions return: [nodeName, serverName, endPointName, host, port]
-        if len(parts) >= 5 and parts[2] == 'WC_defaulthost_secure':
-            host = parts[3]
-            port = parts[4]
-            print "%s %s %s %s %s" % (cellName, nodeName, srvName, host, port)
-            break
+    # 4. Lookup the Node to get its real hostName
+    nodeId = AdminConfig.getid('/Node:%s/' % nodeName)
+    if nodeId:
+        hostName = AdminConfig.showAttribute(nodeId, 'hostName')
     else:
-        debug("  → no WC_defaulthost_secure entry found via listServerPorts")
+        hostName = 'UNKNOWN'
 
-    # 6. Fallback: list NamedEndPoint objects directly
-    debug("  Falling back to AdminConfig.list('NamedEndPoint', srvEntry)")
+    # 5. Find the WC_defaulthost_secure endpoint under this ServerEntry
     for nep in AdminConfig.list('NamedEndPoint', srvEntry).split(sep):
-        if not nep.strip(): 
+        if not nep.strip():
             continue
-        try:
-            epName = AdminConfig.showAttribute(nep, 'endPointName')
-        except:
-            epName = "<could not read endPointName>"
-        debug("    NamedEndPoint id=%s  name=%s" % (nep, epName))
-        if epName == 'WC_defaulthost_secure':
-            # now get nested EndPoint
+        if AdminConfig.showAttribute(nep, 'endPointName') == 'WC_defaulthost_secure':
+            # Get nested EndPoint to retrieve port
             epRef = AdminConfig.showAttribute(nep, 'endPoint')
-            if not epRef:
-                debug("      → endPoint ref is empty!")
-                continue
-            realHost = AdminConfig.showAttribute(epRef, 'host')
-            realPort = AdminConfig.showAttribute(epRef, 'port')
-            print "%s %s %s %s %s" % (cellName, nodeName, srvName, realHost, realPort)
+            if epRef:
+                port = AdminConfig.showAttribute(epRef, 'port')
+            else:
+                port = 'UNKNOWN'
+            # Output: cellName nodeName serverName hostName port
+            print "%s %s %s %s %s" % (
+                cellName, nodeName, srvName, hostName, port)
             break
-    else:
-        debug("    → no WC_defaulthost_secure NamedEndPoint found under ServerEntry")
