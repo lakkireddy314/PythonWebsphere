@@ -1,25 +1,28 @@
 # getAppServerHostnames.py
 # Usage: wsadmin.sh -lang jython -f getAppServerHostnames.py
 
-# Build a map of nodeName -> hostName
-nodeMap = {}
-for node in AdminConfig.list('Node').splitlines():
-    nName = AdminConfig.showAttribute(node, 'name')
-    nHost = AdminConfig.showAttribute(node, 'hostName')
-    nodeMap[nName] = nHost
+# Print a header
+print 'ApplicationServerName           NodeName            HostName'
+print '-----------------------------------------------------------'
 
-print 'Application Server → Hostname'
-print '-------------------------------'
-
-# Iterate through all Server configs
-for server in AdminConfig.list('Server').splitlines():
-    # Filter only application servers
-    serverType = AdminConfig.showAttribute(server, 'serverType')
-    if serverType != 'APPLICATION_SERVER':
+# Loop through all Server configs
+for serverId in AdminConfig.list('Server').splitlines():
+    # Only care about application servers
+    if AdminConfig.showAttribute(serverId, 'serverType') != 'APPLICATION_SERVER':
         continue
 
-    sName   = AdminConfig.showAttribute(server, 'name')
-    nName   = AdminConfig.showAttribute(server, 'nodeName')
-    hName   = nodeMap.get(nName, 'UNKNOWN')
+    # Get the server name
+    serverName = AdminConfig.showAttribute(serverId, 'name')
 
-    print '%-30s %s' % (sName, hName)
+    # Get the node config ID from the server
+    nodeConfigId = AdminConfig.showAttribute(serverId, 'node')
+
+    if nodeConfigId:
+        nodeName = AdminConfig.showAttribute(nodeConfigId, 'name')
+        hostName = AdminConfig.showAttribute(nodeConfigId, 'hostName')
+    else:
+        nodeName = 'UNKNOWN'
+        hostName = 'UNKNOWN'
+
+    # Print it out in aligned columns
+    print '%-30s %-20s %s' % (serverName, nodeName, hostName)
