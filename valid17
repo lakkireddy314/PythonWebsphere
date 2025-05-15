@@ -1,18 +1,25 @@
-# getSecurePorts_final.py
+# getSecurePorts_fixed.py
+# wsadmin Jython (Python 2.7) script to list WC_defaulthost_secure ports with real hostnames
 # Usage:
 #   wsadmin.sh -lang jython \
 #     -conntype SOAP -host <dmgrHost> -port <dmgrPort> \
-#     -f getSecurePorts_final.py
+#     -f getSecurePorts_fixed.py
 
 import java
 
-# Java line separator
+# Java line separator for splitting list() results
 sep = java.lang.System.getProperty('line.separator')
 
-# 1. Retrieve cell name
-cells   = AdminConfig.list('Cell').splitlines()
-cellId  = cells[0] if cells else None
-cellName = AdminConfig.showAttribute(cellId, 'name') if cellId else 'UNKNOWN'
+# 1. Retrieve the cell name
+cells = AdminConfig.list('Cell').splitlines()
+if cells:
+    cellId = cells[0]
+else:
+    cellId = None
+if cellId:
+    cellName = AdminConfig.showAttribute(cellId, 'name')
+else:
+    cellName = 'UNKNOWN'
 
 # 2. Iterate each node and its servers
 for nodeId in AdminConfig.list('Node').splitlines():
@@ -20,16 +27,17 @@ for nodeId in AdminConfig.list('Node').splitlines():
     for srvId in AdminConfig.list('Server', nodeId).splitlines():
         srvName = srvId.split('(')[0]
 
-        # 3. Correct listServerPorts invocation
+        # 3. Use PortManagement API correctly: server name is first argument
         raw = AdminTask.listServerPorts(srvName, '[-nodeName %s]' % nodeName)
 
-        # 4. Parse and filter for secure endpoint
+        # 4. Parse and filter the secure HTTPS endpoint
         for line in raw.split(sep):
             parts = line.split()
             # Expect: [nodeName, serverName, endPointName, host, port]
             if len(parts) >= 5 and parts[2] == 'WC_defaulthost_secure':
                 host = parts[3]
                 port = parts[4]
+                # 5. Output: cellName nodeName serverName host port
                 print "%s %s %s %s %s" % (
                     cellName, nodeName, srvName, host, port)
                 break
