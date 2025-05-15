@@ -1,31 +1,27 @@
-# getSecurePorts_entry_withHost.py
+# getSecurePorts_task_withHost.py
 # Usage:
-#   wsadmin.sh -lang jython -f getSecurePorts_entry_withHost.py \
+#   wsadmin.sh -lang jython -f getSecurePorts_task_withHost.py \
 #       -conntype SOAP -host <dmgrHost> -port <dmgrPort>
 
 import java
 
-# Java line separator
 sep = java.lang.System.getProperty('line.separator')
 
-# 1. Get the cell name
+# 1. Cell name
 cellId   = AdminConfig.list('Cell').splitlines()[0]
 cellName = cellId.split('(')[0]
 
-# 2. Iterate all ServerEntry objects
-for srvEntry in AdminConfig.list('ServerEntry').splitlines():
-    srvName = srvEntry.split('(', 1)[0]
-    nodeName = AdminConfig.showAttribute(srvEntry, 'nodeName')
+# 2. Nodes → Servers
+for nodeId in AdminConfig.list('Node').splitlines():
+    nodeName = nodeId.split('(')[0]
+    for srv in AdminConfig.list('Server', nodeId).splitlines():
+        srvName = srv.split('(')[0]
 
-    # 3. Iterate each NamedEndPoint under ServerEntry
-    for nep in AdminConfig.list('NamedEndPoint', srvEntry).split(sep):
-        if not nep.strip():
-            continue
-        name = AdminConfig.showAttribute(nep, 'endPointName')
-        if name == 'WC_defaulthost_secure':
-            # Retrieve nested EndPoint to get both host & port
-            epRef = AdminConfig.showAttribute(nep, 'endPoint')
-            host  = AdminConfig.showAttribute(epRef, 'host')
-            port  = AdminConfig.showAttribute(epRef, 'port')
-            print "%s %s %s %s %s" % (
-                cellName, nodeName, srvName, host, port)
+        # 3. Call listServerPorts which returns lines: "endPointName host port"
+        raw = AdminTask.listServerPorts(srvName, '[-nodeName %s]' % nodeName)
+        for line in raw.split(sep):
+            parts = line.split()
+            if len(parts) == 3 and parts[0] == 'WC_defaulthost_secure':
+                _, host, port = parts
+                print "%s %s %s %s %s" % (
+                    cellName, nodeName, srvName, host, port)
