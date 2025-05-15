@@ -7,38 +7,42 @@ import re
 print '%-30s %-20s %-20s %s' % ('AppServer', 'Node', 'Host', 'WC_defaulthost_secure Port')
 print '-' * 90
 
-# Loop through every Server config
+# Iterate over all Server configs
 for serverId in AdminConfig.list('Server').splitlines():
     # Only application servers
     if AdminConfig.showAttribute(serverId, 'serverType') != 'APPLICATION_SERVER':
         continue
 
-    # Server name
+    # Retrieve the server name
     serverName = AdminConfig.showAttribute(serverId, 'name')
 
-    # Extract node name from the config ID string
+    # Parse the node name from the Server config ID string
     m = re.search(r'nodes/([^/]+)/servers', serverId)
     if m:
         nodeName = m.group(1)
     else:
         nodeName = 'UNKNOWN'
 
-    # Get the Node config object and its hostName
+    # Get the Node config ID and its hostName
     nodeConfigId = AdminConfig.getid('/Node:%s/' % nodeName)
     if nodeConfigId:
         hostName = AdminConfig.showAttribute(nodeConfigId, 'hostName')
     else:
         hostName = 'UNKNOWN'
 
-    # Default if not found
+    # Default port if not found
     securePort = 'NOT_DEFINED'
 
-    # List all NamedEndPoint entries under this server and find the one we need
-    for epId in AdminConfig.list('NamedEndPoint', serverId).splitlines():
-        # endPointName is the logical name, port is the number
-        if AdminConfig.showAttribute(epId, 'endPointName') == 'WC_defaulthost_secure':
-            securePort = AdminConfig.showAttribute(epId, 'port')
-            break
+    # List all NamedEndPoint entries under this server
+    for neId in AdminConfig.list('NamedEndPoint', serverId).splitlines():
+        # Filter for our secure WebContainer endpoint
+        if AdminConfig.showAttribute(neId, 'endPointName') != 'WC_defaulthost_secure':
+            continue
+        # Get the underlying EndPoint config ID
+        epConfigId = AdminConfig.showAttribute(neId, 'endPoint')
+        # Read the actual port number
+        securePort = AdminConfig.showAttribute(epConfigId, 'port')
+        break
 
-    # Print aligned columns
+    # Print the result
     print '%-30s %-20s %-20s %s' % (serverName, nodeName, hostName, securePort)
