@@ -1,0 +1,40 @@
+# getSecurePorts_debug.py
+# Usage: wsadmin.sh -lang jython -f getSecurePorts_debug.py -conntype SOAP -host dmgrHost -port dmgrPort
+
+import java
+lineSep = java.lang.System.getProperty('line.separator')
+
+# 1. Cell lookup
+cellId = AdminConfig.list("Cell").splitlines()
+print "DEBUG: Cell list ->", cellId
+if not cellId:
+    raise Exception("No Cell found; check connection")
+cellName = cellId[0].split("(")[0]
+
+# 2. Node loop
+for nodeId in AdminConfig.list("Node").splitlines():
+    nodeName = nodeId.split("(")[0]
+    print "DEBUG: Node ->", nodeName
+
+    # 3. Server loop
+    srvList = AdminConfig.list("Server", nodeId).splitlines()
+    print "DEBUG: Servers in %s -> %s" % (nodeName, srvList)
+    for srvId in srvList:
+        srvName = srvId.split("(")[0]
+        print "DEBUG: Server ->", srvName
+
+        # 4. List all endpoint names
+        for ep in AdminConfig.list("NamedEndPoint", srvId).split(lineSep):
+            if not ep.strip(): continue
+            epName = AdminConfig.showAttribute(ep, "endPointName")
+            print "  Found EP:", epName
+
+        # 5. Containment-path lookup for secure port
+        path = '/Cell:%s/Node:%s/Server:%s/NamedEndPoint:WC_defaulthost_secure/' % (
+            cellName, nodeName, srvName)
+        epId = AdminConfig.getid(path).splitlines()
+        print "DEBUG: getid secure EP ->", epId
+        if not epId:
+            continue
+        port = AdminConfig.showAttribute(epId[0], "port")
+        print "%s %s %s %s" % (cellName, nodeName, srvName, port)
