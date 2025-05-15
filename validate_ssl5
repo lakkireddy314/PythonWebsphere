@@ -1,0 +1,114 @@
+# File: validate_ssl_certificates.yml
+- name: Validate SSL Certificates on WebSphere Servers
+  hosts: websphere_servers
+  gather_facts: false
+
+  vars:
+    wsadmin_path: /opt/IBM/WebSphere/AppServer/bin/wsadmin.sh
+    jython_script: /tmp/wsadmin_jython_script.py
+    smtp_host: smtp.example.com
+    report_recipients:
+      - ops-team@example.com
+
+  tasks:
+    - name: Deploy wsadmin Jython script
+      copy:
+        src: wsadmin_jython_script.py
+        dest: "{{ jython_script }}"
+        mode: '0755'
+
+    - name: Execute wsadmin script and capture CSV output
+      shell: "{{ wsadmin_path }} -lang jython -f {{ jython_script }}"
+      register: wsadmin_output
+      changed_when: false
+
+    - name: Build structured server list
+      set_fact:
+        servers: "{{ wsadmin_output.stdout_lines | map('split', ',') | list }}"
+
+    - name: Run SSL checks for each server
+      include_tasks: tasks/ssl_checks.yml
+      loop: "{{ servers }}"
+      loop_control:
+        loop_var: server_entry
+        label: "{{ server_entry[0] }}"
+      vars:
+        server_name:     "{{ server_entry[0] }}"
+        node_name:       "{{ server_entry[1] }}"
+        host:            "{{ server_entry[2] }}"
+        # Strip domain from host for valid variable name
+        short_host:      "{{ host | regex_replace('\\..*','') }}"
+        port:            "{{ server_entry[4] | int }}"
+        expected_serial: "{{ lookup('vars', short_host + '_cert_serial', default='') }}"
+        ok_list:         "{{ ok_list }}"
+        down_list:       "{{ down_list }}"
+
+    - name: Include report generation and mailing
+      include_tasks: tasks/report.yml
+      run_once: true
+      delegate_to: localhost
+
+---
+
+# File: tasks/report.yml
+- name: Assemble HTML SSL Validation Report
+  set_fact:
+    html_report: |
+      <html>
+      <body style="font-family:Arial,sans-serif; background-color:#f9f9f9; padding:20px;">
+        <div style="border:1px solid #2F5496; border-radius:5px; padding:15px; background-color:#ffffff;">
+          <h2 style="color:#2F5496; margin-bottom:20px; text-align:center;">SSL Validation Report</h2>
+
+          <!-- OK Certificates Boxes -->
+          {% for msg in ok_list %}
+          {% set parts = msg.split(': ') %}
+          {% set name = parts[0] %}
+          {% set serial = parts[1].split('(')[1].split(')')[0] %}
+          <table style="width:100%; border-collapse:collapse; margin-bottom:15px;">
+            <tr>
+              <td style="width:33%; border:1px solid #1F4E79; padding:10px; text-align:center; background-color:#f0f8ff;">
+                <strong>{{ name }}</strong>
+              </td>
+              <td style="width:33%; border:1px solid #1F4E79; padding:10px; text-align:center; background-color:#f0f8ff;">
+                Serial: {{ serial }}
+              </td>
+              <td style="width:33%; border:1px solid #1F4E79; padding:10px; text-align:center; background-color:#d4edda; color:#155724;">
+                OK
+              </td>
+            </tr>
+          </table>
+          {% endfor %}
+
+          <!-- Servers Down / Errors Boxes -->
+          {% for msg in down_list %}
+          {% set parts = msg.split(': ') %}
+          {% set name = parts[0] %}
+          {% set detail = parts[1] %}
+          <table style="width:100%; border-collapse:collapse; margin-bottom:15px;">
+            <tr>
+              <td style="width:33%; border:1px solid #C00000; padding:10px; text-align:center; background-color:#f8d7da; color:#721c24;">
+                <strong>{{ name }}</strong>
+              </td>
+              <td style="width:33%; border:1px solid #C00000; padding:10px; text-align:center; background-color:#f8d7da; color:#721c24;">
+                {{ detail }}
+              </td>
+              <td style="width:33%; border:1px solid #C00000; padding:10px; text-align:center; background-color:#f5c6cb; color:#721c24;">
+                ERROR
+              </td>
+            </tr>
+          </table>
+          {% endfor %}
+
+          <p style="font-size:12px; color:#666666; margin-top:20px; text-align:right;">Generated on {{ ansible_date_time.iso8601 }}</p>
+        </div>
+      </body>
+      </html>
+
+- name: Send HTML report via email
+  mail:
+    host: "{{ smtp_host }}"
+    to: "{{ report_recipients | join(',') }}"
+    subject: "SSL Validation Report"
+    body: "{{ html_report }}"
+    mime_type: "text/html"
+  delegate_to: localhost
