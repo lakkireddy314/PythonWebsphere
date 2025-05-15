@@ -1,0 +1,33 @@
+# wsadmin Jython script to list WC_defaulthost_secure ports on all servers
+# Usage: wsadmin.sh -lang jython -f getSecurePorts.py
+
+import java
+
+# Retrieve line separator for splitting lists
+lineSeparator = java.lang.System.getProperty('line.separator')
+
+# Extract the cell name
+cellId = AdminConfig.list("Cell").splitlines()[0]
+cellName = cellId.split("(")[0]
+
+# Iterate over each node
+nodeList = AdminConfig.list("Node").splitlines()
+for node in nodeList:
+    nodeName = node.split("(")[0]
+
+    # List all servers under this node (application servers + dmgr)
+    serverList = AdminConfig.list("Server", node).splitlines()
+    for server in serverList:
+        serverName = server.split("(")[0]
+
+        # List all NamedEndPoint entries for this server
+        endpoints = AdminConfig.list("NamedEndPoint", server).split(lineSeparator)
+        for ep in endpoints:
+            epName = AdminConfig.showAttribute(ep, "endPointName")
+            if epName == "WC_defaulthost_secure":
+                # Get the actual endpoint config object
+                epRef = AdminConfig.showAttribute(ep, "endPoint")
+                host  = AdminConfig.showAttribute(epRef, "host")
+                port  = AdminConfig.showAttribute(epRef, "port")
+                # Output: cellName nodeName serverName port
+                print cellName + " " + nodeName + " " + serverName + " " + port
