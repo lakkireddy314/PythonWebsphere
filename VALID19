@@ -1,26 +1,38 @@
-# getSecurePorts_task_fixed.py
-# wsadmin.sh -lang jython -f getSecurePorts_task_fixed.py \
-#    -conntype SOAP -host <dmgrHost> -port <dmgrPort>
+import re
 
-import java
+# … after you’ve set cellName, nodeName, srvName …
 
-sep = java.lang.System.getProperty('line.separator')
+# 1. Call listServerPorts
+rawPorts = AdminTask.listServerPorts(srvName, '[-nodeName %s]' % nodeName)
 
-# 1. Cell
-cellId   = AdminConfig.list('Cell').splitlines()[0]
-cellName = cellId.split('(')[0]
+# 2. Convert to a Python string
+portsStr = str(rawPorts)
 
-# 2. For each Node → Server
-for nodeId in AdminConfig.list('Node').splitlines():
-    nodeName = nodeId.split('(')[0]
-    for srv in AdminConfig.list('Server', nodeId).splitlines():
-        srvName = srv.split('(')[0]
+# 3. Option A: One-shot regex over the entire output
+#    Finds “[port 9443]” after the WC_defaulthost_secure token
+m = re.search(r'WC_defaulthost_secure.*?\[port\s+(\d+)\]', portsStr)
+if m:
+    securePort = m.group(1)
+else:
+    securePort = None
 
-        # Extract WC_defaulthost_secure via listServerPorts
-        out = AdminTask.listServerPorts(srvName, '[-nodeName %s]' % nodeName)  # requires nodeName param :contentReference[oaicite:6]{index=6}
-        for line in out.split(sep):
-            parts = line.split()
-            if len(parts) == 3 and parts[0] == 'WC_defaulthost_secure':
-                _, host, port = parts
-                print "%s %s %s %s %s" % (
-                    cellName, nodeName, srvName, host, port)
+# 4. Option B: Line-by-line using .find()
+# securePort = None
+# for rawLine in portsStr.splitlines():
+#     line = rawLine.strip()
+#     # look for your endpoint name
+#     if line.find('WC_defaulthost_secure') != -1:
+#         # now extract the digits after “[port ”
+#         start = line.find('[port ')
+#         if start != -1:
+#             # skip past “[port ” (6 chars) and split on the closing bracket
+#             securePort = line[start + 6 : ].split(']')[0]
+#         break
+
+# 5. Use or print it
+if securePort:
+    print 'Cell=%s Node=%s Server=%s SecurePort=%s' % (
+        cellName, nodeName, srvName, securePort)
+else:
+    print '!! No WC_defaulthost_secure port found for %s on %s' % (
+        srvName, nodeName)
