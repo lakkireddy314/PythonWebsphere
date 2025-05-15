@@ -17,39 +17,34 @@ if not cell_ids:
 cellId   = cell_ids[0]
 cellName = AdminConfig.showAttribute(cellId, 'name')
 
-# 2. Build a Python dict mapping nodeName -> hostName
-nodeHostMap = {}
-for nodeId in AdminConfig.list('Node').splitlines():
-    nodeName = AdminConfig.showAttribute(nodeId, 'name')      # clean name
-    hostName = AdminConfig.showAttribute(nodeId, 'hostName')  # real DNS/IP
-    nodeHostMap[nodeName] = hostName
-
-# 3. Iterate all ServerEntry objects (includes app servers + dmgr)
+# 2. Iterate all ServerEntry objects (includes app servers + dmgr)
 for srvEntry in AdminConfig.list('ServerEntry').splitlines():
     # ServerEntry ID looks like:
     #   serverName(cells/CellA/nodes/Node01/servers/serverName|server.xml#ServerEntry_...)
     srvName = srvEntry.split('(', 1)[0]
 
-    # 4. Determine the node this ServerEntry belongs to
-    nodeName = None
-    for n in nodeHostMap:
-        if '/nodes/%s/' % n in srvEntry:
-            nodeName = n
-            break
-    if not nodeName:
-        # Couldn't map to a known node—skip
+    # 3. Extract the node name from the config path
+    try:
+        nodeName = srvEntry.split('/nodes/')[1].split('/')[0]
+    except IndexError:
+        # skip entries that don't match expected pattern
         continue
 
-    # 5. Find the WC_defaulthost_secure NamedEndPoint
+    # 4. Lookup the Node config to get its real hostName
+    nodeId = AdminConfig.getid('/Node:%s/' % nodeName)
+    if nodeId:
+        hostName = AdminConfig.showAttribute(nodeId, 'hostName')
+    else:
+        hostName = 'UNKNOWN'
+
+    # 5. Find the WC_defaulthost_secure NamedEndPoint under this ServerEntry
     for nep in AdminConfig.list('NamedEndPoint', srvEntry).split(sep):
         if not nep.strip():
             continue
         if AdminConfig.showAttribute(nep, 'endPointName') == 'WC_defaulthost_secure':
             # port from the NamedEndPoint
             port = AdminConfig.showAttribute(nep, 'port')
-            # real host from our map
-            host = nodeHostMap[nodeName]
-            # Output: cellName nodeName serverName host port
+            # Print: cellName nodeName serverName hostName port
             print "%s %s %s %s %s" % (
-                cellName, nodeName, srvName, host, port)
+                cellName, nodeName, srvName, hostName, port)
             break
