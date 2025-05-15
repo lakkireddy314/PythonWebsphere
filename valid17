@@ -1,4 +1,5 @@
 # getSecurePorts_final.py
+# wsadmin Jython (Python 2.7) script to list WC_defaulthost_secure ports with real hostnames
 # Usage:
 #   wsadmin.sh -lang jython \
 #     -conntype SOAP -host <dmgrHost> -port <dmgrPort> \
@@ -6,13 +7,15 @@
 
 import java
 
+# Java line separator for splitting list() results
 sep = java.lang.System.getProperty('line.separator')
 
 # 1. Get the cell name
-cells = AdminConfig.list('Cell').splitlines()
-if not cells:
-    raise Exception("No Cell found; check connection parameters")
-cellName = AdminConfig.showAttribute(cells[0], 'name')
+cell_ids = AdminConfig.list('Cell').splitlines()
+if not cell_ids:
+    raise Exception("No Cell found; check your connection parameters")
+cellId   = cell_ids[0]
+cellName = AdminConfig.showAttribute(cellId, 'name')
 
 # 2. Iterate each node and server
 for nodeId in AdminConfig.list('Node').splitlines():
@@ -21,10 +24,13 @@ for nodeId in AdminConfig.list('Node').splitlines():
         srvName = srvId.split('(')[0]
 
         # 3. List ports using PortManagement API
-        raw = AdminTask.listServerPorts('[-serverName %s -nodeName %s]' % (srvName, nodeName))
+        #    First argument: server name
+        #    Second argument: optional parameters string
+        raw = AdminTask.listServerPorts(srvName, '[-nodeName %s]' % nodeName)
+
+        # 4. Parse output for WC_defaulthost_secure
         for line in raw.split(sep):
             parts = line.split()
-            # 4. Filter for secure HTTP endpoint
             if len(parts) == 3 and parts[0] == 'WC_defaulthost_secure':
                 host = parts[1]
                 port = parts[2]
