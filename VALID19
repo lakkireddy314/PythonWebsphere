@@ -1,0 +1,26 @@
+# getSecurePorts_task_fixed.py
+# wsadmin.sh -lang jython -f getSecurePorts_task_fixed.py \
+#    -conntype SOAP -host <dmgrHost> -port <dmgrPort>
+
+import java
+
+sep = java.lang.System.getProperty('line.separator')
+
+# 1. Cell
+cellId   = AdminConfig.list('Cell').splitlines()[0]
+cellName = cellId.split('(')[0]
+
+# 2. For each Node → Server
+for nodeId in AdminConfig.list('Node').splitlines():
+    nodeName = nodeId.split('(')[0]
+    for srv in AdminConfig.list('Server', nodeId).splitlines():
+        srvName = srv.split('(')[0]
+
+        # Extract WC_defaulthost_secure via listServerPorts
+        out = AdminTask.listServerPorts(srvName, '[-nodeName %s]' % nodeName)  # requires nodeName param :contentReference[oaicite:6]{index=6}
+        for line in out.split(sep):
+            parts = line.split()
+            if len(parts) == 3 and parts[0] == 'WC_defaulthost_secure':
+                _, host, port = parts
+                print "%s %s %s %s %s" % (
+                    cellName, nodeName, srvName, host, port)
