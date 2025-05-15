@@ -1,0 +1,53 @@
+# wsadmin_jython_script.py
+
+import java
+ls = java.lang.System.getProperty('line.separator')
+
+# 1. Get the cell name
+cellObj  = AdminConfig.getid('/Cell:/')
+cellName = AdminConfig.showAttribute(cellObj, 'name')
+
+def get_secure_ports():
+    # 2. List all nodes
+    nodes = AdminConfig.list('Node').split(ls)                                 # :contentReference[oaicite:3]{index=3}
+    for node in nodes:
+        if not node: 
+            continue
+        nodeName = AdminConfig.showAttribute(node, 'name')
+
+        # 3. List all servers on this node
+        servers = AdminConfig.list('Server', node).split(ls)                  # :contentReference[oaicite:4]{index=4}
+        for server in servers:
+            if not server:
+                continue
+            srvName = AdminConfig.showAttribute(server, 'name')
+            srvType = AdminConfig.showAttribute(server, 'serverType')
+
+            if srvType not in ['APPLICATION_SERVER', 'DEPLOYMENT_MANAGER']:
+                continue
+
+            # 4. Look up the NamedEndPoint by its port name
+            portName = 'WC_defaulthost_secure'
+            epPath   = '/Cell:%s/Node:%s/Server:%s/NamedEndPoint:%s/' % (
+                          cellName, nodeName, srvName, portName
+                       )
+            epId = AdminConfig.getid(epPath)                                   # :contentReference[oaicite:5]{index=5}
+
+            if not epId:
+                print "DEBUG: No %s port defined for %s on %s" % (
+                    portName, srvName, nodeName
+                )
+                continue
+
+            # 5. Extract host & port from the endpoint object
+            epObj = AdminConfig.showAttribute(epId, 'endPoint')
+            host  = AdminConfig.showAttribute(epObj, 'host')                  # :contentReference[oaicite:6]{index=6}
+            port  = AdminConfig.showAttribute(epObj, 'port')                  # :contentReference[oaicite:7]{index=7}
+
+            # 6. Print CSV: server,node,portName,host,port
+            print "%s,%s,%s,%s,%s" % (
+                srvName, nodeName, portName, host, port
+            )
+
+# Execute
+get_secure_ports()
