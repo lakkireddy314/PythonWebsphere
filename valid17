@@ -1,28 +1,31 @@
-# getSecurePorts_entry.py
-# Usage: wsadmin.sh -lang jython -f getSecurePorts_entry.py [-conntype SOAP -host dmgrHost -port dmgrPort]
+# getSecurePorts_entry_withHost.py
+# Usage:
+#   wsadmin.sh -lang jython -f getSecurePorts_entry_withHost.py \
+#       -conntype SOAP -host <dmgrHost> -port <dmgrPort>
 
 import java
 
+# Java line separator
 sep = java.lang.System.getProperty('line.separator')
 
 # 1. Get the cell name
 cellId   = AdminConfig.list('Cell').splitlines()[0]
-cellName = cellId.split('(')[0]  # e.g., "MyCell" :contentReference[oaicite:2]{index=2}
+cellName = cellId.split('(')[0]
 
-# 2. Iterate all ServerEntry objects (includes app servers + dmgr)
-for srvEntry in AdminConfig.list('ServerEntry').splitlines():  # list ServerEntry :contentReference[oaicite:3]{index=3}
+# 2. Iterate all ServerEntry objects
+for srvEntry in AdminConfig.list('ServerEntry').splitlines():
     srvName = srvEntry.split('(', 1)[0]
-    # 3. For each NamedEndPoint under that entry
+    nodeName = AdminConfig.showAttribute(srvEntry, 'nodeName')
+
+    # 3. Iterate each NamedEndPoint under ServerEntry
     for nep in AdminConfig.list('NamedEndPoint', srvEntry).split(sep):
-        if not nep.strip(): 
+        if not nep.strip():
             continue
         name = AdminConfig.showAttribute(nep, 'endPointName')
         if name == 'WC_defaulthost_secure':
-            # nested EndPoint object
+            # Retrieve nested EndPoint to get both host & port
             epRef = AdminConfig.showAttribute(nep, 'endPoint')
             host  = AdminConfig.showAttribute(epRef, 'host')
             port  = AdminConfig.showAttribute(epRef, 'port')
-            print "%s %s %s %s" % (cellName,  # cell
-                                  AdminConfig.showAttribute(srvEntry, 'nodeName'),  # node :contentReference[oaicite:4]{index=4}
-                                  srvName, 
-                                  port)
+            print "%s %s %s %s %s" % (
+                cellName, nodeName, srvName, host, port)
