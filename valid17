@@ -1,33 +1,25 @@
-# Retrieve all nodes
-nodes = AdminConfig.list('Node').splitlines()
+# getAppServerHostnames.py
+# Usage: wsadmin.sh -lang jython -f getAppServerHostnames.py
 
-# Iterate through each node
-for node in nodes:
-    node_name = AdminConfig.showAttribute(node, 'name')
-    
-    # Retrieve all servers within the node
-    servers = AdminConfig.list('Server', node).splitlines()
-    
-    for server in servers:
-        server_name = AdminConfig.showAttribute(server, 'name')
-        
-        # List all ports for the server
-        ports_output = AdminTask.listServerPorts(server_name, ['-nodeName', node_name])
-        
-        # Initialize variables
-        https_port = None
-        host_name = None
-        
-        # Parse the ports output
-        for line in ports_output.splitlines():
-            if line.find('WC_defaulthost_secure') != -1:
-                parts = line.strip().split()
-                if len(parts) >= 3:
-                    https_port = parts[2]
-                    host_name = parts[1]
-        
-        # Display the results
-        if https_port and host_name:
-            print "Server: %s, Node: %s, Host: %s, HTTPS Port: %s" % (server_name, node_name, host_name, https_port)
-        else:
-            print "Server: %s, Node: %s, HTTPS port information not found." % (server_name, node_name)
+# Build a map of nodeName -> hostName
+nodeMap = {}
+for node in AdminConfig.list('Node').splitlines():
+    nName = AdminConfig.showAttribute(node, 'name')
+    nHost = AdminConfig.showAttribute(node, 'hostName')
+    nodeMap[nName] = nHost
+
+print 'Application Server → Hostname'
+print '-------------------------------'
+
+# Iterate through all Server configs
+for server in AdminConfig.list('Server').splitlines():
+    # Filter only application servers
+    serverType = AdminConfig.showAttribute(server, 'serverType')
+    if serverType != 'APPLICATION_SERVER':
+        continue
+
+    sName   = AdminConfig.showAttribute(server, 'name')
+    nName   = AdminConfig.showAttribute(server, 'nodeName')
+    hName   = nodeMap.get(nName, 'UNKNOWN')
+
+    print '%-30s %s' % (sName, hName)
