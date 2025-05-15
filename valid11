@@ -1,0 +1,59 @@
+# wsadmin_jython_script.py
+
+import java, re
+
+# Java line separator for splitting lists
+ls = java.lang.System.getProperty('line.separator')
+
+# 1. Get the cell name
+cellObj  = AdminConfig.getid('/Cell:/')
+cellName = AdminConfig.showAttribute(cellObj, 'name')
+
+def get_secure_ports():
+    # 2. List all servers in the cell (ServerEntry covers AppSrv + DMGR)
+    entries = AdminConfig.list('ServerEntry').split(ls)                            # :contentReference[oaicite:4]{index=4}
+
+    for entry in entries:
+        if not entry: 
+            continue
+
+        # 3. Extract the server name (strip trailing "(…)")
+        serverName = entry.split('(')[0]
+
+        # 4. Extract nodeName via regex on the path
+        m = re.search(r'/nodes/([^/]+)/servers/' + re.escape(serverName), entry)
+        nodeName = m.group(1) if m else 'UNKNOWN'
+
+        # 5. Retrieve the ServerIndex object to get the real hostName
+        indexList = AdminConfig.list('ServerIndex', entry).split(ls)               # :contentReference[oaicite:5]{index=5}
+        machineHost = 'UNKNOWN'
+        for idx in indexList:
+            if not idx:
+                continue
+            machineHost = AdminConfig.showAttribute(idx, 'hostName')               # :contentReference[oaicite:6]{index=6}
+            break
+
+        # 6. Look up the WC_defaulthost_secure NamedEndPoint
+        portName = 'WC_defaulthost_secure'
+        epPath   = '/Cell:%s/Node:%s/Server:%s/NamedEndPoint:%s/' % (
+                       cellName, nodeName, serverName, portName
+                   )
+        epId = AdminConfig.getid(epPath)                                           # :contentReference[oaicite:7]{index=7}
+
+        if not epId:
+            print "DEBUG: No %s port defined for %s on node %s" % (
+                portName, serverName, nodeName
+            )
+            continue
+
+        # 7. Extract port number from the endpoint object
+        epObj = AdminConfig.showAttribute(epId, 'endPoint')                        # :contentReference[oaicite:8]{index=8}
+        port  = AdminConfig.showAttribute(epObj, 'port')                           # :contentReference[oaicite:9]{index=9}
+
+        # 8. Print CSV: serverName,nodeName,machineHost,portName,port
+        print "%s,%s,%s,%s,%s" % (
+            serverName, nodeName, machineHost, portName, port
+        )
+
+# Execute the function
+get_secure_ports()
