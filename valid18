@@ -1,48 +1,40 @@
-# getAppServerHostnamesAndHttpsPorts.py
-# Run with: wsadmin.sh -lang jython -f getAppServerHostnamesAndHttpsPorts.py
+# getAppServerSecurePorts.py
+# Usage: wsadmin.sh -lang jython -f getAppServerSecurePorts.py
 
 import re
 
-# Header
-print '%-30s %-20s %-20s %s' % (
-    'AppServerName', 'NodeName', 'HostName', 'HTTPSPort'
-)
-print '-' * 90
+# 1) Build a map of nodeName -> hostName
+nodeMap = {}
+for node in AdminConfig.list('Node').splitlines():
+    name = AdminConfig.showAttribute(node, 'name')
+    host = AdminConfig.showAttribute(node, 'hostName')
+    nodeMap[name] = host
 
-# Loop through every Server config
-for serverId in AdminConfig.list('Server').splitlines():
-    # Only application servers
-    if AdminConfig.showAttribute(serverId, 'serverType') != 'APPLICATION_SERVER':
+# Header
+print '%-30s %-20s %-20s %s' % ('ServerName', 'NodeName', 'HostName', 'SecurePort')
+print '-' * 85
+
+# 2) Iterate through all ServerEntry configs
+for se in AdminConfig.list('ServerEntry').splitlines():
+    # Extract nodeName and serverName from the config ID
+    m = re.search(r'nodes/([^/]+)/servers/([^|]+)', se)
+    if not m:
+        continue
+    nodeName, serverName = m.group(1), m.group(2)
+
+    # 3) Filter only application servers
+    serverId = AdminConfig.getid('/Node:%s/Server:%s/' % (nodeName, serverName))
+    if not serverId or AdminConfig.showAttribute(serverId, 'serverType') != 'APPLICATION_SERVER':
         continue
 
-    # 1) Get the server name
-    serverName = AdminConfig.showAttribute(serverId, 'name')
-
-    # 2) Parse node name out of the config ID
-    m = re.search(r'nodes/([^/]+)/servers', serverId)
-    if m:
-        nodeName = m.group(1)
-    else:
-        nodeName = 'UNKNOWN'
-
-    # 3) Lookup hostName from the Node config
-    nodeConfig = AdminConfig.getid('/Node:%s/' % nodeName)
-    if nodeConfig:
-        hostName = AdminConfig.showAttribute(nodeConfig, 'hostName')
-    else:
-        hostName = 'UNKNOWN'
-
-    # 4) Find HTTPS port: scan NamedEndPoint configs under this Server
-    httpsPort = 'UNKNOWN'
-    eps = AdminConfig.list('NamedEndPoint', serverId).splitlines()
-    for ep in eps:
-        epName = AdminConfig.showAttribute(ep, 'endPointName')
-        # any endpoint with "secure" in its name → assume HTTPS
-        if 'secure' in epName.lower():
-            httpsPort = AdminConfig.showAttribute(ep, 'port')
+    # 4) Find the WC_defaulthost_secure endpoint and its port
+    securePort = 'NOT_DEFINED'
+    for nep in AdminConfig.list('NamedEndPoint', se).splitlines():
+        if AdminConfig.showAttribute(nep, 'endPointName') == 'WC_defaulthost_secure':
+            epId = AdminConfig.showAttribute(nep, 'endPoint')
+            securePort = AdminConfig.showAttribute(epId, 'port')
             break
 
-    # 5) Print the row
-    print '%-30s %-20s %-20s %s' % (
-        serverName, nodeName, hostName, httpsPort
-    )
+    # 5) Print the results
+    hostName = nodeMap.get(nodeName, 'UNKNOWN')
+    print '%-30s %-20s %-20s %s' % (serverName, nodeName, hostName, securePort)
