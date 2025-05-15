@@ -20,7 +20,7 @@ for node in nodes:
         
         # Parse the ports output
         for line in ports_output.splitlines():
-            if 'WC_defaulthost_secure' in line:
+            if line.find('WC_defaulthost_secure') != -1:
                 parts = line.strip().split()
                 if len(parts) >= 3:
                     https_port = parts[2]
