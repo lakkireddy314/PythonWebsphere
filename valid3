@@ -1,0 +1,24 @@
+# wsadmin_jython_script.py
+
+import java
+lineSeparator = java.lang.System.getProperty('line.separator')
+
+def get_secure_ports():
+    nodes = AdminConfig.list('Node').split(lineSeparator)
+    for node in nodes:
+        node_name = AdminConfig.showAttribute(node, 'name')
+        servers = AdminConfig.list('Server', node).split(lineSeparator)
+        for server in servers:
+            server_name = AdminConfig.showAttribute(server, 'name')
+            server_type = AdminConfig.showAttribute(server, 'serverType')
+            if server_type in ['APPLICATION_SERVER', 'DEPLOYMENT_MANAGER']:
+                named_endpoints = AdminConfig.list('NamedEndPoint', server).split(lineSeparator)
+                for endpoint in named_endpoints:
+                    endpoint_name = AdminConfig.showAttribute(endpoint, 'endPointName')
+                    if endpoint_name == 'WC_defaulthost_secure':
+                        endpoint_details = AdminConfig.showAttribute(endpoint, 'endPoint')
+                        host = AdminConfig.showAttribute(endpoint_details, 'host')
+                        port = AdminConfig.showAttribute(endpoint_details, 'port')
+                        print "%s,%s,%s,%s,%s" % (server_name, node_name, server_type, host, port)
+
+get_secure_ports()
