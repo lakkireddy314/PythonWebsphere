@@ -1,0 +1,48 @@
+# getAppServerHostnamesAndHttpsPorts.py
+# Run with: wsadmin.sh -lang jython -f getAppServerHostnamesAndHttpsPorts.py
+
+import re
+
+# Header
+print '%-30s %-20s %-20s %s' % (
+    'AppServerName', 'NodeName', 'HostName', 'HTTPSPort'
+)
+print '-' * 90
+
+# Loop through every Server config
+for serverId in AdminConfig.list('Server').splitlines():
+    # Only application servers
+    if AdminConfig.showAttribute(serverId, 'serverType') != 'APPLICATION_SERVER':
+        continue
+
+    # 1) Get the server name
+    serverName = AdminConfig.showAttribute(serverId, 'name')
+
+    # 2) Parse node name out of the config ID
+    m = re.search(r'nodes/([^/]+)/servers', serverId)
+    if m:
+        nodeName = m.group(1)
+    else:
+        nodeName = 'UNKNOWN'
+
+    # 3) Lookup hostName from the Node config
+    nodeConfig = AdminConfig.getid('/Node:%s/' % nodeName)
+    if nodeConfig:
+        hostName = AdminConfig.showAttribute(nodeConfig, 'hostName')
+    else:
+        hostName = 'UNKNOWN'
+
+    # 4) Find HTTPS port: scan NamedEndPoint configs under this Server
+    httpsPort = 'UNKNOWN'
+    eps = AdminConfig.list('NamedEndPoint', serverId).splitlines()
+    for ep in eps:
+        epName = AdminConfig.showAttribute(ep, 'endPointName')
+        # any endpoint with "secure" in its name → assume HTTPS
+        if 'secure' in epName.lower():
+            httpsPort = AdminConfig.showAttribute(ep, 'port')
+            break
+
+    # 5) Print the row
+    print '%-30s %-20s %-20s %s' % (
+        serverName, nodeName, hostName, httpsPort
+    )
