@@ -1,28 +1,33 @@
-# getAppServerHostnames.py
-# Usage: wsadmin.sh -lang jython -f getAppServerHostnames.py
+# getAppServerHostnamesByParsing.py
+# Run with: wsadmin.sh -lang jython -f getAppServerHostnamesByParsing.py
 
-# Print a header
-print 'ApplicationServerName           NodeName            HostName'
-print '-----------------------------------------------------------'
+import re
+import sys
 
-# Loop through all Server configs
+# Header
+print 'ApplicationServerName           NodeName               HostName'
+print '---------------------------------------------------------------'
+
+# Loop through every Server config
 for serverId in AdminConfig.list('Server').splitlines():
-    # Only care about application servers
+    # Filter to application servers only
     if AdminConfig.showAttribute(serverId, 'serverType') != 'APPLICATION_SERVER':
         continue
 
-    # Get the server name
+    # Get the application server name
     serverName = AdminConfig.showAttribute(serverId, 'name')
 
-    # Get the node config ID from the server
-    nodeConfigId = AdminConfig.showAttribute(serverId, 'node')
+    # Extract the node name from the config ID string:
+    #   e.g. "cells/MyCell/nodes/MyNode/servers/AppSrv01|server.xml#Server_12345"
+    m = re.search(r'nodes/([^/]+)/servers', serverId)
+    nodeName = m.group(1) if m else 'UNKNOWN'
 
+    # Retrieve the Node config object and its hostName
+    nodeConfigId = AdminConfig.getid('/Node:%s/' % nodeName)
     if nodeConfigId:
-        nodeName = AdminConfig.showAttribute(nodeConfigId, 'name')
         hostName = AdminConfig.showAttribute(nodeConfigId, 'hostName')
     else:
-        nodeName = 'UNKNOWN'
         hostName = 'UNKNOWN'
 
-    # Print it out in aligned columns
+    # Print in aligned columns
     print '%-30s %-20s %s' % (serverName, nodeName, hostName)
