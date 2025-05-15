@@ -1,0 +1,29 @@
+# wsadmin_jython_script.py
+
+def get_secure_ports():
+    # Retrieve all servers in the cell
+    servers = AdminConfig.list('Server').splitlines()
+    for server in servers:
+        # Extract server name
+        server_name = AdminConfig.showAttribute(server, 'name')
+        # Extract node name from the server's configuration ID
+        node_name = server.split('/')[1]
+        # Extract server type
+        server_type = AdminConfig.showAttribute(server, 'serverType')
+        # Proceed only for APPLICATION_SERVER and DEPLOYMENT_MANAGER
+        if server_type in ['APPLICATION_SERVER', 'DEPLOYMENT_MANAGER']:
+            # Construct the path to the NamedEndPoint
+            named_endpoint_path = '/Node:%s/Server:%s/NamedEndPoint:WC_defaulthost_secure/' % (node_name, server_name)
+            # Get the configuration ID for the NamedEndPoint
+            named_endpoint = AdminConfig.getid(named_endpoint_path)
+            if named_endpoint:
+                # Retrieve the endPoint attribute
+                endpoint = AdminConfig.showAttribute(named_endpoint, 'endPoint')
+                if endpoint:
+                    # Extract host and port
+                    host = AdminConfig.showAttribute(endpoint, 'host')
+                    port = AdminConfig.showAttribute(endpoint, 'port')
+                    # Print the details in CSV format
+                    print "%s,%s,%s,%s,%s" % (server_name, node_name, server_type, host, port)
+
+get_secure_ports()
