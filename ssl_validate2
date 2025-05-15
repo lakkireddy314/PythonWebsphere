@@ -1,0 +1,82 @@
+1. Create the reusable task file: tasks/ssl_checks.yml
+yaml
+Copy
+Edit
+# tasks/ssl_checks.yml
+- name: Retrieve SSL certificate serial number
+  shell: |
+    echo | openssl s_client -connect {{ host }}:{{ port }} \
+      -servername {{ host }} 2>/dev/null | openssl x509 -noout -serial
+  register: cert_serial_output
+  failed_when: false
+
+- name: Extract actual serial number
+  set_fact:
+    actual_serial: >-
+      {{ cert_serial_output.stdout
+         | regex_search('serial=([A-F0-9]+)', '\\1')
+         | default('') }}
+
+- name: Compare against expected serial
+  fail:
+    msg: >
+      [{{ server_name }}] Serial mismatch:
+      expected={{ expected_serial }}, actual={{ actual_serial }}
+  when: actual_serial != expected_serial
+
+- name: Report serial match
+  debug:
+    msg: >
+      [{{ server_name }}] Serial OK ({{ actual_serial }}).
+2. Main playbook: validate_ssl_certificates.yml
+yaml
+Copy
+Edit
+- name: Validate SSL Certificates on WebSphere Servers
+  hosts: websphere_servers
+  gather_facts: false
+
+  vars:
+    wsadmin_path: /opt/IBM/WebSphere/AppServer/bin/wsadmin.sh
+    jython_script: /tmp/wsadmin_jython_script.py
+
+  tasks:
+    - name: Deploy wsadmin Jython script
+      copy:
+        src: wsadmin_jython_script.py
+        dest: "{{ jython_script }}"
+        mode: '0755'
+
+    - name: Execute wsadmin script and capture CSV output
+      shell: "{{ wsadmin_path }} -lang jython -f {{ jython_script }}"
+      register: wsadmin_output
+      changed_when: false
+
+    - name: Build structured server list
+      set_fact:
+        servers: "{{ wsadmin_output.stdout_lines | map('split', ',') | list }}"
+
+    - name: Run SSL checks for each server
+      include_tasks: tasks/ssl_checks.yml
+      loop: "{{ servers }}"
+      loop_control:
+        loop_var: server_entry
+        label: "{{ server_entry[0] }}"
+      vars:
+        server_name:     "{{ server_entry[0] }}"
+        node_name:       "{{ server_entry[1] }}"
+        host:            "{{ server_entry[2] }}"
+        port:            "{{ server_entry[4] | int }}"
+        expected_serial: >-
+          {{ lookup('vars', host + '_cert_serial') | default('') }}
+Notes:
+
+The include_tasks module supports loop: in Ansible 2.9, whereas block does not 
+Stack Overflow
+.
+
+You can use loop_control.loop_var to rename the loop variable (here server_entry) for clarity 
+Ansible Documentation
+.
+
+This pattern cleanly separates your validation logic (in ssl_checks.yml) from the orchestration loop in your main playbook.
