@@ -1,30 +1,40 @@
-# listAppServerHttps.py
-# Jython wsadmin script to print host and HTTPS port for all application servers
+# listHttpsHosts.py
+# Jython wsadmin script: list hostname and HTTPS port for all application servers
 
-# 1. Get all Node objects
+# 1. Retrieve all Node objects
 nodes = AdminConfig.list('Node').splitlines()
 
 for node in nodes:
-    nodeName = AdminConfig.showAttribute(node, 'name') 
+    # Skip empty or invalid node entries
+    if not node.strip():
+        continue
 
-    # 2. List all ServerEntry objects under this node
+    # 2. Get node name from Node object
+    nodeName = AdminConfig.showAttribute(node, 'name')  # correct attribute :contentReference[oaicite:12]{index=12}
+
+    # 3. List ServerEntry objects under this node
     serverEntries = AdminConfig.list('ServerEntry', node).splitlines()
-
     for server in serverEntries:
-        # 3. Find the secure endpoint
-        for ep in AdminConfig.list('EndPoint', server).splitlines():  # list ports under the server 
-            if AdminConfig.showAttribute(ep, 'endPointName') == 'WC_defaulthost_secure':
-                host = AdminConfig.showAttribute(ep, 'host')
-                port = AdminConfig.showAttribute(ep, 'port')
+        # Skip empty entries
+        if not server.strip():
+            continue
 
-                # 4. If host is wildcard, get actual hostName from runtime MBean
-                if host == '*':
-                    objName = AdminControl.completeObjectName(
-                        'WebSphere:type=Server,name=%s,node=%s,*' % ( 
-                            AdminConfig.showAttribute(server, 'serverName'), nodeName
-                        )
-                    )
-                    host = AdminControl.getAttribute(objName, 'hostName')
+        # 4. For each endpoint under the server, find the secure one
+        for ep in AdminConfig.list('EndPoint', server).splitlines():
+            if AdminConfig.showAttribute(ep, 'endPointName') != 'WC_defaulthost_secure':
+                continue
 
-                # 5. Print result
-                print "%s|%s" % (host, port)
+            # 5. Retrieve configured host and port
+            host = AdminConfig.showAttribute(ep, 'host')
+            port = AdminConfig.showAttribute(ep, 'port')
+
+            # 6. If wildcard host, resolve actual hostname via runtime MBean
+            if host == '*':
+                serverName = AdminConfig.showAttribute(server, 'serverName')
+                objName = AdminControl.completeObjectName(
+                    'WebSphere:type=Server,name=%s,node=%s,*' % (serverName, nodeName)
+                )
+                host = AdminControl.getAttribute(objName, 'hostName')  # runtime MBean lookup :contentReference[oaicite:13]{index=13}
+
+            # 7. Print result as Host|Port
+            print "%s|%s" % (host, port)
