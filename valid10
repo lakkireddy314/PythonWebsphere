@@ -1,0 +1,54 @@
+# wsadmin_jython_script.py
+import java
+
+# Line separator for splitting lists
+ls = java.lang.System.getProperty('line.separator')
+
+# 1. Retrieve the current cell name
+cellObj  = AdminConfig.getid('/Cell:/')
+cellName = AdminConfig.showAttribute(cellObj, 'name')                                               # :contentReference[oaicite:3]{index=3}
+
+def get_secure_ports():
+    # 2. List all ServerEntry objects (includes dmgr & app servers)
+    entries = AdminConfig.list('ServerEntry').split(ls)                                              # :contentReference[oaicite:4]{index=4}
+
+    for entry in entries:
+        if not entry:
+            continue
+
+        # 3. Extract server and node names
+        serverName = entry.split('(', 1)[0]
+        # entry path: cells/<cell>/nodes/<node>/servers/<server>...
+        nodeName   = entry.split('/')[3]                                                             # :contentReference[oaicite:5]{index=5}
+
+        # 4. Find NamedEndPoint objects under this ServerEntry
+        endpoints = AdminConfig.list('NamedEndPoint', entry).split(ls)                                # :contentReference[oaicite:6]{index=6}
+
+        found = False
+        for ep in endpoints:
+            if not ep:
+                continue
+            name = AdminConfig.showAttribute(ep, 'endPointName')
+            if name != 'WC_defaulthost_secure':
+                continue
+
+            found = True
+            # 5. Retrieve host and port from the endpoint’s configuration
+            epObj = AdminConfig.showAttribute(ep, 'endPoint')
+            host  = AdminConfig.showAttribute(epObj, 'host')                                          # :contentReference[oaicite:7]{index=7}
+            port  = AdminConfig.showAttribute(epObj, 'port')                                          # :contentReference[oaicite:8]{index=8}
+
+            # 6. Print CSV line
+            print "%s,%s,%s,%s,%s" % (
+                serverName, nodeName, name, host, port
+            )
+            break
+
+        if not found:
+            # Debug message when the secure port isn’t defined
+            print "DEBUG: No WC_defaulthost_secure port defined for %s on node %s" % (
+                serverName, nodeName
+            )                                                                                          # :contentReference[oaicite:9]{index=9}
+
+# Run the function
+get_secure_ports()
