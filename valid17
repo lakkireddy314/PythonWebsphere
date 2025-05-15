@@ -1,40 +1,21 @@
-# listHttpsHosts.py
-# Jython wsadmin script: list hostname and HTTPS port for all application servers
+# listHttpsHosts_fixed.py
+# jython wsadmin script: print host|httpsPort for all app servers
 
-# 1. Retrieve all Node objects
 nodes = AdminConfig.list('Node').splitlines()
-
 for node in nodes:
-    # Skip empty or invalid node entries
-    if not node.strip():
-        continue
-
-    # 2. Get node name from Node object
-    nodeName = AdminConfig.showAttribute(node, 'name')  # correct attribute :contentReference[oaicite:12]{index=12}
-
-    # 3. List ServerEntry objects under this node
-    serverEntries = AdminConfig.list('ServerEntry', node).splitlines()
-    for server in serverEntries:
-        # Skip empty entries
-        if not server.strip():
-            continue
-
-        # 4. For each endpoint under the server, find the secure one
+    if not node.strip(): continue
+    nodeName = AdminConfig.showAttribute(node, 'name')
+    for server in AdminConfig.list('ServerEntry', node).splitlines():
+        if not server.strip(): continue
         for ep in AdminConfig.list('EndPoint', server).splitlines():
             if AdminConfig.showAttribute(ep, 'endPointName') != 'WC_defaulthost_secure':
                 continue
-
-            # 5. Retrieve configured host and port
             host = AdminConfig.showAttribute(ep, 'host')
             port = AdminConfig.showAttribute(ep, 'port')
-
-            # 6. If wildcard host, resolve actual hostname via runtime MBean
             if host == '*':
-                serverName = AdminConfig.showAttribute(server, 'serverName')
-                objName = AdminControl.completeObjectName(
-                    'WebSphere:type=Server,name=%s,node=%s,*' % (serverName, nodeName)
+                srvName = AdminConfig.showAttribute(server, 'serverName')
+                obj = AdminControl.completeObjectName(
+                    'WebSphere:type=Server,name=%s,node=%s,*' % (srvName, nodeName)
                 )
-                host = AdminControl.getAttribute(objName, 'hostName')  # runtime MBean lookup :contentReference[oaicite:13]{index=13}
-
-            # 7. Print result as Host|Port
+                host = AdminControl.getAttribute(obj, 'hostName')
             print "%s|%s" % (host, port)
