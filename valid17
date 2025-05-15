@@ -1,27 +1,30 @@
-# getHttpsPorts_parseID.py
-# List HTTPS ports and hostnames by parsing the ServerEntry ID string
+# listAppServerHttps.py
+# Jython wsadmin script to print host and HTTPS port for all application servers
 
-# Retrieve all ServerEntry config objects
-serverEntries = AdminConfig.list('ServerEntry').splitlines()  # returns config IDs :contentReference[oaicite:7]{index=7}
+# 1. Get all Node objects
+nodes = AdminConfig.list('Node').splitlines()
 
-for server in serverEntries:
-    # The config ID string is like:
-    # /Cell:myCell/Node:myNode/Server:myServer|server.xml#ServerEntry_1234
-    path = server.split('|')[0]                      # isolate the '/Cell:…/Node:…/Server:…' portion
-    segments = path.split('/')                       # ['', 'Cell:myCell', 'Node:myNode', 'Server:myServer']
-    
-    nodeName   = segments[2].split(':', 1)[1]        # extract 'myNode'
-    serverName = segments[3].split(':', 1)[1]        # extract 'myServer'
+for node in nodes:
+    nodeName = AdminConfig.showAttribute(node, 'name') 
 
-    # Now list endpoints as before
-    endpoints = AdminConfig.list('EndPoint', server).splitlines()
-    for ep in endpoints:
-        if AdminConfig.showAttribute(ep, 'endPointName') == 'WC_defaulthost_secure':
-            host = AdminConfig.showAttribute(ep, 'host')
-            port = AdminConfig.showAttribute(ep, 'port')
-            if host == '*':
-                objName = AdminControl.completeObjectName(
-                    'WebSphere:type=Server,name=%s,node=%s,*' % (serverName, nodeName)
-                )
-                host = AdminControl.getAttribute(objName, 'hostName')
-            print "%s|%s|%s|%s" % (serverName, nodeName, host, port)
+    # 2. List all ServerEntry objects under this node
+    serverEntries = AdminConfig.list('ServerEntry', node).splitlines()
+
+    for server in serverEntries:
+        # 3. Find the secure endpoint
+        for ep in AdminConfig.list('EndPoint', server).splitlines():  # list ports under the server 
+            if AdminConfig.showAttribute(ep, 'endPointName') == 'WC_defaulthost_secure':
+                host = AdminConfig.showAttribute(ep, 'host')
+                port = AdminConfig.showAttribute(ep, 'port')
+
+                # 4. If host is wildcard, get actual hostName from runtime MBean
+                if host == '*':
+                    objName = AdminControl.completeObjectName(
+                        'WebSphere:type=Server,name=%s,node=%s,*' % ( 
+                            AdminConfig.showAttribute(server, 'serverName'), nodeName
+                        )
+                    )
+                    host = AdminControl.getAttribute(objName, 'hostName')
+
+                # 5. Print result
+                print "%s|%s" % (host, port)
