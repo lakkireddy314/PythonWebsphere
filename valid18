@@ -1,40 +1,44 @@
-# getAppServerSecurePorts.py
-# Usage: wsadmin.sh -lang jython -f getAppServerSecurePorts.py
+# getAppServerHostnamesAndPorts.py
+# Run with: wsadmin.sh -lang jython -f getAppServerHostnamesAndPorts.py
 
 import re
 
-# 1) Build a map of nodeName -> hostName
-nodeMap = {}
-for node in AdminConfig.list('Node').splitlines():
-    name = AdminConfig.showAttribute(node, 'name')
-    host = AdminConfig.showAttribute(node, 'hostName')
-    nodeMap[name] = host
-
 # Header
-print '%-30s %-20s %-20s %s' % ('ServerName', 'NodeName', 'HostName', 'SecurePort')
-print '-' * 85
+print '%-30s %-20s %-20s %s' % ('AppServer', 'Node', 'Host', 'WC_defaulthost_secure Port')
+print '-' * 90
 
-# 2) Iterate through all ServerEntry configs
-for se in AdminConfig.list('ServerEntry').splitlines():
-    # Extract nodeName and serverName from the config ID
-    m = re.search(r'nodes/([^/]+)/servers/([^|]+)', se)
-    if not m:
-        continue
-    nodeName, serverName = m.group(1), m.group(2)
-
-    # 3) Filter only application servers
-    serverId = AdminConfig.getid('/Node:%s/Server:%s/' % (nodeName, serverName))
-    if not serverId or AdminConfig.showAttribute(serverId, 'serverType') != 'APPLICATION_SERVER':
+# Loop through every Server config
+for serverId in AdminConfig.list('Server').splitlines():
+    # Only application servers
+    if AdminConfig.showAttribute(serverId, 'serverType') != 'APPLICATION_SERVER':
         continue
 
-    # 4) Find the WC_defaulthost_secure endpoint and its port
+    # Server name
+    serverName = AdminConfig.showAttribute(serverId, 'name')
+
+    # Extract node name from the config ID string
+    m = re.search(r'nodes/([^/]+)/servers', serverId)
+    if m:
+        nodeName = m.group(1)
+    else:
+        nodeName = 'UNKNOWN'
+
+    # Get the Node config object and its hostName
+    nodeConfigId = AdminConfig.getid('/Node:%s/' % nodeName)
+    if nodeConfigId:
+        hostName = AdminConfig.showAttribute(nodeConfigId, 'hostName')
+    else:
+        hostName = 'UNKNOWN'
+
+    # Default if not found
     securePort = 'NOT_DEFINED'
-    for nep in AdminConfig.list('NamedEndPoint', se).splitlines():
-        if AdminConfig.showAttribute(nep, 'endPointName') == 'WC_defaulthost_secure':
-            epId = AdminConfig.showAttribute(nep, 'endPoint')
+
+    # List all NamedEndPoint entries under this server and find the one we need
+    for epId in AdminConfig.list('NamedEndPoint', serverId).splitlines():
+        # endPointName is the logical name, port is the number
+        if AdminConfig.showAttribute(epId, 'endPointName') == 'WC_defaulthost_secure':
             securePort = AdminConfig.showAttribute(epId, 'port')
             break
 
-    # 5) Print the results
-    hostName = nodeMap.get(nodeName, 'UNKNOWN')
+    # Print aligned columns
     print '%-30s %-20s %-20s %s' % (serverName, nodeName, hostName, securePort)
