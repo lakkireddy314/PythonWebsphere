@@ -1,22 +1,33 @@
-# getAppServerHosts.py
-# Run with: wsadmin.sh -lang jython -f getAppServerHosts.py
+# Retrieve all nodes
+nodes = AdminConfig.list('Node').splitlines()
 
-# 1. Retrieve all application server entries
-servers = AdminConfig.list('ServerEntry').splitlines()                        # :contentReference[oaicite:10]{index=10}
-
-# 2. Iterate and print name:host
-for server in servers:
-    name = server.split('(', 1)[0]                                            # :contentReference[oaicite:11]{index=11}
-
-    # Optional: skip DMGR or nodeagent if you only want custom app servers
-    if name in ['deploymentManager', 'nodeagent']:
-        continue
-
-    # 3. List endpoints for this server
-    endpoints = AdminConfig.list('NamedEndPoint', server).splitlines()         # :contentReference[oaicite:12]{index=12}
-    host = 'UNKNOWN'
-    if endpoints:
-        # Take the first endpoint’s host attribute (adjust selection as needed)
-        host = AdminConfig.showAttribute(endpoints[0], 'host')                # :contentReference[oaicite:13]{index=13}
-
-    print '%s : %s' % (name, host)
+# Iterate through each node
+for node in nodes:
+    node_name = AdminConfig.showAttribute(node, 'name')
+    
+    # Retrieve all servers within the node
+    servers = AdminConfig.list('Server', node).splitlines()
+    
+    for server in servers:
+        server_name = AdminConfig.showAttribute(server, 'name')
+        
+        # List all ports for the server
+        ports_output = AdminTask.listServerPorts(server_name, ['-nodeName', node_name])
+        
+        # Initialize variables
+        https_port = None
+        host_name = None
+        
+        # Parse the ports output
+        for line in ports_output.splitlines():
+            if 'WC_defaulthost_secure' in line:
+                parts = line.strip().split()
+                if len(parts) >= 3:
+                    https_port = parts[2]
+                    host_name = parts[1]
+        
+        # Display the results
+        if https_port and host_name:
+            print(f"Server: {server_name}, Node: {node_name}, Host: {host_name}, HTTPS Port: {https_port}")
+        else:
+            print(f"Server: {server_name}, Node: {node_name}, HTTPS port information not found.")
