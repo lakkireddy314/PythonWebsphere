@@ -1,21 +1,22 @@
-# listHttpsHosts_fixed.py
-# jython wsadmin script: print host|httpsPort for all app servers
+# getAppServerHosts.py
+# Run with: wsadmin.sh -lang jython -f getAppServerHosts.py
 
-nodes = AdminConfig.list('Node').splitlines()
-for node in nodes:
-    if not node.strip(): continue
-    nodeName = AdminConfig.showAttribute(node, 'name')
-    for server in AdminConfig.list('ServerEntry', node).splitlines():
-        if not server.strip(): continue
-        for ep in AdminConfig.list('EndPoint', server).splitlines():
-            if AdminConfig.showAttribute(ep, 'endPointName') != 'WC_defaulthost_secure':
-                continue
-            host = AdminConfig.showAttribute(ep, 'host')
-            port = AdminConfig.showAttribute(ep, 'port')
-            if host == '*':
-                srvName = AdminConfig.showAttribute(server, 'serverName')
-                obj = AdminControl.completeObjectName(
-                    'WebSphere:type=Server,name=%s,node=%s,*' % (srvName, nodeName)
-                )
-                host = AdminControl.getAttribute(obj, 'hostName')
-            print "%s|%s" % (host, port)
+# 1. Retrieve all application server entries
+servers = AdminConfig.list('ServerEntry').splitlines()                        # :contentReference[oaicite:10]{index=10}
+
+# 2. Iterate and print name:host
+for server in servers:
+    name = server.split('(', 1)[0]                                            # :contentReference[oaicite:11]{index=11}
+
+    # Optional: skip DMGR or nodeagent if you only want custom app servers
+    if name in ['deploymentManager', 'nodeagent']:
+        continue
+
+    # 3. List endpoints for this server
+    endpoints = AdminConfig.list('NamedEndPoint', server).splitlines()         # :contentReference[oaicite:12]{index=12}
+    host = 'UNKNOWN'
+    if endpoints:
+        # Take the first endpoint’s host attribute (adjust selection as needed)
+        host = AdminConfig.showAttribute(endpoints[0], 'host')                # :contentReference[oaicite:13]{index=13}
+
+    print '%s : %s' % (name, host)
