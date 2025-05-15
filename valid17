@@ -28,6 +28,6 @@ for node in nodes:
         
         # Display the results
         if https_port and host_name:
-            print("Server: {}, Node: {}, Host: {}, HTTPS Port: {}".format(server_name, node_name, host_name, https_port))
+            print "Server: %s, Node: %s, Host: %s, HTTPS Port: %s" % (server_name, node_name, host_name, https_port)
         else:
-            print("Server: {}, Node: {}, HTTPS port information not found.".format(server_name, node_name))
+            print "Server: %s, Node: %s, HTTPS port information not found." % (server_name, node_name)
