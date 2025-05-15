@@ -1,0 +1,56 @@
+# validate_ssl_certificates.yml
+
+- name: Validate SSL Certificates on WebSphere Servers
+  hosts: websphere_servers
+  gather_facts: false
+  vars:
+    wsadmin_path: /opt/IBM/WebSphere/AppServer/bin/wsadmin.sh
+    jython_script: /tmp/wsadmin_jython_script.py
+    expected_serials:
+      server1: "ABCD1234"
+      server2: "EFGH5678"
+      # Add other expected serial numbers here
+
+  tasks:
+    - name: Transfer wsadmin Jython script to the server
+      copy:
+        src: wsadmin_jython_script.py
+        dest: "{{ jython_script }}"
+        mode: '0755'
+
+    - name: Execute wsadmin script and capture output
+      shell: "{{ wsadmin_path }} -lang jython -f {{ jython_script }}"
+      register: wsadmin_output
+
+    - name: Parse wsadmin output into a list
+      set_fact:
+        server_list: "{{ wsadmin_output.stdout_lines }}"
+
+    - name: Validate SSL certificate serial numbers
+      vars:
+        server_details: "{{ item.split(',') }}"
+        server_name: "{{ server_details[0] }}"
+        node_name: "{{ server_details[1] }}"
+        host: "{{ server_details[2] }}"
+        port: "{{ server_details[3] }}"
+        expected_serial: "{{ expected_serials[server_name] | default('') }}"
+      loop: "{{ server_list }}"
+      loop_control:
+        label: "{{ server_name }}"
+      tasks:
+        - name: Retrieve SSL certificate serial number
+          shell: |
+            echo | openssl s_client -connect {{ host }}:{{ port }} -servername {{ host }} 2>/dev/null | openssl x509 -noout -serial
+          register: cert_serial_output
+          failed_when: false
+
+        - name: Extract actual serial number
+          set_fact:
+            actual_serial: "{{ cert_serial_output.stdout | regex_search('serial=([A-F0-9]+)', '\\1') | default('') }}"
+
+        - name: Compare serial numbers
+          debug:
+            msg: >-
+              Server {{ server_name }}: Expected serial {{ expected_serial }},
+              Actual serial {{ actual_serial }}
+          failed_when: actual_serial != expected_serial
