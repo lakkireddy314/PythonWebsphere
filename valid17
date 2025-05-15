@@ -1,5 +1,4 @@
 # getSecurePorts_final.py
-# wsadmin Jython (Python 2.7) script to list WC_defaulthost_secure ports with real hostnames
 # Usage:
 #   wsadmin.sh -lang jython \
 #     -conntype SOAP -host <dmgrHost> -port <dmgrPort> \
@@ -7,44 +6,28 @@
 
 import java
 
-# Java line separator for splitting list() results
 sep = java.lang.System.getProperty('line.separator')
 
 # 1. Get the cell name
-cell_ids = AdminConfig.list('Cell').splitlines()
-if not cell_ids:
-    raise Exception("No Cell found; check your connection parameters")
-cellId   = cell_ids[0]
-cellName = AdminConfig.showAttribute(cellId, 'name')
+cells = AdminConfig.list('Cell').splitlines()
+if not cells:
+    raise Exception("No Cell found; check connection parameters")
+cellName = AdminConfig.showAttribute(cells[0], 'name')
 
-# 2. Iterate all ServerEntry objects (includes app servers + dmgr)
-for srvEntry in AdminConfig.list('ServerEntry').splitlines():
-    # ServerEntry ID looks like:
-    #   serverName(cells/CellA/nodes/Node01/servers/serverName|server.xml#ServerEntry_...)
-    srvName = srvEntry.split('(', 1)[0]
+# 2. Iterate each node and server
+for nodeId in AdminConfig.list('Node').splitlines():
+    nodeName = AdminConfig.showAttribute(nodeId, 'name')
+    for srvId in AdminConfig.list('Server', nodeId).splitlines():
+        srvName = srvId.split('(')[0]
 
-    # 3. Extract the node name from the config path
-    try:
-        nodeName = srvEntry.split('/nodes/')[1].split('/')[0]
-    except IndexError:
-        # skip entries that don't match expected pattern
-        continue
-
-    # 4. Lookup the Node config to get its real hostName
-    nodeId = AdminConfig.getid('/Node:%s/' % nodeName)
-    if nodeId:
-        hostName = AdminConfig.showAttribute(nodeId, 'hostName')
-    else:
-        hostName = 'UNKNOWN'
-
-    # 5. Find the WC_defaulthost_secure NamedEndPoint under this ServerEntry
-    for nep in AdminConfig.list('NamedEndPoint', srvEntry).split(sep):
-        if not nep.strip():
-            continue
-        if AdminConfig.showAttribute(nep, 'endPointName') == 'WC_defaulthost_secure':
-            # port from the NamedEndPoint
-            port = AdminConfig.showAttribute(nep, 'port')
-            # Print: cellName nodeName serverName hostName port
-            print "%s %s %s %s %s" % (
-                cellName, nodeName, srvName, hostName, port)
-            break
+        # 3. List ports using PortManagement API
+        raw = AdminTask.listServerPorts('[-serverName %s -nodeName %s]' % (srvName, nodeName))
+        for line in raw.split(sep):
+            parts = line.split()
+            # 4. Filter for secure HTTP endpoint
+            if len(parts) == 3 and parts[0] == 'WC_defaulthost_secure':
+                host = parts[1]
+                port = parts[2]
+                # 5. Output: cellName nodeName serverName host port
+                print "%s %s %s %s %s" % (cellName, nodeName, srvName, host, port)
+                break
