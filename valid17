@@ -1,5 +1,4 @@
 # getSecurePorts_final.py
-# wsadmin Jython (Python 2.7) script to list WC_defaulthost_secure ports with real hostnames
 # Usage:
 #   wsadmin.sh -lang jython \
 #     -conntype SOAP -host <dmgrHost> -port <dmgrPort> \
@@ -7,33 +6,30 @@
 
 import java
 
-# Java line separator for splitting list() results
+# Java line separator
 sep = java.lang.System.getProperty('line.separator')
 
-# 1. Get the cell name
-cell_ids = AdminConfig.list('Cell').splitlines()
-if not cell_ids:
-    raise Exception("No Cell found; check your connection parameters")
-cellId   = cell_ids[0]
-cellName = AdminConfig.showAttribute(cellId, 'name')
+# 1. Retrieve cell name
+cells   = AdminConfig.list('Cell').splitlines()
+cellId  = cells[0] if cells else None
+cellName = AdminConfig.showAttribute(cellId, 'name') if cellId else 'UNKNOWN'
 
-# 2. Iterate each node and server
+# 2. Iterate each node and its servers
 for nodeId in AdminConfig.list('Node').splitlines():
     nodeName = AdminConfig.showAttribute(nodeId, 'name')
     for srvId in AdminConfig.list('Server', nodeId).splitlines():
         srvName = srvId.split('(')[0]
 
-        # 3. List ports using PortManagement API
-        #    First argument: server name
-        #    Second argument: optional parameters string
+        # 3. Correct listServerPorts invocation
         raw = AdminTask.listServerPorts(srvName, '[-nodeName %s]' % nodeName)
 
-        # 4. Parse output for WC_defaulthost_secure
+        # 4. Parse and filter for secure endpoint
         for line in raw.split(sep):
             parts = line.split()
-            if len(parts) == 3 and parts[0] == 'WC_defaulthost_secure':
-                host = parts[1]
-                port = parts[2]
-                # 5. Output: cellName nodeName serverName host port
-                print "%s %s %s %s %s" % (cellName, nodeName, srvName, host, port)
+            # Expect: [nodeName, serverName, endPointName, host, port]
+            if len(parts) >= 5 and parts[2] == 'WC_defaulthost_secure':
+                host = parts[3]
+                port = parts[4]
+                print "%s %s %s %s %s" % (
+                    cellName, nodeName, srvName, host, port)
                 break
