@@ -1,0 +1,66 @@
+# wsadmin_jython_script.py
+# Python 2.7 / Jython-compatible script to list WC_defaulthost_secure ports for all servers
+
+import java, re
+
+# Java line separator for splitting lists
+ls = java.lang.System.getProperty('line.separator')
+
+# 1. Get the cell name
+cellObj  = AdminConfig.getid('/Cell:/')
+cellName = AdminConfig.showAttribute(cellObj, 'name')
+
+
+def get_secure_ports():
+    # 2. List all ServerEntry objects (includes dmgr & app servers)
+    entries = AdminConfig.list('ServerEntry').split(ls)
+
+    for entry in entries:
+        if not entry:
+            continue
+
+        # 3. Extract server name (strip trailing "(")
+        serverName = entry.split('(')[0]
+
+        # 4. Extract nodeName via regex on the path
+        m = re.search(r'/nodes/([^/]+)/servers/' + re.escape(serverName), entry)
+        # Replace inline conditional with explicit if/else for compatibility
+        if m:
+            nodeName = m.group(1)
+        else:
+            nodeName = 'UNKNOWN'
+
+        # 5. Retrieve the ServerIndex object to get the real hostName
+        indexList = AdminConfig.list('ServerIndex', entry).split(ls)
+        machineHost = 'UNKNOWN'
+        for idx in indexList:
+            if not idx:
+                continue
+            machineHost = AdminConfig.showAttribute(idx, 'hostName')
+            break
+
+        # 6. Look up the WC_defaulthost_secure NamedEndPoint
+        portName = 'WC_defaulthost_secure'
+        epPath   = '/Cell:%s/Node:%s/Server:%s/NamedEndPoint:%s/' % (
+                       cellName, nodeName, serverName, portName
+                   )
+        epId = AdminConfig.getid(epPath)
+
+        if not epId:
+            # Debug message when secure port isn’t defined
+            print "DEBUG: No %s port defined for %s on node %s" % (
+                portName, serverName, nodeName
+            )
+            continue
+
+        # 7. Extract port number from the endpoint object
+        epObj = AdminConfig.showAttribute(epId, 'endPoint')
+        port  = AdminConfig.showAttribute(epObj, 'port')
+
+        # 8. Print CSV: serverName,nodeName,machineHost,portName,port
+        print "%s,%s,%s,%s,%s" % (
+            serverName, nodeName, machineHost, portName, port
+        )
+
+# Execute the function
+get_secure_ports()
