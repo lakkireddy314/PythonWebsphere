@@ -1,54 +1,28 @@
-# getSecurePorts_fixed.py
-# wsadmin Jython (Python 2.7) script to list WC_defaulthost_secure ports with real hostnames
-# Usage:
-#   wsadmin.sh -lang jython \
-#     -conntype SOAP -host <dmgrHost> -port <dmgrPort> \
-#     -f getSecurePorts_fixed.py
+# getHttpsPorts.py
+# Jython wsadmin script to list HTTPS port and host for all application servers
 
-import java
+# Retrieve all ServerEntry config objects
+serverEntries = AdminConfig.list('ServerEntry').splitlines()
 
-# Java line separator for splitting list() results
-sep = java.lang.System.getProperty('line.separator')
-
-# 1. Retrieve the cell name
-cells = AdminConfig.list('Cell').splitlines()
-if cells:
-    cellId = cells[0]
-    cellName = AdminConfig.showAttribute(cellId, 'name')
-else:
-    cellName = 'UNKNOWN'
-
-# 2. Iterate each ServerEntry (includes app servers + dmgr)
-for srvEntry in AdminConfig.list('ServerEntry').splitlines():
-    # Extract serverName
-    srvName = srvEntry.split('(', 1)[0]
-
-    # 3. Extract nodeName by parsing the config path
-    try:
-        nodeName = srvEntry.split('/nodes/')[1].split('/')[0]
-    except IndexError:
-        # Unexpected format—skip
-        continue
-
-    # 4. Lookup the Node to get its real hostName
-    nodeId = AdminConfig.getid('/Node:%s/' % nodeName)
-    if nodeId:
-        hostName = AdminConfig.showAttribute(nodeId, 'hostName')
-    else:
-        hostName = 'UNKNOWN'
-
-    # 5. Find the WC_defaulthost_secure endpoint under this ServerEntry
-    for nep in AdminConfig.list('NamedEndPoint', srvEntry).split(sep):
-        if not nep.strip():
-            continue
-        if AdminConfig.showAttribute(nep, 'endPointName') == 'WC_defaulthost_secure':
-            # Get nested EndPoint to retrieve port
-            epRef = AdminConfig.showAttribute(nep, 'endPoint')
-            if epRef:
-                port = AdminConfig.showAttribute(epRef, 'port')
-            else:
-                port = 'UNKNOWN'
-            # Output: cellName nodeName serverName hostName port
-            print "%s %s %s %s %s" % (
-                cellName, nodeName, srvName, hostName, port)
-            break
+for server in serverEntries:
+    serverName = AdminConfig.showAttribute(server, 'serverName')
+    nodeName   = AdminConfig.showAttribute(server, 'nodeName')
+    
+    # List all endpoint children under this server
+    endpoints = AdminConfig.list('EndPoint', server).splitlines()
+    for ep in endpoints:
+        epName = AdminConfig.showAttribute(ep, 'endPointName')
+        # Filter for the secure HTTPS endpoint
+        if epName == 'WC_defaulthost_secure':
+            host = AdminConfig.showAttribute(ep, 'host')
+            port = AdminConfig.showAttribute(ep, 'port')
+            
+            # If configured host is wildcard, fetch actual host from runtime MBean
+            if host == '*':
+                objName = AdminControl.completeObjectName(
+                    'WebSphere:type=Server,name=%s,node=%s,*' % (serverName, nodeName)
+                )
+                host = AdminControl.getAttribute(objName, 'hostName')
+            
+            # Output in CSV-friendly format
+            print "%s|%s|%s|%s" % (serverName, nodeName, host, port)
