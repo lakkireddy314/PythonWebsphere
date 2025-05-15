@@ -1,0 +1,121 @@
+# File: validate_ssl_certificates.yml
+- name: Validate SSL Certificates on WebSphere Servers
+  hosts: websphere_servers
+  gather_facts: false
+
+  vars:
+    wsadmin_path: /opt/IBM/WebSphere/AppServer/bin/wsadmin.sh
+    jython_script: /tmp/wsadmin_jython_script.py
+    smtp_host: smtp.example.com        # adjust your SMTP server
+    report_recipients:
+      - ops-team@example.com          # adjust your recipient list
+
+  tasks:
+    - name: Initialize report lists
+      set_fact:
+        ok_list: []
+        down_list: []
+
+    - name: Deploy wsadmin Jython script
+      copy:
+        src: wsadmin_jython_script.py
+        dest: "{{ jython_script }}"
+        mode: '0755'
+
+    - name: Execute wsadmin script and capture CSV output
+      shell: "{{ wsadmin_path }} -lang jython -f {{ jython_script }}"
+      register: wsadmin_output
+      changed_when: false
+
+    - name: Build structured server list
+      set_fact:
+        servers: "{{ wsadmin_output.stdout_lines | map('split', ',') | list }}"
+
+    - name: Run SSL checks for each server
+      include_tasks: tasks/ssl_checks.yml
+      loop: "{{ servers }}"
+      loop_control:
+        loop_var: server_entry
+        label: "{{ server_entry[0] }}"
+      vars:
+        server_name:     "{{ server_entry[0] }}"
+        node_name:       "{{ server_entry[1] }}"
+        host:            "{{ server_entry[2] }}"
+        port:            "{{ server_entry[4] | int }}"
+        expected_serial: "{{ lookup('vars', host + '_cert_serial', default='') }}"
+        ok_list:         "{{ ok_list }}"
+        down_list:       "{{ down_list }}"
+
+    - name: Generate report
+      set_fact:
+        report: |
+          SSL Validation Report
+          ======================
+
+          OK Certificates:
+          {% for msg in ok_list %}
+          - {{ msg }}
+          {% endfor %}
+
+          Servers Down or Cert Load Errors:
+          {% for msg in down_list %}
+          - {{ msg }}
+          {% endfor %}
+
+    - name: Save report to file
+      copy:
+        dest: /tmp/ssl_validation_report.txt
+        content: "{{ report }}"
+
+    - name: Email report
+      mail:
+        host: "{{ smtp_host }}"
+        to: "{{ report_recipients | join(',') }}"
+        subject: "SSL Validation Report"
+        body: "{{ report }}"
+
+---
+
+# File: tasks/ssl_checks.yml
+- name: Retrieve SSL certificate serial number
+  shell: |
+    echo | openssl s_client -connect {{ host }}:{{ port }} \
+      -servername {{ host }} 2>&1 | openssl x509 -noout -serial
+  register: cert_serial_output
+  failed_when: false
+
+- name: Handle connection or cert-load errors
+  block:
+    - name: Test TCP connectivity on {{ host }}:{{ port }}
+      wait_for:
+        host: "{{ host }}"
+        port: "{{ port }}"
+        timeout: 5
+      register: port_check
+      failed_when: false
+
+    - name: Server is down (record)
+      set_fact:
+        down_list: "{{ down_list + [ server_name + ': server down' ] }}"
+      when: port_check.rc != 0
+
+    - name: Unable to load certificate (record)
+      set_fact:
+        down_list: "{{ down_list + [ server_name + ': unable to load certificate' ] }}"
+      when: port_check.rc == 0
+  when: cert_serial_output.rc != 0 or 'unable to load certificate' in cert_serial_output.stdout.lower()
+  # Skip further tasks for this host/server on error
+
+- name: Extract actual serial number
+  set_fact:
+    actual_serial: "{{ cert_serial_output.stdout | regex_search('serial=([A-F0-9]+)', '\\1') | default('') }}"
+
+- name: Record serial mismatch
+  set_fact:
+    down_list: "{{ down_list + [ server_name + ': expected ' + expected_serial + ', actual ' + actual_serial ] }}"
+  when: actual_serial != expected_serial
+
+- name: Record serial OK
+  set_fact:
+    ok_list: "{{ ok_list + [ server_name + ': serial OK (' + actual_serial + ')' ] }}"
+  when: actual_serial == expected_serial
