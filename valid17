@@ -1,46 +1,55 @@
-# getSecurePorts_withRealHost.py
-# Usage: wsadmin.sh -lang jython \
-#   -conntype SOAP -host <dmgrHost> -port <dmgrPort> \
-#   -f getSecurePorts_withRealHost.py
+# getSecurePorts_final.py
+# wsadmin Jython (Python 2.7) script to list WC_defaulthost_secure ports with real hostnames
+# Usage:
+#   wsadmin.sh -lang jython \
+#     -conntype SOAP -host <dmgrHost> -port <dmgrPort> \
+#     -f getSecurePorts_final.py
 
 import java
 
 # Java line separator for splitting list() results
 sep = java.lang.System.getProperty('line.separator')
 
-# --- 1. Cell name ----
-cellId   = AdminConfig.list('Cell').splitlines()[0]
-cellName = AdminConfig.showAttribute(cellId, 'name')  # e.g., "MyCell" :contentReference[oaicite:3]{index=3}
+# 1. Get the cell name
+cell_ids = AdminConfig.list('Cell').splitlines()
+if not cell_ids:
+    raise Exception("No Cell found; check your connection parameters")
+cellId   = cell_ids[0]
+cellName = AdminConfig.showAttribute(cellId, 'name')
 
-# --- 2. Build nodeName → hostName map ----
+# 2. Build a Python dict mapping nodeName -> hostName
 nodeHostMap = {}
 for nodeId in AdminConfig.list('Node').splitlines():
-    # Clean node name (no trailing ServerEntry junk) :contentReference[oaicite:4]{index=4}
-    nodeName = AdminConfig.showAttribute(nodeId, 'name')
-    # Actual DNS name or IP for the node :contentReference[oaicite:5]{index=5}
-    hostName = AdminConfig.showAttribute(nodeId, 'hostName')
+    nodeName = AdminConfig.showAttribute(nodeId, 'name')      # clean name
+    hostName = AdminConfig.showAttribute(nodeId, 'hostName')  # real DNS/IP
     nodeHostMap[nodeName] = hostName
 
-# --- 3. Iterate all ServerEntry objects (includes app servers + dmgr) ----
+# 3. Iterate all ServerEntry objects (includes app servers + dmgr)
 for srvEntry in AdminConfig.list('ServerEntry').splitlines():
-    srvName = srvEntry.split('(')[0]  # e.g., "AppSrv1"
-    # Determine which node this entry lives on by matching the path fragment
+    # ServerEntry ID looks like:
+    #   serverName(cells/CellA/nodes/Node01/servers/serverName|server.xml#ServerEntry_...)
+    srvName = srvEntry.split('(', 1)[0]
+
+    # 4. Determine the node this ServerEntry belongs to
     nodeName = None
     for n in nodeHostMap:
         if '/nodes/%s/' % n in srvEntry:
             nodeName = n
             break
     if not nodeName:
-        continue  # skip if we can’t map to a known node
+        # Couldn't map to a known node—skip
+        continue
 
-    # --- 4. Find the secure HTTPS endpoint ----
+    # 5. Find the WC_defaulthost_secure NamedEndPoint
     for nep in AdminConfig.list('NamedEndPoint', srvEntry).split(sep):
         if not nep.strip():
             continue
         if AdminConfig.showAttribute(nep, 'endPointName') == 'WC_defaulthost_secure':
-            port    = AdminConfig.showAttribute(nep, 'port')
-            host    = nodeHostMap[nodeName]
-            # Print: cellName nodeName serverName host port
+            # port from the NamedEndPoint
+            port = AdminConfig.showAttribute(nep, 'port')
+            # real host from our map
+            host = nodeHostMap[nodeName]
+            # Output: cellName nodeName serverName host port
             print "%s %s %s %s %s" % (
                 cellName, nodeName, srvName, host, port)
             break
