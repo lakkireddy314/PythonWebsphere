@@ -1,28 +1,32 @@
-# getHttpsPorts.py
-# Jython wsadmin script to list HTTPS port and host for all application servers
+# getHttpsPorts_byNode.py
+# List HTTPS ports and hostnames for all app servers by scoping to each Node
 
-# Retrieve all ServerEntry config objects
-serverEntries = AdminConfig.list('ServerEntry').splitlines()
+# Retrieve all Node configuration objects
+nodes = AdminConfig.list('Node').splitlines()
 
-for server in serverEntries:
-    serverName = AdminConfig.showAttribute(server, 'serverName')
-    nodeName   = AdminConfig.showAttribute(server, 'nodeName')
-    
-    # List all endpoint children under this server
-    endpoints = AdminConfig.list('EndPoint', server).splitlines()
-    for ep in endpoints:
-        epName = AdminConfig.showAttribute(ep, 'endPointName')
-        # Filter for the secure HTTPS endpoint
-        if epName == 'WC_defaulthost_secure':
-            host = AdminConfig.showAttribute(ep, 'host')
-            port = AdminConfig.showAttribute(ep, 'port')
-            
-            # If configured host is wildcard, fetch actual host from runtime MBean
-            if host == '*':
-                objName = AdminControl.completeObjectName(
-                    'WebSphere:type=Server,name=%s,node=%s,*' % (serverName, nodeName)
-                )
-                host = AdminControl.getAttribute(objName, 'hostName')
-            
-            # Output in CSV-friendly format
-            print "%s|%s|%s|%s" % (serverName, nodeName, host, port)
+for node in nodes:
+    # Get the node name from the Node object
+    nodeName = AdminConfig.showAttribute(node, 'name')  # valid attribute on Node :contentReference[oaicite:2]{index=2}
+
+    # List ServerEntry objects under this node
+    serverEntries = AdminConfig.list('ServerEntry', node).splitlines()
+
+    for server in serverEntries:
+        # Get the application server name
+        serverName = AdminConfig.showAttribute(server, 'serverName')  # valid on ServerEntry :contentReference[oaicite:3]{index=3}
+
+        # List all EndPoint children
+        endpoints = AdminConfig.list('EndPoint', server).splitlines()
+        for ep in endpoints:
+            if AdminConfig.showAttribute(ep, 'endPointName') == 'WC_defaulthost_secure':
+                host = AdminConfig.showAttribute(ep, 'host')
+                port = AdminConfig.showAttribute(ep, 'port')
+
+                # Handle wildcard host
+                if host == '*':
+                    objName = AdminControl.completeObjectName(
+                        'WebSphere:type=Server,name=%s,node=%s,*' % (serverName, nodeName)
+                    )
+                    host = AdminControl.getAttribute(objName, 'hostName')
+
+                print "%s|%s|%s|%s" % (serverName, nodeName, host, port)
