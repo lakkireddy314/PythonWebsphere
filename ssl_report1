@@ -1,15 +1,43 @@
-validate_ssl_certificates.yml
+Summary
+Below is a single-play Ansible-2.9 playbook (“Option B”) that:
+
+Runs your wsadmin Jython script on each WebSphere server to emit CSV lines.
+
+Filters out unwanted lines (was_user, WASX7209I) via reject('search', …) 
+Ansible Documentation
+.
+
+Builds a structured list by calling Python’s .split(',') in a loop (no split filter needed) 
+Stack Overflow
+.
+
+Initializes ok_list and down_list once on the controller with run_once + delegate_to: localhost 
+Crisp's Blog
+.
+
+Processes each server: retrieves the SSL serial, handles “server down” or “unable to load certificate” via wait_for and meta: end_host 
+Ansible Documentation
+Ansible Documentation
+, then appends to ok_list or down_list on the controller via delegate_to.
+
+Renders an Outlook-friendly HTML report and emails it, all from the controller 
+Ansible Documentation
+.
+
+Main Playbook: validate_ssl_certificates.yml
 yaml
 Copy
 Edit
 ---
-- name: Validate SSL Certificates on WebSphere Servers
+- name: Validate SSL Certificates on WebSphere Servers and Report
   hosts: websphere_servers
   gather_facts: false
 
   vars:
-    wsadmin_path: /opt/IBM/WebSphere/AppServer/bin/wsadmin.sh
-    jython_script: /tmp/wsadmin_jython_script.py
+    wsadmin_path:    /opt/IBM/WebSphere/AppServer/bin/wsadmin.sh
+    jython_script:   /tmp/wsadmin_jython_script.py
+    report_file:     /tmp/ssl_validation_report.html
+    report_date:     "{{ lookup('pipe', 'date -u +%Y-%m-%d\\ %H:%M\\ UTC') }}"
 
   tasks:
     - name: Deploy wsadmin Jython script
@@ -23,13 +51,20 @@ Edit
       register: wsadmin_output
       changed_when: false
 
-    - name: Filter out unwanted wsadmin output lines
+    - name: Filter out unwanted wsadmin output
       set_fact:
         filtered_lines: >-
           {{ wsadmin_output.stdout_lines
              | reject('search','was_user')
              | reject('search','WASX7209I')
-             | list }}
+             | list }}                                                      # :contentReference[oaicite:5]{index=5}
+
+    - name: Initialize report lists on controller
+      run_once: true
+      delegate_to: localhost
+      set_fact:
+        ok_list:   []
+        down_list: []                                                   # :contentReference[oaicite:6]{index=6}
 
     - name: Initialize server list
       set_fact:
@@ -41,63 +76,39 @@ Edit
       loop: "{{ filtered_lines }}"
       loop_control:
         loop_var: ws_line
-        label: "{{ ws_line }}"
+        label: "{{ ws_line }}"                                         # :contentReference[oaicite:7]{index=7}
 
-    - name: Initialize report lists
-      set_fact:
-        ok_list: []
-        down_list: []
-
-    - name: Run SSL checks for each server
+    - name: Process each server entry
       include_tasks: tasks/ssl_checks.yml
       loop: "{{ servers }}"
       loop_control:
-        loop_var: server
-        label: "{{ server[2] }}"
+        loop_var: server_entry
+        label: "{{ server_entry[2] }}"
       vars:
-        server_name:     "{{ server[2] }}"
-        node_name:       "{{ server[1] }}"
-        # strip domain for variable naming
-        host:            "{{ server[3].split('.')[0] }}"
-        port:            "{{ server[4] | int }}"
+        server_name:     "{{ server_entry[2] }}"
+        node_name:       "{{ server_entry[1] }}"
+        host:            "{{ server_entry[3].split('.')[0] }}"
+        port:            "{{ server_entry[4] | int }}"
         expected_serial: "{{ lookup('vars', host + '_cert_serial', default='') }}"
 
----
-- name: Generate & Email SSL Validation Report
-  hosts: localhost
-  gather_facts: false
-
-  vars:
-    report_file: /tmp/ssl_validation_report.html
-    report_date: "{{ lookup('pipe','date -u +%Y-%m-%d\ %H:%M\ UTC') }}"
-
-  tasks:
-    - name: Render HTML report template
-      template:
-        src: templates/ssl_report.html.j2
-        dest: "{{ report_file }}"
+    - name: Generate & email SSL Validation Report
+      run_once: true
+      delegate_to: localhost
+      include_tasks: tasks/report.yml
       vars:
-        ok_list:  "{{ hostvars[inventory_hostname].ok_list  | default([]) }}"
-        down_list:"{{ hostvars[inventory_hostname].down_list| default([]) }}"
         generated: "{{ report_date }}"
-
-    - name: Email SSL validation report
-      mail:
-        host: smtp.your.domain
-        port: 25
-        to: ops-team@your.domain
-        subject: "SSL Validation Report – {{ generated }}"
-        body: "{{ lookup('file', report_file) }}"
-        subtype: html
-tasks/ssl_checks.yml
+        report_file: "{{ report_file }}"
+        ok_list:   "{{ ok_list }}"
+        down_list: "{{ down_list }}"
+Task File: tasks/ssl_checks.yml
 yaml
 Copy
 Edit
 ---
 - name: Retrieve SSL certificate serial number
   shell: |
-    echo | openssl s_client -connect {{ host }}:{{ port }} -servername {{ host }} \
-      2>&1 | openssl x509 -noout -serial
+    echo | openssl s_client -connect {{ host }}:{{ port }} \
+      -servername {{ host }} 2>&1 | openssl x509 -noout -serial
   register: cert_serial_output
   failed_when: false
 
@@ -109,22 +120,24 @@ Edit
         port: "{{ port }}"
         timeout: 5
       register: port_check
-      failed_when: false
+      failed_when: false                                      # :contentReference[oaicite:8]{index=8}
 
-    - name: Server is down (record)
+    - name: Record down or load error on controller
+      delegate_to: localhost
       set_fact:
-        down_list: "{{ down_list + [ server_name + ': server down' ] }}"
-      when: port_check.rc != 0
-
-    - name: Unable to load certificate (record)
-      set_fact:
-        down_list: "{{ down_list + [ server_name + ': unable to load certificate' ] }}"
-      when: port_check.rc == 0
-  when: "'unable to load certificate' in cert_serial_output.stdout.lower()"
+        down_list: >-
+          {{ down_list +
+             [ server_name + ': ' +
+               (port_check.rc != 0
+                 and 'server down'
+                 or 'unable to load certificate') ] }}
+  when: cert_serial_output.rc != 0
+        or "'unable to load certificate' in cert_serial_output.stdout.lower()"
 
 - name: Skip further checks on error
-  meta: end_host
-  when: "'unable to load certificate' in cert_serial_output.stdout.lower()"
+  meta: end_host                                            # :contentReference[oaicite:9]{index=9}
+  when: cert_serial_output.rc != 0
+        or "'unable to load certificate' in cert_serial_output.stdout.lower()"
 
 - name: Extract actual serial number
   set_fact:
@@ -133,25 +146,26 @@ Edit
          | regex_search('serial=([A-F0-9]+)', '\\1')
          | default('') }}
 
-- name: Record OK serial (before compare)
+- name: Record OK serial on controller
+  delegate_to: localhost
   set_fact:
-    ok_list: "{{ ok_list + [ server_name + ': ' + actual_serial ] }}"
+    ok_list: "{{ ok_list + [ server_name + ': ' + actual_serial ] }}"  # :contentReference[oaicite:10]{index=10}
 
 - name: Fail on serial mismatch
   fail:
     msg: "[{{ server_name }}] Serial mismatch: expected={{ expected_serial }}, actual={{ actual_serial }}"
   when: actual_serial != expected_serial
-tasks/report.yml
+Task File: tasks/report.yml
 yaml
 Copy
 Edit
 ---
-- name: Render SSL report
+- name: Render HTML report template
   template:
     src: templates/ssl_report.html.j2
-    dest: "{{ report_file }}"
+    dest: "{{ report_file }}"                                  # :contentReference[oaicite:11]{index=11}
 
-- name: Send report via email
+- name: Email SSL validation report
   mail:
     host: smtp.your.domain
     port: 25
@@ -159,17 +173,17 @@ Edit
     subject: "SSL Validation Report – {{ generated }}"
     body: "{{ lookup('file', report_file) }}"
     subtype: html
-templates/ssl_report.html.j2
+Jinja2 Template: templates/ssl_report.html.j2
 jinja2
 Copy
 Edit
 <!DOCTYPE html>
 <html>
-  <body style="margin:0; padding:20px; font-family:Arial, sans-serif; background:#f4f4f4;">
+  <body style="margin:0; padding:20px; font-family:Arial,sans-serif; background:#f4f4f4;">
     <table width="600" align="center" cellpadding="0" cellspacing="0"
-           style="background:#ffffff; border:1px solid #dddddd; border-radius:4px; overflow:hidden;">
+           style="background:#ffffff; border:1px solid #dddddd; border-radius:4px;">
       <tr>
-        <td style="background:#0B4F6C; color:#ffffff; padding:16px; font-size:20px; font-weight:bold;">
+        <td style="background:#0B4F6C; color:#ffffff; padding:16px; font-size:20px;">
           SSL Validation Report
         </td>
       </tr>
@@ -188,21 +202,23 @@ Edit
               <th align="center" style="border:1px solid #ccc;">Status</th>
             </tr>
             {% for entry in ok_list %}
-            {% set parts = entry.split(': ') %}
+              {% set parts = entry.split(': ') %}
             <tr style="background:{% if loop.index is odd %}#F7FBFD{% else %}#FFFFFF{% endif %};">
               <td style="border:1px solid #ccc;">{{ parts[0] }}</td>
               <td style="border:1px solid #ccc;">Serial {{ parts[1] }}</td>
-              <td align="center" style="border:1px solid #ccc; color:#155724; background:#d4edda;">
+              <td align="center"
+                  style="border:1px solid #ccc; color:#155724; background:#d4edda;">
                 OK
               </td>
             </tr>
             {% endfor %}
             {% for entry in down_list %}
-            {% set parts = entry.split(': ') %}
+              {% set parts = entry.split(': ') %}
             <tr style="background:{% if loop.index is odd %}#FDF2F2{% else %}#FFFFFF{% endif %};">
               <td style="border:1px solid #ccc;">{{ parts[0] }}</td>
               <td style="border:1px solid #ccc;">{{ parts[1] }}</td>
-              <td align="center" style="border:1px solid #ccc; color:#721c24; background:#f8d7da;">
+              <td align="center"
+                  style="border:1px solid #ccc; color:#721c24; background:#f8d7da;">
                 ERROR
               </td>
             </tr>
@@ -218,3 +234,4 @@ Edit
     </table>
   </body>
 </html>
+With these files, running:
