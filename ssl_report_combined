@@ -1,3 +1,23 @@
+- name: Render combined SSL report template
+  template:
+    src: templates/combined_ssl_report.html.j2
+    dest: "{{ report_file }}"
+  vars:
+    profile_data: "{{ profile_data }}"
+    cert_records: "{{ cert_records }}"
+    ok_list: "{{ ok_list }}"
+    down_list: "{{ down_list }}"
+
+
+
+
+
+
+
+
+
+
+
 <!DOCTYPE html>
 <html>
   <head>
