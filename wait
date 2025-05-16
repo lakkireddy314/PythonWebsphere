@@ -55,4 +55,31 @@
 - name: Set normalized status fact
   ansible.builtin.set_fact:
     connection_status: "{{ 'ok' if not wait_result.failed else 'fail' }}"
+######################
+
+- hosts: all
+  gather_facts: false
+
+  vars:
+    host: "example.com"
+    port: 443
+    timeout: 3
+
+  tasks:
+    - name: Non-fatal TCP check on {{ host }}:{{ port }}
+      ansible.builtin.wait_for:
+        host: "{{ host }}"
+        port: "{{ port }}"
+        timeout: "{{ timeout }}"
+        state: started
+      register: wait_result
+      failed_when: false
+      changed_when: false
+
+    - name: Report TCP connectivity
+      ansible.builtin.debug:
+        msg: >-
+          {{ host }}:{{ port }} connectivity is
+          {{ 'OK' if wait_result.rc == 0 else 'FAILED' }}
+
 
