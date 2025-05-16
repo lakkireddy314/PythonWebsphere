@@ -1,0 +1,11 @@
+- name: Wait up to 5s for TCP port 5432 to open (don’t fail play)
+  ansible.builtin.wait_for:
+    host: "{{ inventory_hostname }}"
+    port: 5432
+    timeout: 5
+  register: wait_result
+  failed_when: false
+
+- name: Show what happened
+  ansible.builtin.debug:
+    var: wait_result
