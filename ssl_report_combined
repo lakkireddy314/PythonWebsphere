@@ -8,15 +8,7 @@
     ok_list: "{{ ok_list }}"
     down_list: "{{ down_list }}"
 
-
-
-
-
-
-
-
-
-
+#############REPORT TEMPLATE###############
 
 <!DOCTYPE html>
 <html>
@@ -28,21 +20,22 @@
   <body style="margin:0; padding:0; mso-line-height-rule:exactly; font-family:Arial,sans-serif; background:#f4f4f4;">
     <table width="600" align="center" cellpadding="0" cellspacing="0" border="0"
            style="border-collapse:collapse; margin:20px auto; background:#ffffff; border:1px solid #dddddd; border-radius:4px; overflow:hidden;">
+      
       <!-- Header -->
       <tr>
         <td style="background-color:#004080; padding:20px; text-align:center;">
           <h1 style="color:#ffffff; margin:0; font-size:24px;">
-            Venafi Self Signed – {{ profile_data[0].cell }}
+            Venafi Self Signed – TestCell
           </h1>
           <p style="color:#cccccc; margin:5px 0 0; font-size:12px;">
-            Date: {{ ansible_date_time }}
+            Date: 2025-05-16T14:30:00Z
           </p>
         </td>
       </tr>
 
       <!-- Imported Certificates Heading -->
       <tr>
-        <td style="background:#cce5ff; color:#004080; padding:12px; font-size:18px;">
+        <td style="background:#004080; color:#ffffff; padding:12px; font-size:18px;">
           Imported Certificates
         </td>
       </tr>
@@ -58,13 +51,21 @@
               </tr>
             </thead>
             <tbody>
-              {% for rec in cert_records %}
-              <tr style="background:{% if loop.index is odd %}#F7FBFD{% else %}#FFFFFF{% endif %};">
-                <td style="padding:6px; color:#004080;">{{ rec.profile }}</td>
-                <td style="padding:6px; color:#004080;">{{ rec.profile }}.example.com</td>
-                <td style="padding:6px; color:#004080;">{{ rec.alias }}</td>
+              <tr style="background:#F7FBFD;">
+                <td style="padding:6px; color:#004080;">dmgr01</td>
+                <td style="padding:6px; color:#004080;">dmgr01.example.com</td>
+                <td style="padding:6px; color:#004080;">dmgr01_subca_ss</td>
               </tr>
-              {% endfor %}
+              <tr style="background:#FFFFFF;">
+                <td style="padding:6px; color:#004080;">nodeA</td>
+                <td style="padding:6px; color:#004080;">nodeA.example.com</td>
+                <td style="padding:6px; color:#004080;">nodeA_subca_ss</td>
+              </tr>
+              <tr style="background:#F7FBFD;">
+                <td style="padding:6px; color:#004080;">nodeB</td>
+                <td style="padding:6px; color:#004080;">nodeB.example.com</td>
+                <td style="padding:6px; color:#004080;">nodeB_subca_ss</td>
+              </tr>
             </tbody>
           </table>
         </td>
@@ -72,7 +73,7 @@
 
       <!-- SSL Validation Report Heading -->
       <tr>
-        <td style="background:#cce5ff; color:#004080; padding:12px; font-size:18px;">
+        <td style="background:#004080; color:#ffffff; padding:12px; font-size:18px;">
           SSL Validation Report
         </td>
       </tr>
@@ -81,7 +82,7 @@
           <table width="100%" cellpadding="0" cellspacing="0" border="0">
             <tr>
               <td style="padding:12px; font-size:14px; color:#333333;">
-                Generated on: {{ ansible_date_time }}
+                Generated on: 2025-05-16T14:30:00Z
               </td>
             </tr>
             <tr>
@@ -96,40 +97,43 @@
                     </tr>
                   </thead>
                   <tbody>
-                    {% for entry in ok_list %}
-                      {% set parts = entry.split(': ') %}
-                    <tr style="background:{% if loop.index is odd %}#F7FBFD{% else %}#FFFFFF{% endif %};">
-                      <td style="border:1px solid #ccc; padding:6px;">{{ parts[0] }}</td>
-                      <td style="border:1px solid #ccc; padding:6px;">Serial {{ parts[1] }}</td>
+                    <tr style="background:#F7FBFD;">
+                      <td style="border:1px solid #ccc; padding:6px;">dmgr01</td>
+                      <td style="border:1px solid #ccc; padding:6px;">Serial 0A1B2C3D4E</td>
                       <td align="center"
                           style="border:1px solid #ccc; padding:6px; color:#155724; background:#d4edda;">
                         OK
                       </td>
                     </tr>
-                    {% endfor %}
-                    {% for entry in down_list %}
-                      {% set parts = entry.split(': ') %}
-                    <tr style="background:{% if loop.index is odd %}#FDF2F2{% else %}#FFFFFF{% endif %};">
-                      <td style="border:1px solid #ccc; padding:6px;">{{ parts[0] }}</td>
-                      <td style="border:1px solid #ccc; padding:6px;">{{ parts[1] }}</td>
+                    <tr style="background:#FFFFFF;">
+                      <td style="border:1px solid #ccc; padding:6px;">nodeA</td>
+                      <td style="border:1px solid #ccc; padding:6px;">Serial 5F6G7H8I9J</td>
+                      <td align="center"
+                          style="border:1px solid #ccc; padding:6px; color:#155724; background:#d4edda;">
+                        OK
+                      </td>
+                    </tr>
+                    <tr style="background:#FDF2F2;">
+                      <td style="border:1px solid #ccc; padding:6px;">nodeB</td>
+                      <td style="border:1px solid #ccc; padding:6px;">Serial EXPIRED-XYZ</td>
                       <td align="center"
                           style="border:1px solid #ccc; padding:6px; color:#721c24; background:#f8d7da;">
                         ERROR
                       </td>
                     </tr>
-                    {% endfor %}
                   </tbody>
                 </table>
               </td>
             </tr>
             <tr>
               <td style="padding:12px; font-size:12px; color:#777777; text-align:center;">
-                &copy; {{ lookup('pipe','date +%Y') }} Your Organization
+                &copy; 2025 Your Organization
               </td>
             </tr>
           </table>
         </td>
       </tr>
+
     </table>
   </body>
 </html>
