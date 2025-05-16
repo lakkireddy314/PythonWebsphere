@@ -1,0 +1,17 @@
+  - name: Filter out unwanted wsadmin output lines
+      set_fact:
+        filtered_lines: "{{ wsadmin_output.stdout_lines
+          | reject('search','was_user')
+          | reject('search','WASX7209I')
+          | list }}"
+
+    - name: Build structured server list
+      set_fact:
+        servers: []
+
+    - name: Populate server list from filtered output
+      set_fact:
+        servers: "{{ servers + [ item.split(',') ] }}"
+      loop: "{{ filtered_lines }}"
+      loop_control:
+        label: "{{ item }}"
