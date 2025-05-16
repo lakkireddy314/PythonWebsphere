@@ -1,4 +1,6 @@
-ssl_import_report.yml
+1. Ansible Playbook: ssl_import_report.yml
+(unchanged)
+
 yaml
 Copy
 Edit
@@ -63,7 +65,7 @@ Edit
         subject: "SSL Import Report – {{ inventory_hostname }}"
         body: "{{ lookup('file', report_dest) }}"
         subtype: html
-ssl_report.html.j2
+2. Outlook-Friendly Jinja2 Template: ssl_report.html.j2
 jinja
 Copy
 Edit
@@ -113,20 +115,6 @@ Edit
           </table>
         </td>
       </tr>
-      <tr>
-        <td style="background-color:#004080;padding:10px;text-align:center;">
-          <p style="color:#ffffff;margin:0;font-size:12px;">
-            &copy; {{ ansible_date_time.year }} Your Company
-          </p>
-        </td>
-      </tr>
     </table>
   </body>
 </html>
-
-
-
-
-
-
-
