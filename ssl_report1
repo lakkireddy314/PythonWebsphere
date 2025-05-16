@@ -1,4 +1,3 @@
-
 validate_ssl_certificates.yml
 yaml
 Copy
@@ -19,17 +18,18 @@ Edit
         dest: "{{ jython_script }}"
         mode: '0755'
 
-    - name: Execute wsadmin script and capture CSV output
+    - name: Execute wsadmin script and capture output
       shell: "{{ wsadmin_path }} -lang jython -f {{ jython_script }}"
       register: wsadmin_output
       changed_when: false
 
     - name: Filter out unwanted wsadmin output lines
       set_fact:
-        filtered_lines: "{{ wsadmin_output.stdout_lines
-          | reject('search','was_user')
-          | reject('search','WASX7209I')
-          | list }}"
+        filtered_lines: >-
+          {{ wsadmin_output.stdout_lines
+             | reject('search','was_user')
+             | reject('search','WASX7209I')
+             | list }}
 
     - name: Initialize server list
       set_fact:
@@ -57,19 +57,38 @@ Edit
       vars:
         server_name:     "{{ server[2] }}"
         node_name:       "{{ server[1] }}"
+        # strip domain for variable naming
         host:            "{{ server[3].split('.')[0] }}"
         port:            "{{ server[4] | int }}"
         expected_serial: "{{ lookup('vars', host + '_cert_serial', default='') }}"
 
+---
 - name: Generate & Email SSL Validation Report
   hosts: localhost
   gather_facts: false
+
   vars:
     report_file: /tmp/ssl_validation_report.html
+    report_date: "{{ lookup('pipe','date -u +%Y-%m-%d\ %H:%M\ UTC') }}"
 
   tasks:
-    - name: Include report generation tasks
-      include_tasks: tasks/report.yml
+    - name: Render HTML report template
+      template:
+        src: templates/ssl_report.html.j2
+        dest: "{{ report_file }}"
+      vars:
+        ok_list:  "{{ hostvars[inventory_hostname].ok_list  | default([]) }}"
+        down_list:"{{ hostvars[inventory_hostname].down_list| default([]) }}"
+        generated: "{{ report_date }}"
+
+    - name: Email SSL validation report
+      mail:
+        host: smtp.your.domain
+        port: 25
+        to: ops-team@your.domain
+        subject: "SSL Validation Report – {{ generated }}"
+        body: "{{ lookup('file', report_file) }}"
+        subtype: html
 tasks/ssl_checks.yml
 yaml
 Copy
@@ -77,8 +96,8 @@ Edit
 ---
 - name: Retrieve SSL certificate serial number
   shell: |
-    echo | openssl s_client -connect {{ host }}:{{ port }} \
-      -servername {{ host }} 2>&1 | openssl x509 -noout -serial
+    echo | openssl s_client -connect {{ host }}:{{ port }} -servername {{ host }} \
+      2>&1 | openssl x509 -noout -serial
   register: cert_serial_output
   failed_when: false
 
@@ -122,33 +141,31 @@ Edit
   fail:
     msg: "[{{ server_name }}] Serial mismatch: expected={{ expected_serial }}, actual={{ actual_serial }}"
   when: actual_serial != expected_serial
-
 tasks/report.yml
 yaml
 Copy
 Edit
 ---
-- name: Render HTML report template
+- name: Render SSL report
   template:
     src: templates/ssl_report.html.j2
     dest: "{{ report_file }}"
 
-- name: Email SSL validation report
+- name: Send report via email
   mail:
     host: smtp.your.domain
     port: 25
     to: ops-team@your.domain
-    subject: "SSL Validation Report – {{ '%Y-%m-%d %H:%M UTC' | strftime }}"
+    subject: "SSL Validation Report – {{ generated }}"
     body: "{{ lookup('file', report_file) }}"
     subtype: html
-And the accompanying Jinja2 template (templates/ssl_report.html.j2):
+templates/ssl_report.html.j2
 jinja2
 Copy
 Edit
 <!DOCTYPE html>
 <html>
   <body style="margin:0; padding:20px; font-family:Arial, sans-serif; background:#f4f4f4;">
-
     <table width="600" align="center" cellpadding="0" cellspacing="0"
            style="background:#ffffff; border:1px solid #dddddd; border-radius:4px; overflow:hidden;">
       <tr>
@@ -158,31 +175,33 @@ Edit
       </tr>
       <tr>
         <td style="padding:12px; font-size:14px; color:#333333;">
-          Generated on: {{ '%Y-%m-%d %H:%M UTC' | strftime }}
+          Generated on: {{ generated }}
         </td>
       </tr>
       <tr>
         <td style="padding:0 12px 8px;">
           <table width="100%" cellpadding="6" cellspacing="0"
                  style="border-collapse:collapse; font-size:13px;">
-            <tr style="background:#E1ECF4; color:#0B4F6C; font-weight:bold;">
+            <tr style="background:#E1ECF4; color:#0B4E79; font-weight:bold;">
               <th align="left" style="border:1px solid #ccc;">Server Name</th>
               <th align="left" style="border:1px solid #ccc;">Details</th>
               <th align="center" style="border:1px solid #ccc;">Status</th>
             </tr>
             {% for entry in ok_list %}
+            {% set parts = entry.split(': ') %}
             <tr style="background:{% if loop.index is odd %}#F7FBFD{% else %}#FFFFFF{% endif %};">
-              <td style="border:1px solid #ccc;">{{ entry.split(':')[0] }}</td>
-              <td style="border:1px solid #ccc;">Serial {{ entry.split(':')[1] }}</td>
+              <td style="border:1px solid #ccc;">{{ parts[0] }}</td>
+              <td style="border:1px solid #ccc;">Serial {{ parts[1] }}</td>
               <td align="center" style="border:1px solid #ccc; color:#155724; background:#d4edda;">
                 OK
               </td>
             </tr>
             {% endfor %}
             {% for entry in down_list %}
+            {% set parts = entry.split(': ') %}
             <tr style="background:{% if loop.index is odd %}#FDF2F2{% else %}#FFFFFF{% endif %};">
-              <td style="border:1px solid #ccc;">{{ entry.split(':')[0] }}</td>
-              <td style="border:1px solid #ccc;">{{ entry.split(':')[1] }}</td>
+              <td style="border:1px solid #ccc;">{{ parts[0] }}</td>
+              <td style="border:1px solid #ccc;">{{ parts[1] }}</td>
               <td align="center" style="border:1px solid #ccc; color:#721c24; background:#f8d7da;">
                 ERROR
               </td>
@@ -193,33 +212,9 @@ Edit
       </tr>
       <tr>
         <td style="padding:12px; font-size:12px; color:#777777; text-align:center;">
-          &copy; {{ '%Y' | strftime }} Your Organization Name
+          &copy; {{ lookup('pipe','date +%Y') }} Your Organization
         </td>
       </tr>
     </table>
-
   </body>
 </html>
-With these files in place, running ansible-playbook validate_ssl_certificates.yml will:
-
-Gather host/port data via your wsadmin script.
-
-Filter and validate SSL certificate serials, accumulating ok_list and down_list.
-
-Render a polished, Outlook-friendly HTML report.
-
-Email that report to your operations team.
-
-
-
-
-
-
-
-
-
-
-
-Search
-
-Deep rese
