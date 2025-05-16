@@ -1,0 +1,123 @@
+1. Playbook (ssl_import_report.yml)
+yaml
+Copy
+Edit
+- name: SSL Import & Certificate Report
+  hosts: websphere_nodes
+  gather_facts: false
+  vars:
+    list_script:   /opt/scripts/listProfiles.py
+    import_script: /opt/scripts/importCert.py
+    config_root:   "/opt/IBM/WebSphere/AppServer/profiles/{{ profile_name }}/config"
+    profile_name:  "{{ lookup('env','PROFILE_NAME') }}"
+    was_user:      "{{ lookup('env','WAS_USER') }}"
+    ssl_pass:      "{{ lookup('env','SSL_PASS') }}"
+    report_dest:   "/tmp/ssl_report_{{ inventory_hostname }}.html"
+
+  tasks:
+    - name: Discover all profiles & hostnames & cells
+      shell: wsadmin.sh -lang jython -f {{ list_script }}
+      register: list_out
+
+    - name: Parse profile/hostname/cellName tuples
+      set_fact:
+        profile_data: >-
+          {{
+            list_out.stdout_lines
+            | select('match', '^[^:]+:')
+            | map('regex_replace',
+                  '^([^:]+):\s*([^:]+):\s*(.+)$',
+                  "{'profile':'\\1','host':'\\2','cell':'\\3'}")
+            | map('from_yaml')
+            | list
+          }}
+
+    - name: Import certificates for each profile
+      shell: >
+        wsadmin.sh -lang jython -f {{ import_script }}
+        {{ config_root }} {{ item.profile }} {{ item.host }} {{ item.cell }}
+        {{ ssl_pass }} {{ was_user }}
+      loop: "{{ profile_data }}"
+      register: import_out
+      changed_when: false
+      failed_when: "'ERROR' in import_out.stdout"
+
+    - name: Collect only the ‘Imported cert …’ lines
+      set_fact:
+        cert_records: >-
+          {{
+            import_out.results
+            | map(attribute='stdout_lines')
+            | sum(start=[])
+            | select('match', '^Imported cert')
+            | map('regex_replace',
+                 '^Imported cert\s+([^ ]+)\s+successfully into\s+([^ ]+)\s+for profile\s+([^ ]+)\.$',
+                 "{'alias':'\\1','keystore':'\\2','profile':'\\3'}")
+            | map('from_yaml')
+            | list
+          }}
+
+    - name: Render Outlook-friendly HTML report
+      template:
+        src: ssl_report.html.j2
+        dest: "{{ report_dest }}"
+
+    - name: Send SSL import report
+      mail:
+        host: smtp.example.com
+        to: ops-team@example.com
+        subject: "Venafi Self Signed – {{ profile_data[0].cell }}"
+        body: "{{ lookup('file', report_dest) }}"
+        subtype: html
+2. Report Template (ssl_report.html.j2)
+jinja
+Copy
+Edit
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
+  </head>
+  <body style="margin:0;padding:0;mso-line-height-rule:exactly;font-family:Arial,sans-serif;">
+    <!--[if mso]>
+    <style>.fallback-font{font-family:Arial,sans-serif!important;}</style>
+    <![endif]-->
+    <table width="600" align="center" cellpadding="0" cellspacing="0" border="0"
+           style="border-collapse:collapse;margin:20px auto;">
+      <tr>
+        <td style="background-color:#004080;padding:20px;text-align:center;">
+          <h1 class="fallback-font" style="color:#ffffff;margin:0;font-size:24px;">
+            Venafi Self Signed – {{ profile_data[0].cell }}
+          </h1>
+          <p style="color:#cccccc;margin:5px 0 0;font-size:12px;">
+            Date: {{ ansible_date_time.iso8601 }}
+          </p>
+        </td>
+      </tr>
+      <tr>
+        <td style="background-color:#ffffff;padding:20px;">
+          <table width="100%" cellpadding="8" cellspacing="0" border="1"
+                 style="border-collapse:collapse;border-color:#dddddd;">
+            <thead>
+              <tr>
+                <th style="background-color:#f0f0f0;font-size:14px;text-align:left;">Profile</th>
+                <th style="background-color:#f0f0f0;font-size:14px;text-align:left;">Hostname</th>
+                <th style="background-color:#f0f0f0;font-size:14px;text-align:left;">Alias</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for rec in cert_records %}
+              <tr>
+                <td style="font-size:13px;color:#333333;">{{ rec.profile }}</td>
+                <td style="font-size:13px;color:#333333;">{{ rec.profile }}.example.com</td>
+                <td style="font-size:13px;color:#333333;">{{ rec.alias }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
