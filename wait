@@ -34,3 +34,25 @@
 - name: Store telnet-based status
   ansible.builtin.set_fact:
     connection_status: "{{ 'ok' if telnet_result.rc == 0 else 'fail' }}"
+
+#####################
+
+- name: Check TCP connectivity with wait_for
+  ansible.builtin.wait_for:
+    host: "{{ host }}"
+    port: "{{ port }}"
+    timeout: 5
+    state: started
+  register: wait_result
+  ignore_errors: yes
+
+- name: Report status
+  ansible.builtin.debug:
+    msg: >-
+      {{ host }}:{{ port }} is
+      {{ 'OK' if not wait_result.failed else 'FAILED' }}
+
+- name: Set normalized status fact
+  ansible.builtin.set_fact:
+    connection_status: "{{ 'ok' if not wait_result.failed else 'fail' }}"
+
