@@ -16,3 +16,21 @@
       ansible.builtin.debug:
         msg: "Port {{ port }} on {{ inventory_hostname }} is {{ telnet_check.stdout }}"
       failed_when: telnet_check.stdout != "CONNECTED"
+####################
+- name: Check port with telnet
+  ansible.netcommon.telnet:
+    host: "{{ host }}"
+    port: "{{ port }}"
+    timeout: 5
+  register: telnet_result
+  ignore_errors: yes
+
+- name: Evaluate telnet connectivity
+  ansible.builtin.debug:
+    msg: >-
+      {{ host }}:{{ port }} is
+      {{ 'OK' if telnet_result.rc == 0 else 'FAILED' }}
+
+- name: Store telnet-based status
+  ansible.builtin.set_fact:
+    connection_status: "{{ 'ok' if telnet_result.rc == 0 else 'fail' }}"
