@@ -82,4 +82,23 @@
           {{ host }}:{{ port }} connectivity is
           {{ 'OK' if wait_result.rc == 0 else 'FAILED' }}
 
+##############################
+
+- name: Non-fatal TCP check
+  ansible.builtin.wait_for:
+    host: "{{ host }}"
+    port: "{{ port }}"
+    timeout: 5
+    state: started
+  register: wait_result
+  ignore_errors: yes
+
+- name: Set connection status based on failure flag
+  ansible.builtin.set_fact:
+    connection_status: "{{ 'ok' if not wait_result.failed else 'fail' }}"
+
+- name: Report TCP connectivity
+  ansible.builtin.debug:
+    msg: "{{ host }}:{{ port }} is {{ connection_status | upper }}"
+
 
