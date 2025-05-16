@@ -1,11 +1,18 @@
-- name: Wait up to 5s for TCP port 5432 to open (don’t fail play)
-  ansible.builtin.wait_for:
-    host: "{{ inventory_hostname }}"
+- name: Test TCP connectivity via telnet
+  hosts: db
+  gather_facts: no
+  vars:
     port: 5432
-    timeout: 5
-  register: wait_result
-  failed_when: false
 
-- name: Show what happened
-  ansible.builtin.debug:
-    var: wait_result
+  tasks:
+    - name: Telnet to {{ inventory_hostname }}:{{ port }}
+      ansible.builtin.shell: |
+        timeout 5 telnet {{ inventory_hostname }} {{ port }} </dev/null 2>&1 \
+          && echo "CONNECTED" || echo "FAILED"
+      register: telnet_check
+      changed_when: false
+
+    - name: Show telnet result
+      ansible.builtin.debug:
+        msg: "Port {{ port }} on {{ inventory_hostname }} is {{ telnet_check.stdout }}"
+      failed_when: telnet_check.stdout != "CONNECTED"
