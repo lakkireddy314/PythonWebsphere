@@ -1,0 +1,132 @@
+ssl_import_report.yml
+yaml
+Copy
+Edit
+- name: SSL Import for all profiles & report
+  hosts: websphere_nodes
+  gather_facts: false
+  vars:
+    list_script:   /opt/scripts/listProfiles.py
+    import_script: /opt/scripts/importCert.py
+    config_root:   "/opt/IBM/WebSphere/AppServer/profiles/{{ profile_name }}/config"
+    profile_name:  "{{ lookup('env','PROFILE_NAME') }}"
+    was_user:      "{{ lookup('env','WAS_USER') }}"
+    ssl_pass:      "{{ lookup('env','SSL_PASS') }}"
+    report_dest:   "/tmp/ssl_report_{{ inventory_hostname }}.html"
+
+  tasks:
+    - name: Discover all profiles & hostnames
+      shell: wsadmin.sh -lang jython -f {{ list_script }}
+      register: list_out
+
+    - name: Parse profile/hostname pairs
+      set_fact:
+        profile_hosts: >-
+          {{
+            list_out.stdout_lines
+            | select('match', '^[^:]+: ')
+            | map('regex_findall', '^([^:]+):\s*(.+)$')
+            | map('first')
+            | list
+          }}
+
+    - name: Import certificates for each profile
+      shell: >
+        wsadmin.sh -lang jython -f {{ import_script }}
+        {{ config_root }} {{ item.0 }} {{ item.1 }}
+        {{ ssl_pass }} {{ was_user }}
+      loop: "{{ profile_hosts }}"
+      register: import_out
+      changed_when: false
+      failed_when: "'ERROR' in import_out.stdout"
+
+    - name: Collect only the ‘Imported …’ lines
+      set_fact:
+        cert_records: >-
+          {{
+            import_out.results
+            | map(attribute='stdout_lines')
+            | sum(start=[])
+            | select('match', '^Imported')
+            | list
+          }}
+
+    - name: Render Outlook-friendly HTML report
+      template:
+        src: ssl_report.html.j2
+        dest: "{{ report_dest }}"
+
+    - name: Send SSL import report
+      mail:
+        host: smtp.example.com
+        to: ops-team@example.com
+        subject: "SSL Import Report – {{ inventory_hostname }}"
+        body: "{{ lookup('file', report_dest) }}"
+        subtype: html
+ssl_report.html.j2
+jinja
+Copy
+Edit
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
+  </head>
+  <body style="margin:0;padding:0;mso-line-height-rule:exactly;font-family:Arial,sans-serif;">
+    <!--[if mso]>
+    <style>.fallback-font{font-family:Arial,sans-serif!important;}</style>
+    <![endif]-->
+    <table width="600" align="center" cellpadding="0" cellspacing="0" border="0"
+           style="border-collapse:collapse;margin:20px auto;">
+      <tr>
+        <td style="background-color:#004080;padding:20px;text-align:center;">
+          <h1 class="fallback-font" style="color:#ffffff;margin:0;font-size:24px;">
+            SSL Import Report – {{ inventory_hostname }}
+          </h1>
+          <p style="color:#cccccc;margin:5px 0 0;font-size:12px;">
+            Date: {{ ansible_date_time.iso8601 }}
+          </p>
+        </td>
+      </tr>
+      <tr>
+        <td style="background-color:#ffffff;padding:20px;">
+          <table width="100%" cellpadding="8" cellspacing="0" border="1"
+                 style="border-collapse:collapse;border-color:#dddddd;">
+            <thead>
+              <tr>
+                <th style="background-color:#f0f0f0;font-size:14px;text-align:left;">Keystore</th>
+                <th style="background-color:#f0f0f0;font-size:14px;text-align:left;">Hostname</th>
+                <th style="background-color:#f0f0f0;font-size:14px;text-align:left;">Alias</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for line in cert_records %}
+              {%   set parts = line.split() %}
+              <tr>
+                <td style="font-size:13px;color:#333333;">{{ parts[4] }}</td>
+                <td style="font-size:13px;color:#333333;">{{ parts[-1] }}</td>
+                <td style="font-size:13px;color:#333333;">{{ parts[2] }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </td>
+      </tr>
+      <tr>
+        <td style="background-color:#004080;padding:10px;text-align:center;">
+          <p style="color:#ffffff;margin:0;font-size:12px;">
+            &copy; {{ ansible_date_time.year }} Your Company
+          </p>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+
+
+
+
+
+
+
