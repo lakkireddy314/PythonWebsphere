@@ -1,3 +1,12 @@
+- name: Build email subject into mail_subject
+  set_fact:
+    # Option A: join a list of strings
+    mail_subject: "{{ ['Venafi Self Signed -', cert_records[0]['cell']] | join(' ') }}"
+    # Option B: Python %-formatting
+    # mail_subject: "{{ 'Venafi Self Signed - %s' % cert_records[0]['cell'] }}"
+
+
+
 ^\[\d{2}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}:\d{3} [A-Z]{3}\] \d+\s+\w+\s+(W|E)\s+.*
 
 ^\[(?<timestamp>\d{2}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}:\d{3} [A-Z]{3})\] \d+\s+\w+\s+(?<log_level>E|W)\s+(?<message>.*)
