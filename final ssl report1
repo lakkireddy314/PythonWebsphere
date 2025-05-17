@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Combined Venafi & SSL Validation Report</title>
+  </head>
+  <body style="margin:0; padding:0; font-family:Arial,sans-serif; background:#f4f4f4;">
+    <!-- Outer table now fills the screen -->
+    <table width="100%" cellpadding="0" cellspacing="0" border="0"
+           style="border-collapse:collapse; background:#ffffff; border-top:1px solid #dddddd; border-bottom:1px solid #dddddd;">
+      
+      <!-- Header -->
+      <tr>
+        <td style="background-color:#004080; padding:20px; text-align:center;">
+          <h1 style="color:#ffffff; margin:0; font-size:24px;">
+            Venafi Self Signed – {{ profile_data[0].cell }}
+          </h1>
+          <p style="color:#cccccc; margin:5px 0 0; font-size:12px;">
+            Date: {{ ansible_date_time }}
+          </p>
+        </td>
+      </tr>
+
+      <!-- Imported Certificates Heading -->
+      <tr>
+        <td style="background:#cce5ff; color:#004080; padding:12px; font-size:18px;">
+          Imported Certificates
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:20px;">
+          <table width="100%" cellpadding="8" cellspacing="0" border="1"
+                 style="border-collapse:collapse; border-color:#dddddd; font-size:13px;">
+            <thead>
+              <tr style="background:#004080;">
+                <th style="color:#ffffff; text-align:left; padding:6px;">Profile</th>
+                <th style="color:#ffffff; text-align:left; padding:6px;">Hostname</th>
+                <th style="color:#ffffff; text-align:left; padding:6px;">Alias</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for rec in cert_records %}
+              <tr style="background:{% if loop.index is odd %}#F7FBFD{% else %}#FFFFFF{% endif %};">
+                <td style="padding:6px; color:#004080;">{{ rec.profile }}</td>
+                <td style="padding:6px; color:#004080;">{{ rec.profile }}.example.com</td>
+                <td style="padding:6px; color:#004080;">{{ rec.alias }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </td>
+      </tr>
+
+      <!-- SSL Validation Report Heading -->
+      <tr>
+        <td style="background:#cce5ff; color:#004080; padding:12px; font-size:18px;">
+          SSL Validation Report
+        </td>
+      </tr>
+      <tr>
+        <td style="background:#f9f9f9; padding:20px;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="padding:12px; font-size:14px; color:#004080;">
+                Generated on: {{ ansible_date_time }}
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 12px 12px;">
+                <table width="100%" cellpadding="6" cellspacing="0"
+                       style="border-collapse:collapse; font-size:13px;">
+                  <thead>
+                    <tr style="background:#E1ECF4; color:#0B4E79; font-weight:bold;">
+                      <th align="left" style="border:1px solid #ccc; padding:6px; color:#004080;">Server Name</th>
+                      <th align="left" style="border:1px solid #ccc; padding:6px; color:#004080;">Details</th>
+                      <th align="center" style="border:1px solid #ccc; padding:6px; color:#004080;">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for entry in ok_list %}
+                      {% set parts = entry.split(': ') %}
+                    <tr style="background:{% if loop.index is odd %}#F7FBFD{% else %}#FFFFFF{% endif %};">
+                      <td style="border:1px solid #ccc; padding:6px; color:#004080;">{{ parts[0] }}</td>
+                      <td style="border:1px solid #ccc; padding:6px; color:#004080;">Serial {{ parts[1] }}</td>
+                      <td align="center"
+                          style="border:1px solid #ccc; padding:6px; color:#004080; background:#d4edda;">
+                        OK
+                      </td>
+                    </tr>
+                    {% endfor %}
+                    {% for entry in down_list %}
+                      {% set parts = entry.split(': ') %}
+                    <tr style="background:{% if loop.index is odd %}#FDF2F2{% else %}#FFFFFF{% endif %};">
+                      <td style="border:1px solid #ccc; padding:6px; color:#004080;">{{ parts[0] }}</td>
+                      <td style="border:1px solid #ccc; padding:6px; color:#004080;">{{ parts[1] }}</td>
+                      <td align="center"
+                          style="border:1px solid #ccc; padding:6px; color:#004080; background:#f8d7da;">
+                        ERROR
+                      </td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:12px; font-size:12px; color:#777777; text-align:center;">
+                &copy; {{ lookup('pipe','date +%Y') }} Your Organization
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+
+    </table>
+  </body>
+</html>
