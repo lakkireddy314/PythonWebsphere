@@ -1,0 +1,125 @@
+Updated playbook snippet
+yaml
+Copy
+Edit
+    # 1) Collect only the ‘Imported cert …’ lines as strings
+    - name: Collect Imported-lines
+      set_fact:
+        cert_strings: >-
+          {{
+            import_out.results
+            | map(attribute='stdout_lines')
+            | sum(start=[])
+            | select('match', '^Imported cert')
+            | list
+          }}
+
+    # 2) Initialize cert_records
+    - name: Initialize cert_records
+      set_fact:
+        cert_records: []
+
+    # 3) Parse each string into a dict
+    - name: Build cert_records as list of dicts
+      set_fact:
+        cert_records: >-
+          {{ cert_records + [{
+               'alias':    item.split()[2],
+               'keystore': item.split()[5],
+               'profile':  item.split()[8],
+               'cell':     item.split()[10]
+             }] }}
+      loop: "{{ cert_strings }}"
+
+    # 4) Build the mail_subject using the first record’s cell
+    - name: Build email subject into mail_subject
+      set_fact:
+        mail_subject: >-
+          Venafi Self Signed - {{ cert_records[0]['cell'] }}
+Why this works
+cert_strings becomes a plain list of your three “Imported cert …” lines.
+
+You then initialize cert_records: [] so you can append to it.
+
+In the loop, each item is a string like
+
+csharp
+Copy
+Edit
+Imported cert dmgr01_subca_ss successfully into CellDefaultKeystore for profile dmgr01 on testcell
+Splitting on whitespace gives you an array, and you pick out the right pieces by index:
+
+item.split()[2] → dmgr01_subca_ss
+
+item.split()[5] → CellDefaultKeystore
+
+item.split()[8] → dmgr01
+
+item.split()[10] → testcell
+
+The result is a genuine list of dicts in cert_records, e.g.
+
+yaml
+Copy
+Edit
+cert_records:
+  - alias:    dmgr01_subca_ss
+    keystore: CellDefaultKeystore
+    profile:  dmgr01
+    cell:     testcell
+  - alias:    nodeA01_subca_ss
+    keystore: NodeDefaultKeystore
+    profile:  nodeA01
+    cell:     testcell
+  - alias:    webSrv01_subca_ss
+    keystore: CMSKeystore
+    profile:  webSrv01
+    cell:     testcell
+Finally you build your mail_subject from cert_records[0]['cell'], completely avoiding any nested‐quotes issues.
+
+Updated report template (ssl_report.html.j2)
+jinja
+Copy
+Edit
+<!DOCTYPE html>
+<html>
+  <head><meta charset="utf-8"/><meta http-equiv="X-UA-Compatible" content="IE=edge"/></head>
+  <body style="margin:0;padding:0;font-family:Arial,sans-serif;">
+    <table width="600" align="center" cellpadding="0" cellspacing="0" border="0"
+           style="border-collapse:collapse;margin:20px auto;">
+      <tr>
+        <td style="background-color:#004080;padding:20px;text-align:center;">
+          <h1 style="color:#ffffff;margin:0;font-size:24px;">
+            Venafi Self Signed – {{ cert_records[0]['cell'] }}
+          </h1>
+          <p style="color:#cccccc;margin:5px 0 0;font-size:12px;">
+            Date: {{ ansible_date_time.iso8601 }}
+          </p>
+        </td>
+      </tr>
+      <tr>
+        <td style="background-color:#ffffff;padding:20px;">
+          <table width="100%" cellpadding="8" cellspacing="0" border="1"
+                 style="border-collapse:collapse;border-color:#dddddd;">
+            <thead>
+              <tr>
+                <th style="background-color:#f0f0f0;text-align:left;">Profile</th>
+                <th style="background-color:#f0f0f0;text-align:left;">Keystore</th>
+                <th style="background-color:#f0f0f0;text-align:left;">Alias</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for rec in cert_records %}
+              <tr>
+                <td style="font-size:13px;color:#333333;">{{ rec['profile'] }}</td>
+                <td style="font-size:13px;color:#333333;">{{ rec['keystore'] }}</td>
+                <td style="font-size:13px;color:#333333;">{{ rec['alias'] }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
