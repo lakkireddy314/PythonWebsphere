@@ -1,0 +1,96 @@
+# Venafi Self-Signed Certificate Import & Reporting
+
+This project automates the import of self-signed PFX certificates into IBM WebSphere profiles (Deployment Manager, Node Agents, Web Servers) and generates an Outlook-friendly HTML report summarizing the results.
+
+## Contents
+
+* **`listProfiles.py`**: Jython wsadmin script to list all WebSphere profiles and their hostnames/cell names.
+* **`importCert.py`**: Jython wsadmin script to import a `.pfx` certificate into a specific profile’s keystore and update SSL configuration.
+* **`ssl_import_report.yml`**: Ansible playbook (2.9-compatible) that:
+
+  1. Discovers all profiles via `listProfiles.py`
+  2. Loops through each profile/host/cell triplet and runs `importCert.py`
+  3. Captures only the `Imported cert ...` lines, parses them into structured data
+  4. Builds an email subject and renders an HTML report via a Jinja2 template
+  5. Sends the report via email
+* **`ssl_report.html.j2`**: Outlook-optimized Jinja2 template for the HTML report.
+
+## Prerequisites
+
+* **Ansible 2.9** installed on your control machine.
+* **IBM WebSphere wsadmin** environment accessible from the Ansible target hosts.
+* **Python/Jython** available under WebSphere profiles to execute `listProfiles.py` and `importCert.py`.
+* **SMTP server** configured for the Ansible `mail` module.
+
+## Setup
+
+1. Clone or copy this repository onto your Ansible control host.
+2. Ensure the following scripts are placed under `/opt/scripts/` on each WebSphere node:
+
+   * `listProfiles.py`
+   * `importCert.py`
+3. Configure `ssl_import_report.yml` variables as needed (SMTP host, recipients, profile paths, credentials).
+4. Place the Jinja2 template `ssl_report.html.j2` in your Ansible templates directory.
+
+## Usage
+
+Run the Ansible playbook against your WebSphere nodes group:
+
+```bash
+ansible-playbook -i inventory ssl_import_report.yml \
+  --extra-vars "PROFILE_NAME=yourProfile HOST_NAME=yourHost WAS_USER=wasUser SSL_PASS=yourPassword"
+```
+
+* **`PROFILE_NAME`**, **`HOST_NAME`**, **`WAS_USER`**, and **`SSL_PASS`** are passed via extra-vars or defined in your inventory.
+* The playbook will:
+
+  1. Execute `listProfiles.py` to discover all `profile: host: cell` entries.
+  2. Invoke `importCert.py` for each entry to perform certificate import and SSL config.
+  3. Parse the output to build `cert_records` containing `alias`, `keystore`, `profile`, and `cell`.
+  4. Generate an Outlook-friendly HTML report and email it.
+
+## Ansible Variables
+
+| Variable        | Description                                                  |
+| --------------- | ------------------------------------------------------------ |
+| `list_script`   | Path to `listProfiles.py`                                    |
+| `import_script` | Path to `importCert.py`                                      |
+| `config_root`   | WebSphere profile config root (e.g. `/opt/.../profiles/...`) |
+| `profile_name`  | WebSphere profile name (e.g. `Dmgr01`)                       |
+| `was_user`      | OS user under which WAS runs                                 |
+| `ssl_pass`      | Password for the PFX certificate                             |
+| `report_dest`   | Destination path for the generated HTML report               |
+
+## Output
+
+* A consolidated Outlook-friendly HTML report at `{{ report_dest }}`.
+* Email sent to the configured recipients with subject:
+
+  > `Venafi Self Signed – <cellName>`
+
+### Sample Report Snippet
+
+```html
+<h1>Venafi Self Signed – testcell</h1>
+<table>
+  <tr><th>Profile</th><th>Keystore</th><th>Alias</th></tr>
+  <tr><td>dmgr01</td><td>CellDefaultKeystore</td><td>dmgr01_subca_ss</td></tr>
+  <tr><td>nodeA01</td><td>NodeDefaultKeystore</td><td>nodeA01_subca_ss</td></tr>
+  <tr><td>webSrv01</td><td>CMSKeystore</td><td>webSrv01_subca_ss</td></tr>
+</table>
+```
+
+## Troubleshooting
+
+* **YAML parsing errors** around `{{ … }}`: ensure Jinja expressions are not nested inside conflicting quote types.
+* **`ERROR` in import output**: the playbook’s `failed_when` will stop if any import logs `ERROR:`.
+* **SMTP/email issues**: verify `mail` module connectivity and credentials.
+
+## Extending
+
+* Add additional columns (e.g., timestamps) by extending the Jinja2 template and parsing logic.
+* Integrate with a central monitoring system by replacing the `mail` task with a notification module.
+
+---
+
+*End of README*
