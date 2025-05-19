@@ -1,0 +1,128 @@
+SSL Validation Automation for WebSphere
+This repository provides an Ansible-2.9–compatible solution to:
+
+Discover all Application Servers and the Deployment Manager in a WebSphere cell, retrieving their WC_defaulthost_secure host/port.
+
+Validate each server’s SSL certificate against a pre-set expected serial (dynamic Ansible fact).
+
+Aggregate results into “OK” and “Error/Down” lists.
+
+Render an Outlook-friendly HTML report, injected with your limit and cellname context.
+
+Email the report inline—no temporary files needed—via a sub-task in an Ansible role.
+
+Prerequisites
+Ansible 2.9 installed on the control node.
+
+Python (with Jinja2) on controller.
+
+Targets (websphere_servers) with:
+
+/opt/IBM/WebSphere/AppServer/bin/wsadmin.sh accessible.
+
+Jython script upload permitted.
+
+OpenSSL installed for openssl s_client.
+
+SMTP relay reachable from controller (configured in mail_report.yml).
+
+File Structure
+graphql
+Copy
+Edit
+.
+├── validate_ssl_certificates.yml     # Main playbook
+├── wsadmin_jython_script.py          # Jython script to list secure ports
+└── roles/
+    └── ssl_validation/
+        ├── tasks/
+        │   ├── ssl_checks.yml        # Per-server SSL check logic
+        │   └── mail_report.yml       # Sub-task to inline-email the report
+        └── templates/
+            └── ssl_report.html.j2    # HTML report template
+Top-Level Playbook: validate_ssl_certificates.yml
+Defines a single play on websphere_servers that:
+
+Copies and runs the Jython script (wsadmin_jython_script.py).
+
+Filters out unwanted lines (was_user, WASX7209I).
+
+Builds servers as a list of [cell,node,server,host,port].
+
+Initializes ok_list/down_list once on the controller using run_once + delegate_to: localhost.
+
+Includes ssl_checks.yml to process each server entry:
+
+Runs openssl s_client (always succeeds).
+
+On connection failures / cert-load errors, records into down_list.
+
+Otherwise extracts the serial, compares to {{ lookup('vars', host + '_cert_serial') }}, and records into ok_list or fails on mismatch.
+
+Finally includes mail_report.yml (also as run_once, delegate_to: localhost) to email the consolidated report.
+
+Role Tasks
+tasks/ssl_checks.yml
+Retrieve SSL via openssl s_client -noout -serial.
+
+Error handling using wait_for to distinguish “server down” vs. “unable to load certificate.”
+
+Record results on the controller by delegating set_fact for ok_list and down_list.
+
+Fail explicitly if serials don’t match expected.
+
+tasks/mail_report.yml
+Uses the template lookup to render ssl_report.html.j2 in memory.
+
+Calls the mail module with body set to the rendered HTML.
+
+Delegates to localhost and runs only once, ensuring one consolidated email.
+
+Template: ssl_report.html.j2
+Presents your limit in the email subject and as a sub-heading.
+
+Displays the cell name in the main header:
+
+jinja
+Copy
+Edit
+SSL Validation Report for {{ cellname }}
+Renders two table sections—OK and ERROR—with inline CSS safe for Outlook.
+
+Alternates row colors for readability.
+
+Configuration & Usage
+Set the following variables (via inventory/group_vars or earlier tasks):
+
+cellname: your WebSphere cell name.
+
+limit: the context/limit you wish to surface in the report subject.
+
+Dynamic facts named {{ host }}_cert_serial for each host.
+
+Adjust your SMTP settings in roles/ssl_validation/tasks/mail_report.yml.
+
+Run the playbook:
+
+bash
+Copy
+Edit
+ansible-playbook -i inventory validate_ssl_certificates.yml
+Check your inbox for an HTML report summarizing SSL health.
+
+Customization
+Email styling: edit ssl_report.html.j2—all CSS is inline for maximum Outlook compatibility.
+
+Additional checks: extend ssl_checks.yml for OCSP, fingerprint, etc.
+
+Notification: integrate with PagerDuty or Slack by swapping out the mail task.
+
+License & Support
+This implementation is provided “as-is.” For questions or enhancements, please contact your automation team.
+
+
+
+
+
+
+
