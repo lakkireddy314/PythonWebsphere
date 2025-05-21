@@ -1,0 +1,198 @@
+2. SSL Check Tasks: roles/ssl_validation/tasks/ssl_checks.yml
+yaml
+Copy
+Edit
+---
+- name: Retrieve SSL certificate serial number
+  shell: |
+    echo | openssl s_client -connect {{ host }}:{{ port }} \
+      -servername {{ host }} 2>&1 | openssl x509 -noout -serial
+  register: cert_serial_output
+  failed_when: false
+
+- name: Handle connection or cert-load errors
+  block:
+    - name: Test TCP connectivity
+      wait_for:
+        host: "{{ host }}"
+        port: "{{ port }}"
+        timeout: 5
+      register: port_check
+      failed_when: false
+
+    - name: Record server-down on controller
+      delegate_to: localhost
+      set_fact:
+        down_list: >-
+          {{ down_list + [
+              {
+                'server': server_name,
+                'host':   host,
+                'port':   port,
+                'status': 'server down'
+              }
+            ] }}
+  when: cert_serial_output.rc | default(1) != 0
+
+- name: Skip further checks on error
+  meta: end_host
+  when: cert_serial_output.rc | default(1) != 0
+
+- name: Extract actual serial number
+  set_fact:
+    actual_serial: >-
+      {{ cert_serial_output.stdout
+         | regex_search('serial=([A-F0-9]+)', '\\1')
+         | default('') }}
+
+- name: Record OK serial (with host:port) on controller
+  delegate_to: localhost
+  set_fact:
+    ok_list: >-
+      {{ ok_list + [
+          {
+            'server': server_name,
+            'host':   host,
+            'port':   port,
+            'serial': actual_serial
+          }
+        ] }}
+
+- name: Fail on serial mismatch
+  fail:
+    msg: "[{{ server_name }}] Serial mismatch: expected={{ expected_serial }}, actual={{ actual_serial }}"
+  when: actual_serial != expected_serial
+Explanation
+
+Error handling: If OpenSSL non-zero exits (or rc absent), we test TCP and record a “server down” entry with host/port.
+
+End on error: Skips serial extraction and compare.
+
+OK entries: Always record server, host, port, and actual serial for matching.
+
+Failure: Only a true serial mismatch triggers a fatal error.
+
+3. Mail Report Sub-Task: roles/ssl_validation/tasks/mail_report.yml
+yaml
+Copy
+Edit
+---
+- name: Send SSL validation report via email
+  mail:
+    host: smtp.your.domain
+    port: 25
+    to: ops-team@your.domain
+    subject: "SSL Validation Report – {{ limit }}"
+    body: "{{ lookup('template', 'ssl_report.html.j2') }}"
+    subtype: html
+  delegate_to: localhost
+  run_once: true
+Explanation
+
+Uses the template lookup to render the HTML in-memory (no temp file).
+
+Sends a single email (run_once) from the controller.
+
+Subject now uses your {{ limit }} variable.
+
+4. HTML Report Template: roles/ssl_validation/templates/ssl_report.html.j2
+jinja2
+Copy
+Edit
+<!DOCTYPE html>
+<html>
+  <body style="margin:0; padding:20px; font-family:Arial,sans-serif; background:#f4f4f4;">
+    <table width="600" align="center" cellpadding="0" cellspacing="0"
+           style="background:#ffffff; border:1px solid #dddddd; border-radius:4px;">
+      <tr>
+        <td style="background:#0B4F6C; color:#ffffff; padding:16px; font-size:20px;">
+          SSL Validation Report for {{ cellname }}
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:12px; font-size:14px; color:#333333;">
+          Context / Limit: {{ limit }}
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:0 12px 8px;">
+          <table width="100%" cellpadding="6" cellspacing="0"
+                 style="border-collapse:collapse; font-size:13px;">
+            <!-- Table Header -->
+            <tr style="background:#E1ECF4; color:#0B4E79; font-weight:bold;">
+              <th style="border:1px solid #ccc;">Server Name</th>
+              <th style="border:1px solid #ccc;">Host:Port</th>
+              <th style="border:1px solid #ccc;">Details</th>
+              <th style="border:1px solid #ccc;">Status</th>
+            </tr>
+            <!-- OK Rows -->
+            {% for item in ok_list %}
+            <tr style="background:{% if loop.index is odd %}#F7FBFD{% else %}#FFFFFF{% endif %};">
+              <td style="border:1px solid #ccc;">{{ item.server }}</td>
+              <td style="border:1px solid #ccc;">{{ item.host }}:{{ item.port }}</td>
+              <td style="border:1px solid #ccc;">Serial {{ item.serial }}</td>
+              <td align="center"
+                  style="border:1px solid #ccc; color:#155724; background:#d4edda;">
+                OK
+              </td>
+            </tr>
+            {% endfor %}
+            <!-- Error Rows -->
+            {% for item in down_list %}
+            <tr style="background:{% if loop.index is odd %}#FDF2F2{% else %}#FFFFFF{% endif %};">
+              <td style="border:1px solid #ccc;">{{ item.server }}</td>
+              <td style="border:1px solid #ccc;">{{ item.host }}:{{ item.port }}</td>
+              <td style="border:1px solid #ccc;">{{ item.status }}</td>
+              <td align="center"
+                  style="border:1px solid #ccc; color:#721c24; background:#f8d7da;">
+                ERROR
+              </td>
+            </tr>
+            {% endfor %}
+          </table>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:12px; font-size:12px; color:#777777; text-align:center;">
+          &copy; {{ lookup('pipe','date +%Y') }} Your Organization
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+Explanation
+
+Header shows your cellname.
+
+Sub-heading shows limit.
+
+Columns: Server Name, Host:Port, Details (serial or status), Status (OK/ERROR).
+
+Row styling uses inline CSS and alternating backgrounds for Outlook compatibility.
+
+With these changes in place, running:
+
+bash
+Copy
+Edit
+ansible-playbook validate_ssl_certificates.yml
+will:
+
+Gather and parse WebSphere secure-port data.
+
+Validate SSL certificates, building rich result objects.
+
+Render a professional, Outlook-friendly HTML report inline.
+
+Email it once, using your limit as the subject and including cellname in the header.
+
+
+
+
+
+
+
+
+
+
+
