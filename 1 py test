@@ -1,9 +1,75 @@
-webServerId = AdminConfig.list("WebServer")
 
-# Retrieve the attributes for the WebServer object.
-attrs = AdminConfig.attributes(webServerId)
+1) In the AWX UI, edit your Job Template and add to EXTRA VARIABLES:
+yaml
+Copy
+Edit
+# 1. who kicked it off
+launched_by: "{{ tower.user.username }}"
 
-# Loop through the list and print each attribute name and value neatly.
-for attr in attrs:
-    # attr is a two-element list [attributeName, attributeValue]
-    print "%-30s : %s" % (attr[0], attr[1])
+# 2. which template was run
+job_template_name: "{{ tower.job_template.name }}"
+
+# 3. who _created_ that template
+job_template_created_by: "{{ tower.job_template.created_by.username }}"
+Why this works
+
+AWX injects the tower dictionary into the Jinja context when it renders those Extra Vars.
+
+You’re defining your own top‐level playbook vars—no lookups, no delegate_to, no environment headaches.
+
+2) In your playbook (ssl_import_report.yml), reference them directly:
+yaml
+Copy
+Edit
+- name: SSL Import & Certificate Report
+  hosts: websphere_nodes
+  gather_facts: false
+  vars:
+    # these come from your Job Template’s EXTRA VARIABLES
+    launched_by:           "{{ launched_by }}"
+    job_template_name:     "{{ job_template_name }}"
+    job_template_created_by: "{{ job_template_created_by }}"
+
+  tasks:
+    # … discovery, import, report-building …
+
+    - name: Build email subject into mail_subject
+      set_fact:
+        mail_subject: >-
+          Venafi Self Signed – {{ cert_records[0]['cell'] }}
+          (Launched by {{ launched_by }}, Template created by {{ job_template_created_by }})
+      run_once: true
+
+    - name: Send SSL import report
+      mail:
+        host: smtp.example.com
+        to: ops-team@example.com
+        subject: "{{ mail_subject }}"
+        body:    "{{ lookup('file', report_dest) }}"
+        subtype: html
+      run_once: true
+3) (Optional) Show in your HTML report
+Add a little footer or header in your ssl_report.html.j2:
+
+jinja
+Copy
+Edit
+<tr>
+  <td colspan="3" style="text-align:right; font-size:12px; color:#666;">
+    Launched by {{ launched_by }} &bull; Template created by {{ job_template_created_by }}
+  </td>
+</tr>
+Summary
+Don’t try to capture AWX’s internal env vars on remote hosts (they won’t be there).
+
+Do use AWX’s built-in tower Jinja context in your Job Template’s Extra Variables to inject exactly what you need into your playbook.
+
+Then you can consume launched_by, job_template_name, and job_template_created_by as normal Ansible variables throughout your play and report template.
+
+
+
+
+
+
+
+
