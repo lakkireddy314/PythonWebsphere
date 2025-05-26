@@ -1,3 +1,18 @@
+# roles/your_role/defaults/main.yml
+
+# Base URL for AWX/Tower’s API  
+tower_api_url: "https://{{ lookup('env','AWX_HOST') | default(lookup('env','TOWER_HOST'), true) }}/api/v2"
+
+# OAuth token credential you’ve stored in AWX/Tower and exposed as an env var  
+tower_oauth_token: "{{ lookup('env','TOWER_OAUTH_TOKEN') }}"
+
+# Whether to verify the AWX/Tower TLS cert  
+tower_verify: false         # or path to CA bundle
+
+# The name of the Job Template you want to query  
+# (this should match exactly what’s in AWX/Tower)  
+job_template_name: "Import SSL Certs"
+
 ---
 # Subtask: Retrieve Job Template ID and the user who last ran it
 
