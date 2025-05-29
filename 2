@@ -1,0 +1,47 @@
+# getAppServerHostnamesPortsAndCell.py
+# Run with: wsadmin.sh -lang jython -f getAppServerHostnamesPortsAndCell.py
+
+import re
+
+# Header
+print '%-25s %-20s %-20s %-10s %s' % (
+    'AppServer', 'Node', 'Host', 'SecurePort', 'Cell'
+)
+print '-' *  ninety
+
+# Loop through every Server config
+for serverId in AdminConfig.list('Server').splitlines():
+    # Only application servers
+    if AdminConfig.showAttribute(serverId, 'serverType') != 'APPLICATION_SERVER':
+        continue
+
+    # Server name
+    serverName = AdminConfig.showAttribute(serverId, 'name')
+
+    # Parse cell name from the config ID string
+    # e.g. ".../cells/MyCell/nodes/MyNode/servers/..."
+    cellMatch = re.search(r'cells/([^/]+)/nodes', serverId)
+    cellName = cellMatch.group(1) if cellMatch else 'UNKNOWN'
+
+    # Parse node name
+    nodeMatch = re.search(r'nodes/([^/]+)/servers', serverId)
+    nodeName = nodeMatch.group(1) if nodeMatch else 'UNKNOWN'
+
+    # Get the Node config and its hostName
+    nodeConfigId = AdminConfig.getid('/Node:%s/' % nodeName)
+    hostName = AdminConfig.showAttribute(nodeConfigId, 'hostName') if nodeConfigId else 'UNKNOWN'
+
+    # Default port if not found
+    securePort = 'NOT_DEFINED'
+    # Enumerate NamedEndPoint entries under this server
+    for neId in AdminConfig.list('NamedEndPoint', serverId).splitlines():
+        if AdminConfig.showAttribute(neId, 'endPointName') != 'WC_defaulthost_secure':
+            continue
+        epConfigId = AdminConfig.showAttribute(neId, 'endPoint')
+        securePort = AdminConfig.showAttribute(epConfigId, 'port')
+        break
+
+    # Print aligned columns, adding Cell at the end
+    print '%-25s %-20s %-20s %-10s %s' % (
+        serverName, nodeName, hostName, securePort, cellName
+    )
