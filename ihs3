@@ -1,0 +1,86 @@
+---
+# 1. Build a unique list of aliases to process
+- name: "Set unique_aliases fact"
+  set_fact:
+    unique_aliases: >-
+      {{
+        (httpd_pickup_ids
+         | dict2items
+         | map(attribute='value')
+         | unique)
+        | list
+      }}
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
+    - vcert-pickup
+
+# 2. Ensure VCert directory exists
+- name: "Ensure VCert directory exists"
+  file:
+    path: "{{ vcert_install_dir }}"
+    state: directory
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
+    - vcert-pickup
+
+# 3. Download VCert CLI zip if missing
+- name: "Download VCert CLI zip if missing"
+  get_url:
+    url: "{{ vcert_download_url }}"
+    dest: "{{ vcert_install_dir }}/vcert.zip"
+    creates: "{{ vcert_install_dir }}/vcert.zip"
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
+    - vcert-pickup
+
+# 4. Unarchive VCert CLI idempotently
+- name: "Unarchive VCert CLI idempotently"
+  unarchive:
+    src: "{{ vcert_install_dir }}/vcert.zip"
+    dest: "{{ vcert_install_dir }}/"
+    remote_src: yes
+    creates: "{{ vcert_install_dir }}/vcert"
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
+    - vcert-pickup
+
+# 5. Fetch PEM for each unique alias
+- name: "Fetch PEM for each unique alias if missing"
+  command: >
+    {{ vcert_install_dir }}/vcert pickup
+      --format pem
+      --output {{ vcert_install_dir }}/{{ env }}-{{ alias_name }}.pem
+      --pickup-id {{ alias_name }}
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ venafi_pickupid }}
+  args:
+    creates: "{{ vcert_install_dir }}/{{ env }}-{{ alias_name }}.pem"
+  loop: "{{ unique_aliases }}"
+  loop_control:
+    loop_var: alias_name
+    label: "{{ alias_name }}"
+  register: pickup_results
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
+    - vcert-pickup
+
+# 6. Set flag if any pickup succeeded
+- name: "Set any_pickup_success flag"
+  set_fact:
+    any_pickup_success: "{{ pickup_results.results
+                           | selectattr('rc','equalto',0)
+                           | list | length > 0 }}"
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
