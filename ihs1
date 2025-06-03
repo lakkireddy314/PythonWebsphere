@@ -1,0 +1,611 @@
+Summary
+In this update, the role now uses IBM GSKit’s gskcmd -keydb -create to build a fresh .kdb per alias and gskcmd -cert -import to load the renewed PFX into it, stashing the password for IHS 
+IBM - United States
+. Backups of the original KDB and httpd.conf are placed into an adjacent Ansible_backup directory via the file and copy modules to preserve originals 
+Ansible Documentation
+Ansible Documentation
+. The httpd.conf is then updated in-place using lineinfile to point at the new KDB and alias 
+Ansible Documentation
+, and handlers (notify: cert_replaced) are flushed immediately to restart IBM HTTP Server so the new cert is active before further tasks run 
+Ansible Documentation
+.
+
+1. group_vars/prod.yml
+yaml
+Copy
+Edit
+httpd_pickup_ids:
+  "/opt/ihs/conf/test1.conf": "cert_alias_test1"
+  "/opt/ihs/conf/test2.conf": "cert_alias_test2"
+Explanation
+Maps each IBM HTTP Server config path to its Venafi pickup-ID (the cert alias), driving both the pickup and config-parsing phases 
+Urs-o-Log
+.
+
+2. vars/main.yml
+yaml
+Copy
+Edit
+env: "prod"
+
+# VCert CLI download/install
+vcert_download_url: "https://localhost/Certs/vcert.zip"
+vcert_install_dir:  "/tmp/vcert"
+vcert_password:     "WEBASCh@ngeit"
+
+# Venafi API credentials
+venafi_access_token: "REPLACE_WITH_ACCESS_TOKEN"
+venafi_pickupid:     "REPLACE_WITH_PICKUP_ID"
+
+# Renewal threshold (days)
+cert_renew_threshold: 90
+
+# IBM HTTP Server restart config
+httpd_config_path:  "/opt/ihs/85/conf/httpd.conf"
+
+# Dry-run mode
+report_only:        false
+Explanation
+Centralizes URLs, paths, credentials, thresholds, and the dry-run flag for easy per-environment overrides 
+Ansible Documentation
+.
+
+3. handlers/main.yml
+yaml
+Copy
+Edit
+---
+- name: "Renew PFX via VCert CLI"
+  command: >
+    {{ vcert_install_dir }}/vcert renew
+      --alias {{ cert_alias }}
+      --format pfx
+      --password {{ vcert_password }}
+      --chain full
+      --output {{ vcert_install_dir }}/{{ cert_alias }}.pfx
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ venafi_pickupid }}
+  args:
+    creates: "{{ vcert_install_dir }}/{{ cert_alias }}.pfx"
+  delegate_to: localhost
+  tags:
+    - renew
+    - vcert-renew
+
+- name: "Restart IBM HTTP Server"
+  command: "/opt/ihs/85/bin/apachectl -f {{ httpd_config_path }} -k restart"
+  listen: "cert_replaced"
+  tags:
+    - restart
+Explanation
+
+The renew handler runs vcert renew once per notification, using creates: to ensure idempotency—skipping if the PFX already exists 
+Urs-o-Log
+.
+
+The restart handler, listening on cert_replaced, reloads IBM HTTP Server whenever certificates are replaced 
+IBM - United States
+.
+
+4. tasks/main.yml
+yaml
+Copy
+Edit
+---
+- include_tasks: download_local_cert.yml
+
+- include_tasks: check_cert_expiry.yml
+  when: any_pickup_success
+  tags:
+    - precheck
+
+- name: "Determine if this host needs any renewals"
+  set_fact:
+    host_needs_renewal: >-
+      {{ venafi_cert_info
+         | dict2items
+         | selectattr('value.changed','equalto',true)
+         | list | length > 0 }}
+  tags:
+    - precheck
+
+- name: "Debug host_needs_renewal"
+  debug:
+    var: host_needs_renewal
+  tags:
+    - precheck
+
+- include_tasks: locate_configs.yml
+  when: host_needs_renewal
+  tags:
+    - config-discovery
+
+- include_tasks: extract_values.yml
+  when: host_needs_renewal
+  tags:
+    - extract
+
+- name: "Process each certificate end-to-end"
+  include_tasks: process_cert.yml
+  loop: "{{ cert_configs }}"
+  loop_control:
+    loop_var: cert_entry
+    label: "{{ cert_entry.cert_alias }}"
+  when: host_needs_renewal
+  tags:
+    - process
+
+- include_tasks: cleanup.yml
+  when: host_needs_renewal
+  tags:
+    - cleanup
+
+- include_tasks: send_report.yml
+  when: host_needs_renewal
+  tags:
+    - report
+Explanation
+
+set_fact host_needs_renewal uses dict2items + selectattr to flag hosts needing at least one renewal 
+Stack Overflow
+.
+
+Subsequent include_tasks lines are gated by when: host_needs_renewal, so only relevant hosts execute the heavy tasks, avoiding global skips 
+Ansible Documentation
+.
+
+All loops are on include_tasks (supported since Ansible 2.4), never on block, ensuring compatibility with Ansible 2.9 
+Ansible Documentation
+.
+
+5. tasks/download_local_cert.yml
+yaml
+Copy
+Edit
+---
+- name: "Ensure VCert directory exists"
+  file:
+    path: "{{ vcert_install_dir }}"
+    state: directory
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
+    - vcert-pickup
+
+- name: "Download VCert CLI zip if missing"
+  get_url:
+    url: "{{ vcert_download_url }}"
+    dest: "{{ vcert_install_dir }}/vcert.zip"
+    creates: "{{ vcert_install_dir }}/vcert.zip"
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
+    - vcert-pickup
+
+- name: "Unarchive VCert CLI idempotently"
+  unarchive:
+    src: "{{ vcert_install_dir }}/vcert.zip"
+    dest: "{{ vcert_install_dir }}/"
+    remote_src: yes
+    creates: "{{ vcert_install_dir }}/vcert"
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - precheck
+    - vcert-pickup
+
+- name: "Fetch PEM for each alias if missing"
+  command: >
+    {{ vcert_install_dir }}/vcert pickup
+      --format pem
+      --output {{ vcert_install_dir }}/{{ alias_entry.value }}.pem
+      --pickup-id {{ alias_entry.value }}
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ venafi_pickupid }}
+  args:
+    creates: "{{ vcert_install_dir }}/{{ alias_entry.value }}.pem"
+  loop: "{{ httpd_pickup_ids | dict2items }}"
+  loop_control:
+    loop_var: alias_entry
+    label: "{{ alias_entry.key }}"
+  register: pickup_results
+  delegate_to: localhost
+  tags:
+    - precheck
+    - vcert-pickup
+
+- name: "Set any_pickup_success flag"
+  set_fact:
+    any_pickup_success: "{{ pickup_results.results
+                           | selectattr('rc','equalto',0)
+                           | list | length > 0 }}"
+  tags:
+    - precheck
+Explanation
+
+get_url with creates: ensures the VCert ZIP is downloaded only once 
+Ansible Documentation
+.
+
+unarchive with creates: unpacks the CLI idempotently 
+Ansible Documentation
+.
+
+The looped vcert pickup fetches PEMs per alias only if missing.
+
+6. tasks/check_cert_expiry.yml
+yaml
+Copy
+Edit
+---
+- name: "Initialize venafi_cert_info dict"
+  set_fact:
+    venafi_cert_info: {}
+  tags:
+    - precheck
+    - expiry-check
+
+- name: "Gather expiry-days & serial via Bash"
+  shell: |
+    exp=$(openssl x509 -enddate -noout \
+         -in {{ vcert_install_dir }}/{{ alias_entry.value }}.pem \
+         | cut -d= -f2)
+    days=$(( ( $(date -d "$exp" +%s) - $(date +%s) ) / 86400 ))
+    serial=$(openssl x509 -in {{ vcert_install_dir }}/{{ alias_entry.value }}.pem \
+           -serial -noout | cut -d= -f2)
+    echo "{{ alias_entry.value }} $days $serial"
+  args:
+    executable: /bin/bash
+  register: expiry_results
+  changed_when: false
+  delegate_to: localhost
+  loop: "{{ httpd_pickup_ids | dict2items }}"
+  loop_control:
+    loop_var: alias_entry
+    label: "{{ alias_entry.key }}"
+  tags:
+    - precheck
+    - expiry-check
+
+- name: "Build venafi_cert_info from results"
+  set_fact:
+    venafi_cert_info: >-
+      {{
+        venafi_cert_info | default({}) | combine({
+          (res_entry.stdout.split()[0]): {
+            "expiry_days": (res_entry.stdout.split()[1] | int),
+            "serial":      (res_entry.stdout.split()[2]),
+            "changed":     ((res_entry.stdout.split()[1] | int) <= cert_renew_threshold)
+          }
+        })
+      }}
+  loop: "{{ expiry_results.results }}"
+  loop_control:
+    loop_var: res_entry
+    label: "{{ res_entry.stdout.split()[0] }}"
+  tags:
+    - precheck
+    - expiry-check
+
+- name: "Debug venafi_cert_info"
+  debug:
+    var: venafi_cert_info
+  tags:
+    - precheck
+    - expiry-check
+Explanation
+
+Offloads all date arithmetic to Bash to avoid Jinja2 parsing errors 
+Urs-o-Log
+.
+
+Aggregates expiry days and serial into a dict with a changed flag for threshold comparison.
+
+7. tasks/locate_configs.yml
+yaml
+Copy
+Edit
+---
+- name: "Build list of HTTPD configs"
+  set_fact:
+    bpm_conf_files: "{{ httpd_pickup_ids | dict2items }}"
+  tags:
+    - config-discovery
+Explanation
+Converts the pickup-ID mapping into a list of { key, value } items for extraction 
+Ansible Documentation
+.
+
+8. tasks/extract_values.yml
+yaml
+Copy
+Edit
+---
+- name: "Initialize cert_configs list"
+  set_fact:
+    cert_configs: []
+  tags:
+    - extract
+    - config-parse
+
+- name: "Extract cert entries from each HTTPD config"
+  include_tasks: extract_one_conf.yml
+  loop: "{{ httpd_pickup_ids | dict2items }}"
+  loop_control:
+    loop_var: conf_entry
+    label: "{{ conf_entry.key }}"
+  tags:
+    - extract
+    - config-parse
+Explanation
+Uses include_tasks + loop (supported since Ansible 2.4) to iterate without illegal block loops in Ansible 2.9 
+Ansible Documentation
+.
+
+9. tasks/extract_one_conf.yml
+yaml
+Copy
+Edit
+---
+- name: "Check that {{ conf_entry.key }} exists"
+  stat:
+    path: "{{ conf_entry.key }}"
+  register: conf_stat
+  changed_when: false
+  tags:
+    - extract
+    - config-parse
+
+- name: "Skip {{ conf_entry.key }} if missing"
+  debug:
+    msg: "File {{ conf_entry.key }} not found, skipping."
+  when: not conf_stat.stat.exists
+  tags:
+    - extract
+    - config-parse
+
+- name: "Extract Keyfile paths"
+  shell: |
+    grep -E '^[[:space:]]*Keyfile' {{ conf_entry.key }} \
+      | grep -v '^[[:space:]]*#' \
+      | sed -E 's/^[[:space:]]*Keyfile[[:space:]]*=?[[:space:]]*//'
+  register: keyfiles_result
+  changed_when: false
+  when: conf_stat.stat.exists
+  tags:
+    - extract
+    - config-parse
+
+- name: "Extract SSLServerCert aliases"
+  shell: |
+    grep -E '^[[:space:]]*SSLServerCert' {{ conf_entry.key }} \
+      | grep -v '^[[:space:]]*#' \
+      | sed -E 's/^[[:space:]]*SSLServerCert[[:space:]]*=?[[:space:]]*//'
+  register: ssl_aliases_result
+  changed_when: false
+  when: conf_stat.stat.exists
+  tags:
+    - extract
+    - config-parse
+
+- name: "Extract first Listen port"
+  shell: |
+    grep -E '^[[:space:]]*Listen' {{ conf_entry.key }} \
+      | grep -v '^[[:space:]]*#' \
+      | head -n1 \
+      | sed -E 's/^[[:space:]]*Listen[[:space:]]+([0-9]+).*/\1/'
+  register: listen_ports_result
+  changed_when: false
+  when: conf_stat.stat.exists
+  tags:
+    - extract
+    - config-parse
+
+- name: "Append each Keyfile entry to cert_configs"
+  set_fact:
+    cert_configs: "{{ cert_configs + [ {
+      'config_file': conf_entry.key,
+      'kdb_file':    kdb,
+      'cert_alias':  conf_entry.value,
+      'listen_port': (listen_ports_result.stdout | default('443'))
+    } ] }}"
+  loop: "{{ keyfiles_result.stdout_lines | default([]) }}"
+  loop_control:
+    loop_var: kdb
+  when:
+    - conf_stat.stat.exists
+    - keyfiles_result.stdout_lines | length > 0
+  tags:
+    - extract
+    - config-parse
+
+- name: "Debug parsed entries"
+  debug:
+    msg: >-
+      Keyfiles={{ keyfiles_result.stdout_lines | default([]) }},
+      SSLServerCerts={{ ssl_aliases_result.stdout_lines | default([]) }},
+      ListenPort={{ listen_ports_result.stdout | default('443') }}
+  when: conf_stat.stat.exists
+  tags:
+    - extract
+    - config-parse
+Explanation
+Leverages grep | sed to strip directive names and comments, then appends structured entries to cert_configs 
+CMOD
+.
+
+10. tasks/renew_cert.yml
+yaml
+Copy
+Edit
+---
+- name: "Set cert_alias fact for {{ cert_entry.cert_alias }}"
+  set_fact:
+    cert_alias: "{{ cert_entry.cert_alias }}"
+  tags:
+    - renew
+
+- name: "Notify handler to renew PFX"
+  meta: noop
+  notify: "Renew PFX via VCert CLI"
+  tags:
+    - renew
+
+- name: "Flush handlers to execute renewal immediately"
+  meta: flush_handlers
+  tags:
+    - renew
+Explanation
+Encapsulates per-alias renewal logic with no loops. The top-level loop in process_cert.yml drives iteration 
+Ansible Documentation
+.
+
+11. tasks/process_cert.yml
+yaml
+Copy
+Edit
+---
+# 1. Run renewal via handler
+- include_tasks: renew_cert.yml
+  tags:
+    - process
+
+# 2. Backup existing KDB
+- name: "Create backup directory beside KDB"
+  file:
+    path: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    state: directory
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+- name: "Backup old KDB file"
+  copy:
+    src: "{{ cert_entry.kdb_file }}"
+    dest: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup/{{ cert_entry.kdb_file | basename }}"
+    backup: no
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+# 3. Backup httpd.conf
+- name: "Create backup directory beside httpd.conf"
+  file:
+    path: "{{ cert_entry.config_file | dirname }}/Ansible_backup"
+    state: directory
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+- name: "Backup old httpd.conf file"
+  copy:
+    src: "{{ cert_entry.config_file }}"
+    dest: "{{ cert_entry.config_file | dirname }}/Ansible_backup/{{ cert_entry.config_file | basename }}"
+    backup: no
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+# 4. Create new KDB file
+- name: "Create new KDB file with gskcmd"
+  command: >
+    gskcmd -keydb -create
+      -db {{ cert_entry.kdb_file }}
+      -pw {{ vcert_password }}
+      -type cms
+      -stash
+  args:
+    creates: "{{ cert_entry.kdb_file }}"
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+# 5. Import renewed PFX into the new KDB
+- name: "Import renewed PFX into KDB"
+  command: >
+    gskcmd -cert -import
+      -db {{ cert_entry.kdb_file }}
+      -pw {{ vcert_password }}
+      -label {{ cert_entry.cert_alias }}
+      -file {{ vcert_install_dir }}/{{ cert_entry.cert_alias }}.pfx
+      -target {{ cert_entry.kdb_file }}
+      -target_pw {{ vcert_password }}
+      -target_type cms
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+# 6. Update httpd.conf directives
+- name: "Update Keyfile directive"
+  lineinfile:
+    path: "{{ cert_entry.config_file }}"
+    regexp: '^\s*Keyfile'
+    line: "Keyfile {{ cert_entry.kdb_file }}"
+    backrefs: no
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+- name: "Update SSLServerCert directive"
+  lineinfile:
+    path: "{{ cert_entry.config_file }}"
+    regexp: '^\s*SSLServerCert'
+    line: "SSLServerCert {{ cert_entry.cert_alias }}"
+    backrefs: no
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+# 7. Trigger IHS restart
+- name: "Trigger HTTP server restart"
+  meta: flush_handlers
+  notify: "cert_replaced"
+  tags:
+    - process
+Explanation
+
+Backups use file and copy modules to snapshot originals in Ansible_backup alongside each file 
+Ansible Documentation
+.
+
+KDB creation via gskcmd -keydb -create with creates: prevents re-creation if present 
+IBM - United States
+.
+
+PFX import uses gskcmd -cert -import with -target flags for proper insertion into the new database 
+Urs-o-Log
+.
+
+lineinfile updates both Keyfile and SSLServerCert in httpd.conf using regex, ensuring idempotent edits 
+Ansible Documentation
+.
+
+meta: flush_handlers with notify: cert_replaced restarts IHS immediately after config changes 
+Ansible Documentation
+.
+
+12. tasks/cleanup.yml
+yaml
+Copy
+Edit
+---
+- name: "Cleanup VCert artifacts on control node"
+  file:
+    path: "{{ vcert_install_dir }}"
+    state: absent
+  delegate_to: localhost
+  run_once: true
+  tags:
+    - cleanup
+Explanation
+Removes the temporary VCert CLI and PFX files from the control node to maintain a clean environment.
