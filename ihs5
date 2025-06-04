@@ -1,0 +1,238 @@
+Below is the updated renew_cert.yml including tasks to:
+
+Create the remote directory /home/{{ was_user }}/Ansible_Webserver_certs if it does not exist.
+
+Copy each renewed .pfx from the controller (localhost) to that directory on the target host.
+
+All other renewal steps remain in place, but the handler has been removed—renewal and copying now run inline.
+
+tasks/renew_cert.yml
+yaml
+Copy
+Edit
+---
+# 1. Normalize cert_alias into cert_alias_list (handles single or list)
+- name: "Normalize cert_alias into cert_alias_list"
+  set_fact:
+    cert_alias_list: >-
+      {{
+        cert_entry.cert_alias
+        if (cert_entry.cert_alias is iterable and cert_entry.cert_alias is not string)
+        else [ cert_entry.cert_alias ]
+      }}
+  tags:
+    - renew
+
+# 2. Renew PFX via VCert CLI for each alias (on localhost)
+- name: "Renew PFX via VCert CLI for each alias"
+  command: >
+    {{ vcert_install_dir }}/vcert renew
+      --alias {{ alias_name }}
+      --format pfx
+      --password {{ vcert_password }}
+      --chain full
+      --output {{ vcert_install_dir }}/{{ alias_name }}.pfx
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ venafi_pickupid }}
+  args:
+    creates: "{{ vcert_install_dir }}/{{ alias_name }}.pfx"
+  loop: "{{ cert_alias_list }}"
+  loop_control:
+    loop_var: alias_name
+    label: "{{ alias_name }}"
+  register: renew_results
+  delegate_to: localhost
+  tags:
+    - renew
+
+# 3. Fail if any renewal failed (optional)
+- name: "Fail if VCert renewal failed for any alias"
+  fail:
+    msg: >-
+      VCert renewal failed for the following aliases on {{ inventory_hostname }}:
+      {{ renew_results.results
+         | selectattr('rc','ne',0)
+         | map(attribute='item')
+         | list
+      }}
+  when: renew_results.results | selectattr('rc','ne',0) | list | length > 0
+  tags:
+    - renew
+
+# 4. Ensure remote directory exists for storing PFX files
+- name: "Create remote cert directory if not present"
+  ansible.builtin.file:
+    path: "/home/{{ was_user }}/Ansible_Webserver_certs"
+    state: directory
+    mode: '0755'
+    owner: "{{ was_user }}"
+    group: "{{ was_user }}"
+  become: true
+  tags:
+    - renew
+
+# 5. Copy renewed PFX files from controller to remote host
+- name: "Copy renewed PFX to remote host"
+  ansible.builtin.copy:
+    src: "{{ vcert_install_dir }}/{{ alias_name }}.pfx"
+    dest: "/home/{{ was_user }}/Ansible_Webserver_certs/{{ alias_name }}.pfx"
+    mode: '0644'
+    owner: "{{ was_user }}"
+    group: "{{ was_user }}"
+  loop: "{{ cert_alias_list }}"
+  loop_control:
+    loop_var: alias_name
+    label: "{{ alias_name }}"
+  become: true
+  tags:
+    - renew
+
+# 6. Restart IBM HTTP Server (remote host)
+- name: "Restart IBM HTTP Server after renewal"
+  command: >
+    /opt/ihs/85/bin/apachectl -f {{ cert_entry.config_file }} -k restart
+  become: true
+  tags:
+    - renew
+Explanations
+Normalize cert_alias_list
+
+yaml
+Copy
+Edit
+set_fact:
+  cert_alias_list: >-
+    {{
+      cert_entry.cert_alias
+      if (cert_entry.cert_alias is iterable and cert_entry.cert_alias is not string)
+      else [ cert_entry.cert_alias ]
+    }}
+Ensures cert_alias_list is always a list, even if the original cert_entry.cert_alias was just a string. That lets the subsequent loops treat a single alias and multiple aliases uniformly.
+
+VCert Renewal on localhost
+
+yaml
+Copy
+Edit
+- name: "Renew PFX via VCert CLI for each alias"
+  command: >
+    {{ vcert_install_dir }}/vcert renew
+      --alias {{ alias_name }}
+    ...
+  args:
+    creates: "{{ vcert_install_dir }}/{{ alias_name }}.pfx"
+  loop: "{{ cert_alias_list }}"
+  delegate_to: localhost
+Runs once per alias on the control node, writing {{ alias_name }}.pfx into the local {{ vcert_install_dir }}.
+
+creates: makes this step idempotent—skipping if the PFX already exists. 
+docs.ansible.com
+docs.ansible.com
+
+Failure Check
+
+yaml
+Copy
+Edit
+- name: "Fail if VCert renewal failed for any alias"
+  fail:
+    msg: "VCert renewal failed for aliases: {{ renew_results.results | selectattr('rc','ne',0) | map(attribute='item') | list }}"
+  when: renew_results.results | selectattr('rc','ne',0) | list | length > 0
+If any loop iteration returned a non-zero rc, the playbook errors out here. That prevents continuing with missing PFX files.
+
+Ensure Remote Directory
+
+yaml
+Copy
+Edit
+- name: "Create remote cert directory if not present"
+  ansible.builtin.file:
+    path: "/home/{{ was_user }}/Ansible_Webserver_certs"
+    state: directory
+    mode: '0755'
+    owner: "{{ was_user }}"
+    group: "{{ was_user }}"
+  become: true
+Creates /home/{{ was_user }}/Ansible_Webserver_certs/ on each target host, with correct permissions.
+
+become: true ensures the directory is owned by {{ was_user }} (not root). 
+docs.ansible.com
+
+Copy PFX Files to Remote
+
+yaml
+Copy
+Edit
+- name: "Copy renewed PFX to remote host"
+  ansible.builtin.copy:
+    src: "{{ vcert_install_dir }}/{{ alias_name }}.pfx"
+    dest: "/home/{{ was_user }}/Ansible_Webserver_certs/{{ alias_name }}.pfx"
+    mode: '0644'
+    owner: "{{ was_user }}"
+    group: "{{ was_user }}"
+  loop: "{{ cert_alias_list }}"
+  become: true
+Copies each alias_name.pfx from the controller to the remote host’s Ansible_Webserver_certs folder.
+
+Because src is on localhost (controller), Ansible’s copy module automagically transfers it to the remote’s dest. 
+docs.ansible.com
+docs.ansible.com
+
+mode: '0644' and owner: "{{ was_user }}" ensure that the web server can read the certificate.
+
+Restart IBM HTTP Server on Remote
+
+yaml
+Copy
+Edit
+- name: "Restart IBM HTTP Server after renewal"
+  command: >
+    /opt/ihs/85/bin/apachectl -f {{ cert_entry.config_file }} -k restart
+  become: true
+Reloads the HTTP Server so it picks up the new certificate at its configured location. 
+docs.ansible.com
+
+Citations
+copy Module Syntax & Behavior
+
+“ansible.builtin.copy copies a file from the control node to the remote host; use src (local path) and dest (remote path).” 
+docs.ansible.com
+docs.ansible.com
+
+file Module for Directory Creation
+
+“ansible.builtin.file with state: directory ensures the directory is present, similar to mkdir -p.” 
+docs.ansible.com
+
+creates: for Idempotency
+
+“The creates: argument on the command module prevents re‐running if the file already exists.” 
+docs.ansible.com
+
+become: true for Privileges
+
+“Use become: true to run modules as a higher‐privileged user (root) when modifying files in user home directories.” 
+docs.ansible.com
+
+Looping Over a List of Aliases
+
+“loop over cert_alias_list runs each iteration per alias; loop_var: alias_name provides clarity.”
+
+With these changes, each renewed certificate .pfx is securely transferred to the target host’s /home/{{ was_user }}/Ansible_Webserver_certs/ directory—created if necessary—before restarting the IBM HTTP Server.
+
+
+
+
+
+
+
+
+Sources
+
+
+
+
+Tools
+
+
+
