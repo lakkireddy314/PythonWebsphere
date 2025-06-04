@@ -1,0 +1,54 @@
+# vars/main.yml
+---
+# … other vars …
+backup_datetime: "{{ (ansible_date_time.date | regex_replace('-', '')) ~ (ansible_date_time.time | regex_replace(':', '')) }}"
+
+# tasks/process_cert.yml
+---
+# … earlier steps: renew, etc. …
+
+# 2. Back up existing KDB with date‐time suffix
+- name: "Create backup directory beside original KDB"
+  file:
+    path: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    state: directory
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+- name: "Backup original KDB file with datetime suffix"
+  copy:
+    src: "{{ cert_entry.kdb_file }}"
+    dest: >-
+      {{ cert_entry.kdb_file | dirname }}/Ansible_backup/
+      {{ cert_entry.kdb_file | basename }}.{{ backup_datetime }}
+  backup: no
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+# 3. Back up HTTPD config with date‐time suffix
+- name: "Create backup directory beside httpd.conf"
+  file:
+    path: "{{ cert_entry.config_file | dirname }}/Ansible_backup"
+    state: directory
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+- name: "Backup original httpd.conf with datetime suffix"
+  copy:
+    src: "{{ cert_entry.config_file }}"
+    dest: >-
+      {{ cert_entry.config_file | dirname }}/Ansible_backup/
+      {{ cert_entry.config_file | basename }}.{{ backup_datetime }}
+  backup: no
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+# … subsequent steps: create/import new KDB, update httpd.conf, restart …
