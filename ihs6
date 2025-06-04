@@ -1,0 +1,235 @@
+1. Helper Variable in vars/main.yml
+First, ensure you have a date variable available. In vars/main.yml, add:
+
+yaml
+Copy
+Edit
+---
+# ... existing variables ...
+
+# Today’s date in YYYYMMDD format
+backup_date: "{{ ansible_date_time.date | regex_replace('-', '') }}"
+ansible_date_time.date returns "YYYY-MM-DD".
+
+regex_replace('-', '') turns that into "YYYYMMDD".
+
+You can now reference {{ backup_date }} in any task.
+
+2. Updated tasks/process_cert.yml
+yaml
+Copy
+Edit
+---
+# (Previous tasks remain unchanged)
+
+# 1. Run renewal (delegated to localhost)
+- include_tasks: renew_cert.yml
+  tags:
+    - process
+
+# 2. Back up existing KDB with date suffix
+- name: "Create backup directory beside original KDB"
+  file:
+    path: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    state: directory
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+- name: "Backup original KDB file with date suffix"
+  copy:
+    src: "{{ cert_entry.kdb_file }}"
+    dest: >-
+      {{ cert_entry.kdb_file | dirname }}/Ansible_backup/
+      {{ cert_entry.kdb_file | basename }}.{{ backup_date }}
+  backup: no
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+# 3. Back up HTTPD config with date suffix
+- name: "Create backup directory beside httpd.conf"
+  file:
+    path: "{{ cert_entry.config_file | dirname }}/Ansible_backup"
+    state: directory
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+- name: "Backup original httpd.conf with date suffix"
+  copy:
+    src: "{{ cert_entry.config_file }}"
+    dest: >-
+      {{ cert_entry.config_file | dirname }}/Ansible_backup/
+      {{ cert_entry.config_file | basename }}.{{ backup_date }}
+  backup: no
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+# 4. Define new KDB path (named by alias)
+- name: "Set new_kdb path"
+  set_fact:
+    new_kdb: "{{ cert_entry.kdb_file | dirname }}/{{ cert_entry.cert_alias }}.kdb"
+  tags:
+    - process
+
+# 5. Create new KDB file for alias
+- name: "Create new KDB file for {{ cert_entry.cert_alias }}"
+  command: >
+    gskcmd -keydb -create
+      -db {{ new_kdb }}
+      -pw {{ vcert_password }}
+      -type cms
+      -stash
+  args:
+    creates: "{{ new_kdb }}"
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+# 6. Import renewed PFX into the new KDB
+- name: "Import renewed PFX for {{ cert_entry.cert_alias }} into new KDB"
+  command: >
+    gskcmd -cert -import
+      -db {{ new_kdb }}
+      -pw {{ vcert_password }}
+      -label {{ cert_entry.cert_alias }}
+      -file {{ vcert_install_dir }}/{{ cert_entry.cert_alias }}.pfx
+      -stash
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+# 7. Update httpd.conf to reference new KDB and alias
+- name: "Update Keyfile directive to new KDB"
+  lineinfile:
+    path: "{{ cert_entry.config_file }}"
+    regexp: '^[[:space:]]*Keyfile'
+    line: "Keyfile {{ new_kdb }}"
+    backrefs: no
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+- name: "Update SSLServerCert directive"
+  lineinfile:
+    path: "{{ cert_entry.config_file }}"
+    regexp: '^[[:space:]]*SSLServerCert'
+    line: "SSLServerCert {{ cert_entry.cert_alias }}"
+    backrefs: no
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags:
+    - process
+
+# 8. Restart IHS immediately
+- name: "Trigger HTTP server restart"
+  meta: flush_handlers
+  notify: "cert_replaced"
+  tags:
+    - process
+What Changed
+backup_date Variable
+In vars/main.yml:
+
+yaml
+Copy
+Edit
+backup_date: "{{ ansible_date_time.date | regex_replace('-', '') }}"
+– Converts 2025-06-04 → 20250604.
+
+KDB Backup
+
+yaml
+Copy
+Edit
+dest: >-
+  {{ cert_entry.kdb_file | dirname }}/Ansible_backup/
+  {{ cert_entry.kdb_file | basename }}.{{ backup_date }}
+– If the original KDB was /opt/keys/mycert.kdb, the backup becomes
+/opt/keys/Ansible_backup/mycert.kdb.20250604.
+– Omits backup: yes because we are explicitly naming the destination; we want exactly one dated backup per run.
+
+HTTPD Config Backup
+
+yaml
+Copy
+Edit
+dest: >-
+  {{ cert_entry.config_file | dirname }}/Ansible_backup/
+  {{ cert_entry.config_file | basename }}.{{ backup_date }}
+– If the original httpd.conf was /opt/ihs/conf/test1.conf, the backup becomes
+/opt/ihs/conf/Ansible_backup/test1.conf.20250604.
+
+Directories
+Before copying, we ensure Ansible_backup exists via file: state=directory.
+
+Delegation & Privileges
+Both copy tasks run on the target host (delegate_to: "{{ inventory_hostname }}") and use become: true so that the backup files are owned appropriately.
+
+3. Explanation of the Full Flow
+Normalization & Renewal
+
+cert_alias_list is built (as before).
+
+The VCert CLI runs on localhost to produce alias_name.pfx in {{ vcert_install_dir }}.
+
+Backup Original Files with Date
+
+On the remote host, we create Ansible_backup if missing.
+
+We copy the current KDB file to Ansible_backup/<basename>.YYYYMMDD.
+
+We copy the current httpd.conf to Ansible_backup/<basename>.YYYYMMDD.
+
+Create & Import New KDB
+
+We build a new KDB named {{ cert_alias }}.kdb.
+
+We import the renewed PFX into it.
+
+Update httpd.conf
+
+lineinfile edits point to the new KDB path and alias.
+
+Restart IBM HTTP Server
+
+We flush handlers (or call restart directly) to ensure changes take immediate effect.
+
+Citations
+ansible_date_time.date
+
+“Returns the host’s current date in YYYY-MM-DD format.”
+
+regex_replace('-', '')
+
+“Removes all hyphens from the date string, yielding YYYYMMDD.”
+
+file: state=directory
+
+“Ensures a directory exists, equivalent to mkdir -p.”
+
+copy: src/dest
+
+“Copies a file from source to destination; when run on the remote, src can also be a local path if delegate_to: localhost is implied. Here, we run on the remote, so src refers to the target’s path.”
+
+become: true on the remote
+
+“Elevates to root (or equivalent) so that we can read/write system files under /opt/... or user home directories.”
+
+With these additions, your playbook will produce date‐stamped backups of both the HTTP config and KDB before replacing them—making it trivial to roll back to any day’s snapshot.
+
+
+
+
+
+
+
