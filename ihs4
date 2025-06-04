@@ -1,0 +1,48 @@
+---
+# 1. Normalize cert_alias into a list (handles both string or list)
+- name: "Normalize cert_alias into cert_alias_list"
+  set_fact:
+    cert_alias_list: >-
+      {{ cert_entry.cert_alias
+         if (cert_entry.cert_alias is iterable and cert_entry.cert_alias is not string)
+         else [ cert_entry.cert_alias ] }}
+  tags:
+    - renew
+
+# 2. Renew PFX via VCert CLI for each alias (runs on localhost)
+- name: "Renew PFX via VCert CLI for each alias"
+  command: >
+    {{ vcert_install_dir }}/vcert renew
+      --alias {{ alias_name }}
+      --format pfx
+      --password {{ vcert_password }}
+      --chain full
+      --output {{ vcert_install_dir }}/{{ alias_name }}.pfx
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ venafi_pickupid }}
+  args:
+    creates: "{{ vcert_install_dir }}/{{ alias_name }}.pfx"
+  loop: "{{ cert_alias_list }}"
+  loop_control:
+    loop_var: alias_name
+    label: "{{ alias_name }}"
+  delegate_to: localhost
+  register: renew_results
+  tags:
+    - renew
+
+# 3. Fail if any renewal failed (optional check)
+- name: "Fail if VCert renewal failed for any alias"
+  fail:
+    msg: "VCert renewal failed for one or more aliases on {{ inventory_hostname }}: {{ renew_results.results | selectattr('rc','ne',0) | map(attribute='item') | list }}"
+  when: renew_results.results | selectattr('rc','ne',0) | list | length > 0
+  tags:
+    - renew
+
+# 4. Restart IBM HTTP Server (runs on target host)
+- name: "Restart IBM HTTP Server after renewal"
+  command: >
+    /opt/ihs/85/bin/apachectl -f {{ cert_entry.config_file }} -k restart
+  become: true
+  tags:
+    - renew
