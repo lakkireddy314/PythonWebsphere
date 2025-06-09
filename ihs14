@@ -1,0 +1,207 @@
+tasks/backup.yml
+yaml
+Copy
+Edit
+---
+# tasks/backup.yml
+
+- name: "Determine KDB basename for {{ cert_entry.cert_alias }}"
+  set_fact:
+    kdb_base: "{{ cert_entry.kdb_file | basename | regex_replace('\\.kdb$','') }}"
+  tags: [backup]
+
+- name: "Find all KDB-related files for {{ cert_entry.kdb_file }}"
+  find:
+    paths: "{{ cert_entry.kdb_file | dirname }}"
+    patterns: "{{ kdb_base }}.*"
+    file_type: file
+    recurse: no
+  register: kdb_files
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [backup]
+
+- name: "Ensure KDB backup directory exists"
+  file:
+    path: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    state: directory
+    mode: '0755'
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [backup]
+
+- name: "Backup each KDB-related file with timestamp"
+  copy:
+    src: "{{ item.path }}"
+    dest: >-
+      {{ cert_entry.kdb_file | dirname }}/Ansible_backup/
+      {{ item.path | basename }}.{{ backup_datetime }}
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ kdb_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [backup]
+
+- name: "Ensure HTTPD backup directory exists"
+  file:
+    path: "{{ cert_entry.config_file | dirname }}/Ansible_backup"
+    state: directory
+    mode: '0755'
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [backup]
+
+- name: "Backup original HTTPD config with timestamp"
+  copy:
+    src: "{{ cert_entry.config_file }}"
+    dest: >-
+      {{ cert_entry.config_file | dirname }}/Ansible_backup/
+      {{ cert_entry.config_file | basename }}.{{ backup_datetime }}
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [backup]
+What Changed?
+
+We first set kdb_base to the basename of cert_entry.kdb_file with the .kdb suffix removed.
+
+We use patterns: "{{ kdb_base }}.*" so that all files named kdb_base.* (e.g. .kdb, .sth, .rdb) are picked up.
+
+tasks/restore.yml
+yaml
+Copy
+Edit
+---
+# tasks/restore.yml
+
+- name: "Determine KDB basename for {{ cert_entry.kdb_file }}"
+  set_fact:
+    kdb_base: "{{ cert_entry.kdb_file | basename | regex_replace('\\.kdb$','') }}"
+  tags: [restore]
+
+- name: "Find all backed-up KDB files for {{ kdb_base }}"
+  find:
+    paths: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    patterns: "{{ kdb_base }}.*"
+    file_type: file
+    recurse: no
+  register: kdb_backups
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: "Build list of original filenames"
+  set_fact:
+    original_kdb_files: >-
+      {{ kdb_backups.files
+         | map(attribute='path')
+         | map('basename')
+         | map('regex_replace','\\.[0-9]{14}$','')
+         | unique
+         | list }}
+  delegate_to: "{{ inventory_hostname }}"
+  tags: [restore]
+
+- name: "Restore latest backup for each KDB-related file"
+  copy:
+    src: >-
+      {{ (kdb_backups.files
+           | selectattr('path','search',"^.*/" + item + "\\.[0-9]{14}$")
+           | sort(attribute='mtime')
+           | last).path }}
+    dest: "{{ cert_entry.kdb_file | dirname }}/{{ item }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ original_kdb_files }}"
+  loop_control:
+    loop_var: item
+    label: "{{ item }}"
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: "Find backed-up HTTPD configs for {{ cert_entry.config_file }}"
+  find:
+    paths: "{{ cert_entry.config_file | dirname }}/Ansible_backup"
+    patterns: "{{ cert_entry.config_file | basename }}.*"
+    file_type: file
+    recurse: no
+  register: httpd_backups
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: "Set latest_httpd_backup fact"
+  set_fact:
+    latest_httpd_backup: >-
+      {{ (httpd_backups.files | sort(attribute='mtime') | last).path
+         if httpd_backups.matched > 0 else '' }}
+  delegate_to: "{{ inventory_hostname }}"
+  tags: [restore]
+
+- name: "Restore HTTPD config from latest backup"
+  copy:
+    src: "{{ latest_httpd_backup }}"
+    dest: "{{ cert_entry.config_file }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  when: latest_httpd_backup != ''
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: "Restart IBM HTTP Server after rollback"
+  command: "/opt/ihs/85/bin/apachectl -f {{ cert_entry.config_file }} -k restart"
+  become: true
+  delegate_to: "{{ inventory_hostname }}"
+  tags: [restore]
+What Changed?
+
+Likewise, we compute kdb_base first.
+
+Our find now uses patterns: "{{ kdb_base }}.*" in the backup directory.
+
+The rest of the restore logic remains the same, restoring the most recent timestamp for each original filename.
+
+README.md Update
+In your Backup & Restore section, adjust to note:
+
+markdown
+Copy
+Edit
+### Backup & Restore of KDB-Related Files
+
+Backup now finds **all** files named `<basename>.*`, where `<basename>` is your KDB filename minus the `.kdb` extension (e.g. `mycert`). This picks up:
+- `mycert.kdb`
+- `mycert.sth`
+- `mycert.rdb`
+- (and any other `mycert.*` artifacts)
+
+Restore uses the same `<basename>.*` pattern to locate timestamped backups, then for **each** original filename it picks the backup with the latest modification time and restores it.
+With these changes, your backup and restore tasks will accurately capture and rollback every file associated with each KDB, based on the actual file names rather than the cert alias.
+
+
+
+
+
+
+
+
+
+
+Tools
+
+
+
