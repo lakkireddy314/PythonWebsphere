@@ -1,0 +1,52 @@
+---
+# tasks/main.yml
+
+# 1. Download and unpack VCert, pick up PEMs
+- include_tasks: download_local_cert.yml
+  tags: [precheck]
+
+# 2. Check expiry on those PEMs
+- include_tasks: check_cert_expiry.yml
+  when: any_pickup_success
+  tags: [precheck]
+
+# 3. Decide if *any* host needs renewal
+- name: "Determine if any certificate needs renewal"
+  set_fact:
+    host_needs_renewal: >-
+      {{ venafi_cert_info
+         | dict2items
+         | selectattr('value.changed','equalto',true)
+         | list | length > 0 }}
+  when: any_pickup_success
+  tags: [precheck]
+
+# 4. Parse all httpd.conf entries into cert_configs
+- include_tasks: extract_values.yml
+  when: host_needs_renewal
+  tags: [extract]
+
+# 5. For each cert_entry, do the full create/import/update cycle,
+#    but *if* any task fails, automatically run restore.yml instead
+- block:
+    - name: "Process each certificate"
+      include_tasks: process_cert.yml
+      loop: "{{ cert_configs }}"
+      loop_control:
+        loop_var: cert_entry
+        label: "{{ cert_entry.cert_alias }}"
+      when: host_needs_renewal
+      tags: [process]
+  rescue:
+    - name: "Rollback any changes on failure"
+      include_tasks: restore.yml
+      loop: "{{ cert_configs }}"
+      loop_control:
+        loop_var: cert_entry
+        label: "{{ cert_entry.cert_alias }}"
+      tags: [restore]
+
+# 6. Finally, send the consolidated report
+- include_tasks: send_report.yml
+  when: host_needs_renewal
+  tags: [report]
