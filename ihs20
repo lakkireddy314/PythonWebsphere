@@ -1,0 +1,69 @@
+To fix the “generator has no len()” error you need to force the selectattr result into a real list before taking its length. Here’s your corrected restore.yml snippet:
+
+yaml
+Copy
+---
+# tasks/restore.yml
+
+- name: Determine KDB basename for {{ cert_entry.kdb_file }}
+  ansible.builtin.set_fact:
+    kdb_base: "{{ cert_entry.kdb_file | basename | regex_replace('\\.kdb$','') }}"
+  tags: [restore]
+
+- name: Find all backups for {{ kdb_base }}.*
+  ansible.builtin.find:
+    paths: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    patterns: "{{ kdb_base }}.*"
+    file_type: file
+    recurse: no
+  register: kdb_backups
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: Build list of original KDB filenames
+  ansible.builtin.set_fact:
+    original_kdb_files: >-
+      {{ kdb_backups.files
+         | map(attribute='path')
+         | map('basename')
+         | map('regex_replace','\\.[0-9]{14}$','')
+         | unique
+         | list }}
+  delegate_to: "{{ inventory_hostname }}"
+  tags: [restore]
+
+- name: Restore latest backup for each KDB-related file
+  ansible.builtin.copy:
+    src: >-
+      {{ (kdb_backups.files
+           | selectattr('path','search','^.*/' ~ item ~ '\\.')
+           | list
+           | sort(attribute='mtime')
+           | last).path }}
+    dest: "{{ cert_entry.kdb_file | dirname }}/{{ item }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ original_kdb_files }}"
+  loop_control:
+    loop_var: item
+    label: "{{ item }}"
+  when: >-
+    (kdb_backups.files
+     | selectattr('path','search','^.*/' ~ item ~ '\\.')
+     | list
+    ) | length > 0
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+# … (HTTPD restore and restart as before) …
+What Changed?
+
+| list after selectattr converts the generator into a true list, so length works.
+
+We wrap both the selectattr(…) inside the src: expression and in the when: to ensure neither sees an empty generator.
+
+Now, for each item in original_kdb_files, the when: will correctly skip cases with no matching backups, and the src: lookup of .last will always have a non‐empty list to work against.
