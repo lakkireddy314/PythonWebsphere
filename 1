@@ -1,15 +1,33 @@
-- name: Extract and normalize serial number (Ansible 2.9)
+- name: Run gskcmd to get cert details
+  command: >-
+    {{ gskcmd_path }}
+    -cert -details
+    -db "{{ keystore_file }}"
+    -dbtype jks
+    -pw "{{ keystore_password }}"
+    -label "{{ certificate_label }}"
+  register: cert_output
+  changed_when: false
+
+- name: Extract and normalize serial number (safe for Ansible 2.9)
   set_fact:
     cert_serial_number: >-
       {{ (
+           # 1) find all capture-group matches (case-insensitive)
            cert_output.stdout
            | regex_findall(
-               'Serial\\s*number\\s*[:=]\\s*([0-9A-Fa-f\\s]+)'
+               '(?i)Serial\\s*Number\\s*[:=]\\s*([0-9A-Fa-f\\s]+)'
              )
+           # 2) if list is empty, default to [''] so [0] always exists
+           | default([''], true)
          )[0]
+         # 3) strip out spaces to get solid hex
          | replace(' ', '')
       }}
 
+- name: Debug normalized serial
+  debug:
+    msg: "Normalized serial number: '{{ cert_serial_number }}'"
 
  
  
