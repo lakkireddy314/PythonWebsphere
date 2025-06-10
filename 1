@@ -1,4 +1,4 @@
-- name: Run gskcmd to get cert details
+- name: Run gskcmd to get full cert details
   command: >-
     {{ gskcmd_path }}
     -cert -details
@@ -9,25 +9,29 @@
   register: cert_output
   changed_when: false
 
-- name: Extract and normalize serial number (safe for Ansible 2.9)
+- name: Keep only the top 15 lines of output
+  set_fact:
+    cert_output_top15: "{{ cert_output.stdout_lines[:15] | join('\n') }}"
+
+- name: Debug — show the truncated output
+  debug:
+    msg: "{{ cert_output_top15 }}"
+
+- name: Extract serial number and set fact (from truncated output)
   set_fact:
     cert_serial_number: >-
-      {{ (
-           # 1) find all capture-group matches (case-insensitive)
-           cert_output.stdout
-           | regex_findall(
-               '(?i)Serial\\s*Number\\s*[:=]\\s*([0-9A-Fa-f\\s]+)'
-             )
-           # 2) if list is empty, default to [''] so [0] always exists
+      "{{ (
+           (cert_output_top15 | default(''))
+           | regex_findall('(?i)Serial\\s*Number\\s*[:=]\\s*([0-9A-Fa-f\\s]+)')
            | default([''], true)
          )[0]
-         # 3) strip out spaces to get solid hex
          | replace(' ', '')
-      }}
+      }}"
 
-- name: Debug normalized serial
+- name: Show normalized serial number
   debug:
-    msg: "Normalized serial number: '{{ cert_serial_number }}'"
+    msg: "Serial = {{ cert_serial_number }}"
+
 
  
  
