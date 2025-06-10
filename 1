@@ -1,3 +1,15 @@
+ - name: Parse serial number from gskcmd output
+      set_fact:
+        cert_serial_number: >-
+          {{ cert_output.stdout
+             | regex_search('Serial\\s*number\\s*[:=]\\s*([0-9A-Fa-f]+)', '\\1') }}
+
+    - name: Show extracted serial number
+      debug:
+        msg: "Certificate serial number is {{ cert_serial_number }}"
+
+
+
 - name: Build email subject into mail_subject
   set_fact:
     # Option A: join a list of strings
