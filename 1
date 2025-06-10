@@ -1,3 +1,33 @@
+- name: Run gskcmd to get cert details
+  command: >-
+    {{ gskcmd_path }}
+    -cert -details
+    -db "{{ keystore_file }}"
+    -dbtype jks
+    -pw "{{ keystore_password }}"
+    -label "{{ certificate_label }}"
+  register: cert_output
+  changed_when: false
+
+- name: Extract and normalize serial number
+  set_fact:
+    cert_serial_number: >-
+      {{ cert_output.stdout
+         | regex_search(
+             'Serial\\s*number\\s*[:=]\\s*([0-9A-Fa-f\\s]+)',
+             '\\1'
+           )
+         | replace(' ', '')
+      }}
+
+- name: Show normalized serial number
+  debug:
+    msg: "Normalized serial number: {{ cert_serial_number }}"
+
+
+
+ 
+ 
  - name: Parse serial number from gskcmd output
       set_fact:
         cert_serial_number: >-
