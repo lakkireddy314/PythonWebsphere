@@ -1,0 +1,260 @@
+Below are the revised backup (backup.yml) and restore (restore.yml) tasks. The key change is that we now derive the KDB basename (filename without .kdb), and in the restore step we:
+
+Only run the copy if backups exist
+
+Use a simpler substring filter (search) on the path to pick up files named <basename>.…
+
+Guard the copy with when: kdb_backups.matched > 0 to avoid the “sequence was empty” error
+
+tasks/backup.yml
+yaml
+Copy
+---
+# tasks/backup.yml
+
+- name: "Determine KDB basename for {{ cert_entry.kdb_file }}"
+  set_fact:
+    kdb_base: "{{ cert_entry.kdb_file | basename | regex_replace('\\.kdb$','') }}"
+  tags: [backup]
+
+- name: "Find all KDB-related files ({{ kdb_base }}.*)"
+  find:
+    paths: "{{ cert_entry.kdb_file | dirname }}"
+    patterns: "{{ kdb_base }}.*"
+    file_type: file
+    recurse: no
+  register: kdb_files
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [backup]
+
+- name: "Ensure KDB backup directory exists"
+  file:
+    path: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    state: directory
+    mode: '0755'
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [backup]
+
+- name: "Backup each KDB-related file with datetime suffix"
+  copy:
+    src: "{{ item.path }}"
+    dest: >-
+      {{ cert_entry.kdb_file | dirname }}/Ansible_backup/
+      {{ item.path | basename }}.{{ backup_datetime }}
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ kdb_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [backup]
+
+- name: "Ensure HTTPD backup directory exists"
+  file:
+    path: "{{ cert_entry.config_file | dirname }}/Ansible_backup"
+    state: directory
+    mode: '0755'
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [backup]
+
+- name: "Backup HTTPD config with datetime suffix"
+  copy:
+    src: "{{ cert_entry.config_file }}"
+    dest: >-
+      {{ cert_entry.config_file | dirname }}/Ansible_backup/
+      {{ cert_entry.config_file | basename }}.{{ backup_datetime }}
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [backup]
+Explanation
+
+kdb_base is the filename without .kdb (e.g. mycert).
+
+find uses patterns: "{{ kdb_base }}.*" so it matches mycert.kdb, mycert.sth, mycert.rdb, etc.
+
+We back up each file into Ansible_backup with a timestamp suffix.
+
+tasks/restore.yml
+yaml
+Copy
+---
+# tasks/restore.yml
+
+- name: "Determine KDB basename for {{ cert_entry.kdb_file }}"
+  set_fact:
+    kdb_base: "{{ cert_entry.kdb_file | basename | regex_replace('\\.kdb$','') }}"
+  tags: [restore]
+
+- name: "Find all backups for {{ kdb_base }}.*"
+  find:
+    paths: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    patterns: "{{ kdb_base }}.*"
+    file_type: file
+    recurse: no
+  register: kdb_backups
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: "Build list of original KDB filenames"
+  set_fact:
+    original_kdb_files: >-
+      {{ kdb_backups.files
+         | map(attribute='path')
+         | map('basename')
+         | map('regex_replace','\\.[0-9]{14}$','')
+         | unique
+         | list }}
+  delegate_to: "{{ inventory_hostname }}"
+  tags: [restore]
+
+- name: "Restore latest backup for each KDB-related file"
+  copy:
+    src: >-
+      {{ (kdb_backups.files
+           | selectattr('path','search', item ~ '.')
+           | sort(attribute='mtime')
+           | last).path }}
+    dest: "{{ cert_entry.kdb_file | dirname }}/{{ item }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ original_kdb_files }}"
+  loop_control:
+    loop_var: item
+    label: "{{ item }}"
+  when: kdb_backups.matched > 0
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: "Find backups for HTTPD config"
+  find:
+    paths: "{{ cert_entry.config_file | dirname }}/Ansible_backup"
+    patterns: "{{ cert_entry.config_file | basename }}.*"
+    file_type: file
+    recurse: no
+  register: httpd_backups
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: "Set latest_httpd_backup fact"
+  set_fact:
+    latest_httpd_backup: >-
+      {{ (httpd_backups.files | sort(attribute='mtime') | last).path
+         if httpd_backups.matched > 0 else '' }}
+  delegate_to: "{{ inventory_hostname }}"
+  tags: [restore]
+
+- name: "Restore HTTPD config if backup exists"
+  copy:
+    src: "{{ latest_httpd_backup }}"
+    dest: "{{ cert_entry.config_file }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  when: latest_httpd_backup != ''
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: "Restart IBM HTTP Server after rollback"
+  command: "/opt/ihs/85/bin/apachectl -f {{ cert_entry.config_file }} -k restart"
+  become: true
+  delegate_to: "{{ inventory_hostname }}"
+  tags: [restore]
+Explanation
+
+find locates all timestamped backups matching kdb_base.*.
+
+original_kdb_files is derived by stripping the timestamp suffix (.YYYYMMDDHHMMSS) and deduplicating.
+
+The copy loop then, for each original filename (mycert.kdb,mycert.sth,…), picks the most recent backup (by mtime) via a simple substring match (search: item ~ '.') and restores it.
+
+We guard with when: kdb_backups.matched > 0 to avoid the “sequence was empty” error.
+
+README.md
+markdown
+Copy
+# venafi_cert_renew
+
+## Overview
+Automates IBM HTTP Server certificate lifecycle with Venafi VCert CLI:
+- PEM pickup & expiry checks  
+- Backup/restore of ALL KDB artifacts (`*.kdb`,`*.sth`,`*.rdb`)  
+- Automated renewal, import, config update, restart  
+- SSL serial + HTTP-200 validation  
+- Outlook-friendly HTML reports (dry-run & full-run)
+
+## Dry-Run Mode
+```bash
+ansible-playbook site.yml -e report_only=true \
+  -t precheck,extract,validation,report
+Sends a dry-run HTML report listing only certificates that are expiring soon.
+
+Variables
+Defined in vars/main.yml:
+
+vcert_download_url, vcert_install_dir, vcert_password
+
+venafi_access_token, venafi_pickupid
+
+cert_renew_threshold, was_user, report_only
+
+backup_datetime (auto-generated timestamp)
+
+Tasks
+backup.yml: Finds and backs up KDB-related files and httpd.conf.
+
+process_cert.yml: Renew, import to new KDB, update config, restart, validate.
+
+restore.yml: Restores the latest timestamped backup of each file type.
+
+validate_and_record.yml: Compares renewed vs served cert serial and HTTP 200 check.
+
+send_report_dry.yml & send_report.yml: HTML reports styled for Outlook.
+
+Execution Flow
+Precheck (download, expiry)
+
+Extract (httpd.conf parsing)
+
+Backup → Process (auto-rollback on error via restore.yml)
+
+Validation
+
+Reporting (HTML emails)
+
+Tags: precheck, extract, process, backup, restore, validation, report.
+
+pgsql
+Copy
+
+With these files, you now have a robust backup of **all** KDB‐related artifacts, a restore that never errors on empty sequences, and full documentation of how the role operates.
+
+
+
+
+
+.
+
+
+
+Tools
+
+
+
+ChatGPT can m
