@@ -1,0 +1,34 @@
+- name: Fetch certificate details from JKS
+  command: >
+    keytool -list -v
+    -keystore {{ keystore_path }}
+    -storepass {{ keystore_password }}
+    {% if alias is defined %}-alias {{ alias }}{% endif %}
+  register: keytool_output
+  changed_when: false
+  failed_when: keytool_output.rc != 0
+
+- name: Fail if no “Serial number” line was found
+  fail:
+    msg: "Could not find a Serial number in the JKS output!"
+  when: >
+    (keytool_output.stdout_lines
+      | select('search', 'Serial number')
+      | list
+    ) | length == 0
+
+- name: Extract the “Serial number” line
+  set_fact:
+    serial_line: >-
+      {{ keytool_output.stdout_lines
+         | select('search', 'Serial number')
+         | list
+         | first
+      }}
+
+- name: Parse out the hex string and strip colons
+  set_fact:
+    cert_serial_number: >-
+      {{ (serial_line.split(':', 1)[1] | trim)
+         | replace(':', '')
+      }}
