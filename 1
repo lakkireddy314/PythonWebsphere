@@ -1,3 +1,13 @@
+ original_kdb_files: >-
+      {{
+        kdb_backups.files
+        | map(attribute='path')
+        | map('basename')
+        | map('regex_replace','^([^.]+\\.[^.]+)\\..*$','\\1')
+        | unique
+        | list
+      }}
+
 - name: Build list of original KDB filenames (strip timestamp)
   ansible.builtin.set_fact:
     original_kdb_files: >-
