@@ -1,0 +1,54 @@
+---
+# tasks/restore.yml (excerpt)
+
+- name: Determine KDB basename
+  ansible.builtin.set_fact:
+    kdb_base: "{{ cert_entry.kdb_file | basename | regex_replace('\\.kdb$','') }}"
+  tags: [restore]
+
+- name: Find all backups for {{ kdb_base }}.*
+  ansible.builtin.find:
+    paths: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    patterns: "{{ kdb_base }}.*"
+    file_type: file
+    recurse: no
+  register: kdb_backups
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: Build list of original KDB filenames (strip timestamp)
+  ansible.builtin.set_fact:
+    original_kdb_files: >-
+      {{ kdb_backups.files
+         | map(attribute='path')
+         | map('basename')
+         | map('regex_search','^(.*?\\.[^\\.]+)')
+         | unique
+         | list }}
+  delegate_to: "{{ inventory_hostname }}"
+  tags: [restore]
+
+- name: Restore latest backup for each KDB-related file
+  ansible.builtin.copy:
+    src: >-
+      {{ (
+          kdb_backups.files
+          | selectattr('path','search','/' ~ item ~ '\\.')
+          | list
+          | sort(attribute='mtime')
+          | last
+        ).path }}
+    dest: "{{ cert_entry.kdb_file | dirname }}/{{ item }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ original_kdb_files }}"
+  loop_control:
+    loop_var: item
+    label: "{{ item }}"
+  when: kdb_backups.files | length > 0
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
