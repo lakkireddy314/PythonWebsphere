@@ -52,11 +52,15 @@
 
  
  
- - name: Parse serial number from gskcmd output
-      set_fact:
-        cert_serial_number: >-
-          {{ cert_output.stdout
-             | regex_search('Serial\\s*number\\s*[:=]\\s*([0-9A-Fa-f]+)', '\\1') }}
+- name: Extract serial number into fact
+  set_fact:
+    ert_serial_number: >-
+      {{ cert_output.stdout
+         | regex_search('Serial\\s*number\\s*[:=]\\s*([0-9A-Fa-f]+)', '\\1') }}
+
+- name: Debug serial
+  debug:
+    msg: "Extracted serial number is {{ ert_serial_number }}"
 
     - name: Show extracted serial number
       debug:
