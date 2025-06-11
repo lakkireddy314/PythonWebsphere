@@ -1,0 +1,91 @@
+---
+# tasks/restore.yml
+
+- name: Determine KDB basename
+  ansible.builtin.set_fact:
+    kdb_base: "{{ cert_entry.kdb_file | basename | regex_replace('\\.kdb$','') }}"
+  tags: [restore]
+
+- name: Find all backups for {{ kdb_base }}.*
+  ansible.builtin.find:
+    paths: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    patterns: "{{ kdb_base }}.*"
+    file_type: file
+    recurse: no
+  register: kdb_backups
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: Build map of original → newest backup path
+  ansible.builtin.set_fact:
+    kdb_restore_map: >-
+      {{
+        kdb_restore_map | default({}) 
+        | combine({
+            (item.path | basename 
+             | regex_replace('\\.[0-9]+$','')
+            ): item.path
+          })
+      }}
+  loop: "{{ kdb_backups.files | sort(attribute='mtime') }}"
+  loop_control:
+    loop_var: item
+    label: "{{ item.path | basename }}"
+  delegate_to: "{{ inventory_hostname }}"
+  tags: [restore]
+
+- name: "Restore each KDB-related file from its newest backup"
+  ansible.builtin.copy:
+    src: "{{ item.value }}"
+    dest: "{{ cert_entry.kdb_file | dirname }}/{{ item.key }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ kdb_restore_map | dict2items }}"
+  loop_control:
+    loop_var: item
+    label: "{{ item.key }}"
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: Find HTTPD config backups
+  ansible.builtin.find:
+    paths: "{{ cert_entry.config_file | dirname }}/Ansible_backup"
+    patterns: "{{ cert_entry.config_file | basename }}.*"
+    file_type: file
+    recurse: no
+  register: httpd_backups
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: Determine newest HTTPD backup
+  ansible.builtin.set_fact:
+    latest_httpd_backup: >-
+      {{ (httpd_backups.files | sort(attribute='mtime') | last).path
+         if httpd_backups.files | length > 0 else '' }}
+  delegate_to: "{{ inventory_hostname }}"
+  tags: [restore]
+
+- name: Restore HTTPD config from latest backup
+  ansible.builtin.copy:
+    src: "{{ latest_httpd_backup }}"
+    dest: "{{ cert_entry.config_file }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  when: latest_httpd_backup != ''
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: Restart IBM HTTP Server after rollback
+  ansible.builtin.command: >
+    /opt/ihs/85/bin/apachectl -f {{ cert_entry.config_file }} -k restart
+  become: true
+  delegate_to: "{{ inventory_hostname }}"
+  tags: [restore]
