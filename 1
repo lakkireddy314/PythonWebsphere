@@ -1,3 +1,20 @@
+- name: Extract serial number via grep pipeline
+  shell: >-
+    {{ gskcmd_path }} -cert -details |
+    grep -i 'Serial Number' |
+    grep -oE '[0-9A-Fa-f ]+' |
+    tr -d ' '
+  register: cert_serial_raw
+  changed_when: false
+  failed_when: cert_serial_raw.rc != 0 or cert_serial_raw.stdout == ''
+
+- name: Set cert_serial_number fact
+  set_fact:
+    cert_serial_number: "{{ cert_serial_raw.stdout }}"
+
+
+
+
 - name: Run gskcmd to get full cert details
   command: >-
     {{ gskcmd_path }}
