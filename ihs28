@@ -1,0 +1,104 @@
+---
+# tasks/restore.yml
+
+- name: "Determine KDB basename"
+  ansible.builtin.set_fact:
+    kdb_base: "{{ cert_entry.kdb_file | basename | regex_replace('\\.kdb$','') }}"
+  tags: [restore]
+
+- name: "Find all KDB-related backups"
+  ansible.builtin.find:
+    paths: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    patterns: "{{ kdb_base }}.*"
+    file_type: file
+    recurse: no
+  register: kdb_backups
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: "Build list of originals (basename.ext)"
+  ansible.builtin.set_fact:
+    original_kdb_files: >-
+      {{ kdb_backups.files
+         | map(attribute='path')
+         | map('basename')
+         | map('split','.')
+         | map('slice',[0,2])
+         | map('join','.')
+         | unique
+         | list }}
+  delegate_to: "{{ inventory_hostname }}"
+  tags: [restore]
+
+- name: "Restore each original KDB file if backups exist"
+  block:
+    - name: "Gather backups for {{ item }}"
+      ansible.builtin.set_fact:
+        backups_for_item: >-
+          {{ kdb_backups.files
+             | selectattr('path','search', '/' ~ item ~ '\\.')
+             | list }}
+      delegate_to: "{{ inventory_hostname }}"
+
+    - name: "Debug backups_for_item for {{ item }}"
+      ansible.builtin.debug:
+        var: backups_for_item
+      delegate_to: "{{ inventory_hostname }}"
+
+    - name: "Restore newest backup of {{ item }}"
+      ansible.builtin.copy:
+        src: "{{ (backups_for_item | sort(attribute='mtime') | last).path }}"
+        dest: "{{ cert_entry.kdb_file | dirname }}/{{ item }}"
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0644'
+      delegate_to: "{{ inventory_hostname }}"
+      become: true
+
+  when: backups_for_item | length > 0
+  loop: "{{ original_kdb_files }}"
+  loop_control:
+    loop_var: item
+    label: "{{ item }}"
+  tags: [restore]
+
+- name: "Find HTTPD config backups"
+  ansible.builtin.find:
+    paths: "{{ cert_entry.config_file | dirname }}/Ansible_backup"
+    patterns: "{{ cert_entry.config_file | basename }}.*"
+    file_type: file
+    recurse: no
+  register: httpd_backups
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: "Set latest_httpd_backup"
+  ansible.builtin.set_fact:
+    latest_httpd_backup: >-
+      {{ (httpd_backups.files | sort(attribute='mtime') | last).path
+         if httpd_backups.files | length > 0 else '' }}
+  delegate_to: "{{ inventory_hostname }}"
+  tags: [restore]
+
+- name: "Restore HTTPD config from latest backup"
+  ansible.builtin.copy:
+    src: "{{ latest_httpd_backup }}"
+    dest: "{{ cert_entry.config_file }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  when: latest_httpd_backup != ''
+  delegate_to: "{{ inventory_hostname }}"
+  become: true
+  tags: [restore]
+
+- name: "Restart IBM HTTP Server after rollback"
+  ansible.builtin.command: >
+    /opt/ihs/85/bin/apachectl -f {{ cert_entry.config_file }} -k restart
+  become: true
+  delegate_to: "{{ inventory_hostname }}"
+  tags: [restore]
