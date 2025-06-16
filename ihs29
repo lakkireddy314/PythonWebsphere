@@ -1,0 +1,42 @@
+- name: Read JKS details
+  command: >
+    keytool -list -v
+    -keystore {{ keystore_path }}
+    -storepass {{ keystore_password }}
+    {% if alias is defined %}-alias {{ alias }}{% endif %}
+  register: keytool_output
+  changed_when: false
+  failed_when: keytool_output.rc != 0
+
+- name: Fail if no expiry date found
+  fail:
+    msg: "Could not parse certificate expiry date from JKS!"
+  when: keytool_output.stdout is not search("until:")
+
+- name: Extract the expiry date string
+  set_fact:
+    cert_expiry_raw: >-
+      {{ keytool_output.stdout
+         | regex_search('until: (.+)', '\\1')
+         | trim
+      }}
+
+- name: Compute expiry epoch (seconds since UNIX epoch)
+  command: >
+    date -d "{{ cert_expiry_raw }}" +%s
+  register: expiry_epoch
+  changed_when: false
+
+- name: Compute current epoch
+  command: date +%s
+  register: now_epoch
+  changed_when: false
+
+- name: Calculate days until certificate expiry
+  set_fact:
+    cert_days_until_expiry: >-
+      {{ ((expiry_epoch.stdout | int) - (now_epoch.stdout | int)) // 86400 }}
+
+- name: Show days remaining
+  debug:
+    msg: "Certificate expires in {{ cert_days_until_expiry }} days (on {{ cert_expiry_raw }})"
