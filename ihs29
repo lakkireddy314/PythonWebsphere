@@ -8,22 +8,31 @@
   changed_when: false
   failed_when: keytool_output.rc != 0
 
-- name: Fail if no expiry date found
+- name: Fail if no “until:” lines were found
   fail:
-    msg: "Could not parse certificate expiry date from JKS!"
-  when: keytool_output.stdout is not search("until:")
+    msg: "No certificate expiry (‘until:’) line found in JKS output!"
+  when: >
+    (keytool_output.stdout_lines
+      | select('search', '^\\s*until:')
+      | list
+    ) | length == 0
 
-- name: Extract the expiry date string
+- name: Extract the first “until:” line only
   set_fact:
-    cert_expiry_raw: >-
-      {{ keytool_output.stdout
-         | regex_search('until: (.+)', '\\1')
-         | trim
+    expiry_line: >-
+      {{ keytool_output.stdout_lines
+         | select('search', '^\\s*until:')
+         | list
+         | first
       }}
 
+- name: Isolate the date string from that line
+  set_fact:
+    cert_expiry_raw: >-
+      {{ expiry_line.split('until: ', 1)[1] | trim }}
+
 - name: Compute expiry epoch (seconds since UNIX epoch)
-  command: >
-    date -d "{{ cert_expiry_raw }}" +%s
+  command: date -d "{{ cert_expiry_raw }}" +%s
   register: expiry_epoch
   changed_when: false
 
