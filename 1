@@ -1,3 +1,26 @@
+- name: Convert expiry date to epoch on AIX via Python
+  shell: |
+    /usr/bin/python << 'EOF'
+import time, datetime
+s = "{{ cert_expiry_raw }}"
+dt = datetime.datetime.strptime(s, "%m/%d/%y %I:%M %p")
+print(int(time.mktime(dt.timetuple())))
+EOF
+  args:
+    warn: false
+  register: cert_epoch
+
+- name: Set fact for expiry in seconds
+  set_fact:
+    cert_expiry_seconds: "{{ cert_epoch.stdout | int }}"
+
+   
+   
+   
+   
+   
+   
+   
    original_kdb_files: >-
       {{
         kdb_backups.files
