@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Certificate Renewal &amp; Validation Report</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,sans-serif;">
+
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f4f4;">
+    <tr><td align="center">
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
+
+        <!-- HEADER -->
+        <tr>
+          <td style="padding:20px;background:#2a8cff;">
+            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td width="150">
+                  <img src="https://via.placeholder.com/150x50?text=LOGO"
+                       width="150" height="50" alt="Logo"
+                       style="display:block;border:none;">
+                </td>
+                <td style="color:#fff;font-size:24px;font-weight:bold;
+                           text-align:left;vertical-align:middle;">
+                  Certificate Renewal &amp; Validation Report
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- SUMMARY -->
+        <tr>
+          <td style="padding:20px;background:#e9ecef;">
+            <table width="100%" cellpadding="10" cellspacing="0" border="0">
+              <tr>
+                <td style="background:#cce5ff;color:#004085;text-align:center;">
+                  📊 Total Scanned: {{ venafi_cert_info|length }}
+                </td>
+                <td style="background:#d4edda;color:#155724;text-align:center;">
+                  ✅ Renewed: {{
+                    venafi_cert_info
+                    | dict2items
+                    | selectattr('value.changed','equalto',true)
+                    | list|length
+                  }}
+                </td>
+                <td style="background:#dc3545;color:#fff;text-align:center;">
+                  ❌ Failed: {{
+                    venafi_cert_info
+                    | dict2items
+                    | selectattr('value.validation_status','equalto','FAILED')
+                    | list|length
+                  }}
+                </td>
+                <td style="background:#d1ecf1;color:#0c5460;text-align:center;">
+                  ✔️ Passed: {{
+                    venafi_cert_info
+                    | dict2items
+                    | selectattr('value.validation_status','equalto','PASSED')
+                    | list|length
+                  }}
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- DETAIL TABLE -->
+        <tr>
+          <td style="padding:20px;">
+            <table width="100%" cellpadding="5" cellspacing="0" border="1"
+                   style="border-collapse:collapse;border-color:#ddd;">
+              <tr style="background:#f0f0f0;">
+                <th>Alias</th>
+                <th>Old Expiry (days)</th>
+                <th>New Expiry (days)</th>
+                <th>Old Serial</th>
+                <th>New PFX Serial</th>
+                <th>Action</th>
+                <th>Validation</th>
+              </tr>
+              {% for alias, info in venafi_cert_info.items() %}
+              <tr>
+                <td style="border-top:1px solid #ddd;">{{ alias }}</td>
+                <td align="right" style="border-top:1px solid #ddd;">
+                  {{ info.expiry_days or 'N/A' }}
+                </td>
+                <td align="right" style="border-top:1px solid #ddd;">
+                  {{ info.new_expiry_days or '—' }}
+                </td>
+                <td style="border-top:1px solid #ddd;">{{ info.serial }}</td>
+                <td style="border-top:1px solid #ddd;">{{ info.new_serial or '—' }}</td>
+                <td style="border-top:1px solid #ddd;">
+                  {% if info.changed %}
+                    <span style="padding:3px 8px;background:#28a745;color:#fff;font-size:12px;">
+                      Renewed
+                    </span>
+                  {% else %}
+                    <span style="padding:3px 8px;background:#6c757d;color:#fff;font-size:12px;">
+                      Skipped
+                    </span>
+                  {% endif %}
+                </td>
+                <td style="border-top:1px solid #ddd;">
+                  {% if info.validation_status == 'PASSED' %}
+                    <span style="padding:3px 8px;background:#28a745;color:#fff;font-size:12px;">
+                      PASSED
+                    </span>
+                  {% else %}
+                    <span style="padding:3px 8px;background:#dc3545;color:#fff;font-size:12px;">
+                      FAILED
+                    </span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </table>
+          </td>
+        </tr>
+
+        <!-- FOOTER -->
+        <tr>
+          <td style="padding:20px;font-size:12px;color:#777;text-align:center;">
+            <p style="margin:0;">
+              <em>Automated report for {{ ansible_hostname }}</em>
+            </p>
+            <p style="margin:0;">
+              <a href="mailto:web@test.com" style="color:#2a8cff;text-decoration:none;">
+                Contact Support
+              </a>
+              | © {{ ansible_date_time.date[:4] }} Your Company
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
