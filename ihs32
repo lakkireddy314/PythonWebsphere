@@ -1,0 +1,108 @@
+To collect all per-host certificate info into a single venafi_cert_info dict on your controller, you need two changes:
+
+On each host, gather its own local_cert_info (or reuse your existing per-host fact) without delegating to localhost.
+
+In a final, localhost‐only task, merge all those host facts into one dict.
+
+A) Per-host: set local_cert_info
+In your existing tasks/check_cert_expiry.yml, change:
+
+yaml
+Copy
+Edit
+- name: Build venafi_cert_info with combine()
+  set_fact:
+    venafi_cert_info: >-
+      {{ venafi_cert_info
+         | combine({ (res.stdout.split()[0]): { … } }) }}
+  loop: "{{ expiry_results.results }}"
+  delegate_to: localhost   # ← remove this
+  run_once: true           # ← remove this
+to:
+
+yaml
+Copy
+Edit
+- name: Build local_cert_info on each host
+  set_fact:
+    local_cert_info: >-
+      {{ local_cert_info|default({}) 
+         | combine({
+             (res.stdout.split()[0]): {
+               expiry_days: (res.stdout.split()[1] | int),
+               serial:      res.stdout.split()[2],
+               changed:     ((res.stdout.split()[1] | int) <= cert_renew_threshold)
+             }
+           })
+      }}
+  loop: "{{ expiry_results.results }}"
+  loop_control:
+    loop_var: res
+  tags: [precheck]
+No delegate_to: localhost
+
+No run_once
+
+You end up with each host having its own hostvars[inventory_hostname].local_cert_info.
+
+B) Controller: consolidate into venafi_cert_info
+Add a new task file, e.g. tasks/consolidate_cert_info.yml, and include it at the end of your play once on localhost:
+
+yaml
+Copy
+Edit
+---
+# tasks/consolidate_cert_info.yml
+
+- name: Initialize global venafi_cert_info
+  set_fact:
+    venafi_cert_info: {}
+  delegate_to: localhost
+  run_once: true
+  tags: [precheck]
+
+- name: Merge each host's local_cert_info into global dict
+  set_fact:
+    venafi_cert_info: "{{ venafi_cert_info | combine(hostvars[item].local_cert_info) }}"
+  loop: "{{ play_hosts }}"
+  loop_control:
+    loop_var: item
+  delegate_to: localhost
+  run_once: true
+  tags: [precheck]
+
+- name: Debug global venafi_cert_info
+  debug:
+    var: venafi_cert_info
+  delegate_to: localhost
+  run_once: true
+  tags: [precheck]
+play_hosts is the list of all hosts in the current play—in 2.9 you can also use groups['webservers'].
+
+We run_once and delegate_to: localhost so it only executes a single time on the controller.
+
+Each iteration pulls in hostvars[item].local_cert_info (a dict) and merges it into venafi_cert_info.
+
+C) Hook it into your main task flow
+In tasks/main.yml, after your expiry‐check include but before extraction:
+
+yaml
+Copy
+Edit
+- import_tasks: check_cert_expiry.yml
+  tags: [precheck]
+
+- import_tasks: consolidate_cert_info.yml
+  tags: [precheck]
+
+- import_tasks: extract_values.yml
+  when: ...
+  tags: [extract]
+Result
+Each host builds its own local_cert_info dict.
+
+Once, on the controller, you merge them all into one venafi_cert_info dict, keyed by alias.
+
+All subsequent tasks (extraction, processing, reporting) can then reference the global venafi_cert_info on localhost.
+
+This way, no matter how many servers you scan, your final report sees every certificate from every host.
