@@ -1,3 +1,26 @@
+- name: "Build venafi_cert_info with combine()"
+  ansible.builtin.set_fact:
+    venafi_cert_info: >-
+      {{ venafi_cert_info
+         | combine({
+             (res.stdout.split()[0]): {
+               expiry_days: (res.stdout.split()[1] | int),
+               serial:      res.stdout.split()[2],
+               changed:     ((res.stdout.split()[1] | int) <= cert_renew_threshold)
+             }
+           })
+      }}
+  loop: "{{ expiry_results.results }}"
+  loop_control:
+    loop_var: res
+  delegate_to: localhost
+  run_once: true
+  tags: [precheck]
+
+
+  
+
+
 - name: Convert expiry date to epoch on AIX via Python
   shell: |
     /usr/bin/python << 'EOF'
