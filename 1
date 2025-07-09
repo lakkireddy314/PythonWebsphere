@@ -1,11 +1,7 @@
-{#–– inside your loop over each cert entry ––#}
-<td>
-  {# calculate future epoch = now + days*86400 #}
-  {% set expiry_epoch = (ansible_date_time.epoch | int)
-                         + (entry.expiry_days | int * 86400) %}
-  {{ expiry_epoch
-     | to_datetime("%s")
-     | strftime("%Y-%m-%d") }}
+<td style="border-top:1px solid #ddd; text-align:right;">
+  {{ ((ansible_date_time.epoch | int + entry.expiry_days | int * 86400)
+      | to_datetime("%s")
+      | strftime("%Y-%m-%d")) }}
 </td>
 
 
