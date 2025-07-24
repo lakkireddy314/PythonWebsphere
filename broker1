@@ -1,0 +1,97 @@
+- hosts: localhost
+  gather_facts: false
+  vars:
+    node_discovery_cmd:   "your_node_discovery_command"
+    server_discovery_cmd: "your_server_discovery_command {{ item }}"
+    marker_dir:           "/var/tmp/ansible_markers"
+
+  tasks:
+
+    - name: Discover all brokers
+      shell: "{{ node_discovery_cmd }}"
+      register: nodes_output
+      changed_when: false
+
+    - name: Build list of brokers (skip top 5 lines)
+      set_fact:
+        brokers: "{{ nodes_output.stdout_lines[5:] }}"
+
+    - name: Discover servers for each broker
+      shell: "{{ server_discovery_cmd }}"
+      register: server_results
+      changed_when: false
+      loop: "{{ brokers }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Initialize servers_map
+      set_fact:
+        servers_map: {}
+
+    - name: Map each broker to its servers (skip top 5 lines)
+      set_fact:
+        servers_map: >-
+          {{ servers_map
+             | combine({
+                 item.item: item.stdout_lines[5:]
+               })
+          }}
+      loop: "{{ server_results.results }}"
+
+    - name: Ensure marker directory exists
+      file:
+        path: "{{ marker_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Run per-server tasks for each broker–server
+      block:
+
+        - name: Skip if broker or server is undefined
+          debug:
+            msg: "Skipping undefined pair: broker={{ item.0.broker }}, server={{ item.1 }}"
+          when: item.0.broker is not defined or item.1 is not defined
+
+        - name: Check SSH connectivity to server
+          wait_for:
+            host: "{{ item.1 }}"
+            port: 22
+            timeout: 10
+          when: item.0.broker is defined and item.1 is defined
+
+        - name: Check if work already done on this broker–server
+          stat:
+            path: "{{ marker_dir }}/done_{{ item.0.broker }}_{{ item.1 }}"
+          register: marker
+
+        - name: Perform actual work on broker–server
+          shell: |
+            my_command --broker {{ item.0.broker }} --server {{ item.1 }}
+          args:
+            chdir: /tmp
+            creates: "{{ marker_dir }}/done_{{ item.0.broker }}_{{ item.1 }}"
+          when:
+            - item.0.broker is defined
+            - item.1 is defined
+            - not marker.stat.exists
+          register: work_result
+
+        - name: Create marker file after successful run
+          file:
+            path: "{{ marker_dir }}/done_{{ item.0.broker }}_{{ item.1 }}"
+            state: touch
+          when:
+            - work_result is defined
+            - work_result.rc == 0
+
+      vars:
+        broker: "{{ item.0.broker }}"
+        server: "{{ item.1 }}"
+      loop: >-
+        {{
+          servers_map
+            | dict2items(key_name='broker', value_name='servers')
+            | subelements('servers')
+        }}
+      loop_control:
+        label: "Broker {{ item.0.broker }}, Server {{ item.1 }}"
