@@ -1,0 +1,431 @@
+Below is the entire log_rotation role, refactored to remove any collection prefixes (e.g. ansible.builtin.) and use only features guaranteed in Ansible 2.9. Everything else—early‑exit guard, modular task includes, idempotency via creates:, pattern matching, truncation, pruning, diagnostic cleanup, std‐log archiving—remains intact.
+
+Role Layout
+css
+Copy
+Edit
+roles/log_rotation/
+├── defaults
+│   └── main.yml
+├── tasks
+│   ├── main.yml
+│   ├── rotate_logs.yml
+│   ├── rotate_http_plugin.yml
+│   ├── prune_rotated_backups.yml
+│   ├── cleanup_dumps.yml
+│   └── archive_stdlogs.yml
+├── meta
+│   └── main.yml
+└── README.md
+defaults/main.yml
+yaml
+Copy
+Edit
+---
+# How long before deleting any *.gz backup
+log_rotation_backup_retention: "6d"
+
+# How long to keep diagnostic dumps
+cleanup_retention: "5d"
+cleanup_file_patterns:
+  - "javacore*.txt"
+  - "headdump*.phd"
+  - "iptrace*trc*"
+  - "trace_*.gz"
+  - "core.*.*.z"
+  - "Snap.*.trc"
+  - "trace_*.log"
+
+# Native stderr/stdout archiving
+std_log_filenames:
+  - native_stderr.log
+  - native_stdout.log
+stderr_search_dirs: []
+stderr_archive_retention: "7d"
+Features:
+
+All retention thresholds and dump patterns centralized here.
+
+No collection prefixes so it works out‑of‑the‑box on Ansible 2.9.
+
+meta/main.yml
+yaml
+Copy
+Edit
+---
+dependencies: []
+Features:
+
+No external dependencies.
+
+tasks/main.yml
+yaml
+Copy
+Edit
+---
+# 0) Skip this host if no log dirs configured
+- name: "End host if no log_rotation_dirs defined"
+  meta: end_host
+  when: log_rotation_dirs is not defined or log_rotation_dirs | length == 0
+  tags: always
+
+# 1) Ensure basic inputs exist
+- name: "Assert core inputs are defined"
+  assert:
+    that:
+      - log_rotation_dirs is defined and log_rotation_dirs | length > 0
+      - log_rotation_file_types is defined and log_rotation_file_types | length > 0
+    fail_msg: >
+      "Define 'log_rotation_dirs' and 'log_rotation_file_types' in group_vars."
+  tags: logrotate
+
+# 2) Rotate access/error logs (all but newest)
+- name: "Rotate access_log & error_log (all but newest)"
+  include_tasks: rotate_logs.yml
+  tags: logrotate
+
+# 3) Rotate http_plugin.log separately
+- name: "Rotate http_plugin.log"
+  include_tasks: rotate_http_plugin.yml
+  tags: logrotate
+
+# 4) Prune expired .gz backups
+- name: "Prune old compressed backups"
+  include_tasks: prune_rotated_backups.yml
+  tags: logrotate
+
+# 5) Ensure diagnostic cleanup dirs defined
+- name: "Assert diagnostic cleanup inputs"
+  assert:
+    that:
+      - cleanup_dirs is defined and cleanup_dirs | length > 0
+    fail_msg: >
+      "Define 'cleanup_dirs' in group_vars to remove dumps."
+  tags: logrotate
+
+# 6) Cleanup diagnostics
+- name: "Cleanup old diagnostic dumps"
+  include_tasks: cleanup_dumps.yml
+  tags: logrotate
+
+# 7) Archive native stderr/stdout
+- name: "Archive stdout/stderr logs & prune archives"
+  include_tasks: archive_stdlogs.yml
+  tags: logrotate
+Features:
+
+meta: end_host guard ensures hosts without config are skipped.
+
+Modular, tag‑driven includes for clarity.
+
+tasks/rotate_logs.yml
+yaml
+Copy
+Edit
+---
+- name: "Find non-empty access_log* and error_log* files"
+  find:
+    paths: "{{ log_rotation_dirs }}"
+    patterns:
+      - "*access_log*"
+      - "*error_log*"
+    recurse: true
+    size: "+0"
+  register: logs_found
+
+- name: "Sort logs by modification time (newest first)"
+  set_fact:
+    sorted_logs: "{{ logs_found.files | sort(attribute='mtime', reverse=true) }}"
+
+- name: "Build list of logs to rotate (all but newest)"
+  set_fact:
+    logs_to_rotate: "{{ sorted_logs[1:] }}"
+
+- name: "Nothing to gzip if <2 files found"
+  debug:
+    msg: "Found {{ sorted_logs|length }} file(s); skipping gzip."
+  when: sorted_logs | length < 2
+
+- name: "Gzip each log except the newest"
+  command: gzip "{{ log_file.path }}"
+  args:
+    creates: "{{ log_file.path }}.gz"
+  loop: "{{ logs_to_rotate }}"
+  loop_control:
+    loop_var: log_file
+  when: logs_to_rotate | length > 0
+Features:
+
+Matches access_log, test_access_log.123, etc.
+
+Keeps the single newest file untouched.
+
+Idempotent via creates:.
+
+tasks/rotate_http_plugin.yml
+yaml
+Copy
+Edit
+---
+- name: "Find all http_plugin.log files"
+  find:
+    paths: "{{ log_rotation_dirs }}"
+    patterns: "http_plugin.log"
+    recurse: true
+    size: "+0"
+  register: plugin_logs
+
+- name: "Set http_plugin timestamp"
+  set_fact:
+    plugin_timestamp: "{{ lookup('pipe','date +%Y%m%d_%H%M%S') }}"
+
+- name: "Copy, gzip, and truncate http_plugin.log"
+  shell: |
+    src="{{ item.path }}"
+    dest="${src}_{{ plugin_timestamp }}"
+    cp "$src" "$dest"
+    gzip "$dest"
+    : > "$src"
+  args:
+    executable: /bin/bash
+    creates: "{{ item.path }}_{{ plugin_timestamp }}.gz"
+  loop: "{{ plugin_logs.files }}"
+  loop_control:
+    loop_var: item
+  when: plugin_logs.matched | int > 0
+
+- name: "Prune old http_plugin.log archives"
+  find:
+    paths: "{{ log_rotation_dirs }}"
+    patterns: "http_plugin.log_*"
+    recurse: true
+    age: "{{ log_rotation_backup_retention }}"
+    age_stamp: mtime
+  register: old_plugin_archives
+
+- name: "Delete expired http_plugin.log archives"
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ old_plugin_archives.files }}"
+  loop_control:
+    loop_var: item
+  when: old_plugin_archives.matched | int > 0
+Features:
+
+Exact match for http_plugin.log.
+
+Puts timestamped .gz alongside source, then truncates.
+
+Prunes archives older than retention.
+
+tasks/prune_rotated_backups.yml
+yaml
+Copy
+Edit
+---
+- name: "Find .gz backups older than {{ log_rotation_backup_retention }}"
+  find:
+    paths: "{{ log_rotation_dirs }}"
+    patterns: >-
+      {{ log_rotation_file_types
+         | map('regex_replace','^(.*)$','\\1.gz')
+         | list }}
+    recurse: true
+    age: "{{ log_rotation_backup_retention }}"
+    age_stamp: mtime
+  register: old_backups
+
+- name: "Delete expired backups"
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ old_backups.files }}"
+  loop_control:
+    loop_var: item
+  when: old_backups.matched | int > 0
+Features:
+
+Uses your general log patterns to prune .gz older than retention.
+
+tasks/cleanup_dumps.yml
+yaml
+Copy
+Edit
+---
+- name: "Find diagnostic dumps older than {{ cleanup_retention }}"
+  find:
+    paths: "{{ cleanup_dirs }}"
+    patterns: "{{ cleanup_file_patterns }}"
+    recurse: true
+    age: "{{ cleanup_retention }}"
+    age_stamp: mtime
+  register: diagnostic_files
+
+- name: "Delete diagnostic dumps"
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ diagnostic_files.files }}"
+  loop_control:
+    loop_var: item
+  when: diagnostic_files.matched | int > 0
+Features:
+
+Cleans javacore, headdump, trace files by age.
+
+tasks/archive_stdlogs.yml
+yaml
+Copy
+Edit
+---
+- name: "Validate std-log archive inputs"
+  assert:
+    that:
+      - stderr_search_dirs is defined and stderr_search_dirs | length > 0
+      - std_log_filenames is defined and std_log_filenames | length > 0
+    fail_msg: >
+      "Set 'stderr_search_dirs' and 'std_log_filenames' in group_vars."
+  
+- name: "Find native stderr/stdout logs"
+  find:
+    paths: "{{ stderr_search_dirs }}"
+    patterns: "{{ std_log_filenames }}"
+    recurse: true
+    size: "+0"
+  register: std_logs
+
+- name: "Set std-log timestamp"
+  set_fact:
+    file_datetime: "{{ lookup('pipe','date +%Y%m%d_%H%M%S') }}"
+
+- name: "Archive & truncate native std-logs"
+  shell: |
+    mv "{{ item.path }}" "{{ item.path }}_{{ file_datetime }}"
+    : > "{{ item.path }}"
+  args:
+    executable: /bin/bash
+    creates: "{{ item.path }}_{{ file_datetime }}"
+  loop: "{{ std_logs.files }}"
+  loop_control:
+    loop_var: item
+  when: std_logs.matched | int > 0
+
+- name: "Find old std-log archives"
+  find:
+    paths: "{{ stderr_search_dirs }}"
+    patterns: >
+      {%- for f in std_log_filenames -%}
+      {{ f }}_*
+      {%- if not loop.last %}\n{%- endif -%}
+      {%- endfor -%}
+    recurse: true
+    age: "{{ stderr_archive_retention }}"
+    age_stamp: mtime
+  register: old_std_archives
+
+- name: "Delete expired std-log archives"
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ old_std_archives.files }}"
+  loop_control:
+    loop_var: item
+  when: old_std_archives.matched | int > 0
+Features:
+
+In‑place rename & truncate of stderr/stdout logs.
+
+Prunes archives older than retention.
+
+README.md
+markdown
+Copy
+Edit
+# log_rotation
+
+Ansible 2.9 role for:
+
+1. **Selective Gzip** – Rotate (gzip) all but the newest `access_log*` & `error_log*`.  
+2. **Plugin Log Rotation** – Snapshot, gzip & truncate `http_plugin.log`, prune its archives.  
+3. **Prune Backups** – Remove `.gz` older than `log_rotation_backup_retention`.  
+4. **Diagnostic Cleanup** – Delete dumps older than `cleanup_retention`.  
+5. **Std-Log Archiving** – Rename & truncate native stderr/stdout, prune archives older than `stderr_archive_retention`.  
+6. **Host Guard** – Skip hosts with no `log_rotation_dirs`.
+
+---
+
+## Required Variables (`group_vars/<group>.yml`)
+
+```yaml
+log_rotation_dirs:
+  - /var/log/nginx
+  - /opt/myapp/logs
+
+log_rotation_file_types:
+  - "*.log"
+  - "*.err"
+
+cleanup_dirs:
+  - /opt/was/profiles/AppSrv01/logs
+  - /var/log/myapp
+
+stderr_search_dirs:
+  - /opt/was/profiles/AppSrv01/logs
+  - /var/log/myapp
+Optional Overrides
+yaml
+Copy
+Edit
+log_rotation_backup_retention: "10d"
+cleanup_retention: "7d"
+stderr_archive_retention: "14d"
+Usage
+yaml
+Copy
+Edit
+- hosts: all
+  roles:
+    - role: log_rotation
+      tags: logrotate
+Tags
+rotate_logs
+
+rotate_http_plugin
+
+prune_rotated_backups
+
+cleanup_dumps
+
+archive_stdlogs
+
+logrotate (all)
+
+yaml
+Copy
+Edit
+
+---
+
+All modules and syntax here are fully compatible with **Ansible 2.9**, require **no collections**, and rely solely on core functionality.
+::contentReference[oaicite:0]{index=0}
+
+
+
+
+
+
+
+
+Sources
+
+Ask ChatGPT
+
+
+
+
+Search
+
+
+
+ChatGPT can make mistakes. Check importa
