@@ -1,0 +1,79 @@
+---
+# roles/your_role_name/tasks/restore.yml
+
+- name: Ensure backup root exists
+  stat:
+    path: "/home/{{ was_user }}/Ansible_backup"
+  register: backup_root
+
+- name: Fail if backup directory is missing
+  fail:
+    msg: "/home/{{ was_user }}/Ansible_backup not found!"
+  when: not backup_root.stat.isdir
+
+- name: Stat backup IHS config files
+  stat:
+    path: "/home/{{ was_user }}/Ansible_backup/{{ conf_file | basename }}"
+  loop:
+    - "{{ IHS_install_root }}/conf/bpm-httpd.conf"
+    - "{{ IHS_install_root }}/conf/admin.conf"
+  loop_control:
+    loop_var: conf_file
+  register: backup_conf_files
+
+- name: Remove original IHS config files if present
+  file:
+    path: "{{ file_entry.item }}"
+    state: absent
+  loop: "{{ backup_conf_files.results }}"
+  loop_control:
+    loop_var: file_entry
+  when: file_entry.stat.exists
+
+- name: Restore IHS config files
+  copy:
+    src: "/home/{{ was_user }}/Ansible_backup/{{ file_entry.item | basename }}"
+    dest: "{{ file_entry.item }}"
+    remote_src: yes
+  loop: "{{ backup_conf_files.results }}"
+  loop_control:
+    loop_var: file_entry
+  when: file_entry.stat.exists
+
+- name: Stat backup IHS htdocs directory
+  stat:
+    path: "/home/{{ was_user }}/Ansible_backup/htdocs"
+  register: backup_htdocs
+
+- name: Remove original htdocs if present
+  file:
+    path: "{{ IHS_install_root }}/htdocs"
+    state: absent
+  when: backup_htdocs.stat.isdir
+
+- name: Restore IHS htdocs directory
+  copy:
+    src: "/home/{{ was_user }}/Ansible_backup/htdocs/"
+    dest: "{{ IHS_install_root }}/htdocs/"
+    remote_src: yes
+    recursive: yes
+  when: backup_htdocs.stat.isdir
+
+- name: Stat backup Plugins config directory
+  stat:
+    path: "/home/{{ was_user }}/Ansible_backup/config"
+  register: backup_plugins
+
+- name: Remove original Plugins config dir if present
+  file:
+    path: "{{ Plugins_install_root }}/config"
+    state: absent
+  when: backup_plugins.stat.isdir
+
+- name: Restore Plugins config directory
+  copy:
+    src: "/home/{{ was_user }}/Ansible_backup/config/"
+    dest: "{{ Plugins_install_root }}/config/"
+    remote_src: yes
+    recursive: yes
+  when: backup_plugins.stat.isdir
