@@ -1,5 +1,5 @@
 ---
-# tasks/backup.yml
+# roles/your_role_name/tasks/backup.yml
 
 - name: Ensure backup directory exists
   file:
@@ -11,42 +11,50 @@
 
 - name: Stat IHS config files
   stat:
-    path: "{{ item }}"
-  register: ihs_conf_stat
-  with_items:
+    path: "{{ conf_file }}"
+  loop:
     - "{{ IHS_install_root }}/conf/bpm-httpd.conf"
     - "{{ IHS_install_root }}/conf/admin.conf"
+  loop_control:
+    loop_var: conf_file
+  register: ihs_conf_files
 
 - name: Backup IHS config files
   copy:
-    src: "{{ item.item }}"
-    dest: "/home/{{ was_user }}/Ansible_backup/{{ item.item | basename }}"
+    src: "{{ file_entry.conf_file }}"
+    dest: "/home/{{ was_user }}/Ansible_backup/{{ file_entry.conf_file | basename }}"
     remote_src: yes
-  when: item.stat.exists
-  with_items: "{{ ihs_conf_stat.results }}"
+  loop: "{{ ihs_conf_files.results }}"
+  loop_control:
+    loop_var: file_entry
+  when: file_entry.stat.exists
 
 - name: Stat IHS htdocs directory
   stat:
-    path: "{{ IHS_install_root }}/htdocs"
-  register: htdocs_stat
+    path: "{{ htdocs_dir }}"
+  vars:
+    htdocs_dir: "{{ IHS_install_root }}/htdocs"
+  register: htdocs_entry
 
 - name: Backup IHS htdocs directory
   copy:
-    src: "{{ IHS_install_root }}/htdocs/"
+    src: "{{ htdocs_dir }}/"
     dest: "/home/{{ was_user }}/Ansible_backup/htdocs/"
     remote_src: yes
     recursive: yes
-  when: htdocs_stat.stat.isdir
+  when: htdocs_entry.stat.isdir
 
 - name: Stat Plugins config directory
   stat:
-    path: "{{ Plugins_install_root }}/config"
-  register: plugins_config_stat
+    path: "{{ plugins_dir }}"
+  vars:
+    plugins_dir: "{{ Plugins_install_root }}/config"
+  register: plugins_entry
 
 - name: Backup Plugins config directory
   copy:
-    src: "{{ Plugins_install_root }}/config/"
+    src: "{{ plugins_dir }}/"
     dest: "/home/{{ was_user }}/Ansible_backup/config/"
     remote_src: yes
     recursive: yes
-  when: plugins_config_stat.stat.isdir
+  when: plugins_entry.stat.isdir
