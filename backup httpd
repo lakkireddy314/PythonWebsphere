@@ -1,0 +1,52 @@
+---
+# tasks/backup.yml
+
+- name: Ensure backup directory exists
+  file:
+    path: "/home/{{ was_user }}/Ansible_backup"
+    state: directory
+    owner: "{{ was_user }}"
+    group: "{{ was_user }}"
+    mode: '0755'
+
+- name: Stat IHS config files
+  stat:
+    path: "{{ item }}"
+  register: ihs_conf_stat
+  with_items:
+    - "{{ IHS_install_root }}/conf/bpm-httpd.conf"
+    - "{{ IHS_install_root }}/conf/admin.conf"
+
+- name: Backup IHS config files
+  copy:
+    src: "{{ item.item }}"
+    dest: "/home/{{ was_user }}/Ansible_backup/{{ item.item | basename }}"
+    remote_src: yes
+  when: item.stat.exists
+  with_items: "{{ ihs_conf_stat.results }}"
+
+- name: Stat IHS htdocs directory
+  stat:
+    path: "{{ IHS_install_root }}/htdocs"
+  register: htdocs_stat
+
+- name: Backup IHS htdocs directory
+  copy:
+    src: "{{ IHS_install_root }}/htdocs/"
+    dest: "/home/{{ was_user }}/Ansible_backup/htdocs/"
+    remote_src: yes
+    recursive: yes
+  when: htdocs_stat.stat.isdir
+
+- name: Stat Plugins config directory
+  stat:
+    path: "{{ Plugins_install_root }}/config"
+  register: plugins_config_stat
+
+- name: Backup Plugins config directory
+  copy:
+    src: "{{ Plugins_install_root }}/config/"
+    dest: "/home/{{ was_user }}/Ansible_backup/config/"
+    remote_src: yes
+    recursive: yes
+  when: plugins_config_stat.stat.isdir
