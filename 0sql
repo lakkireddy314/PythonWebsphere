@@ -1,33 +1,917 @@
-WITH inst AS (
-  SELECT
-    SNAPSHOT_ID,
-    COALESCE(CREATE_TIME, START_TIME) AS ts
-  FROM LSW_BPD_INSTANCE
-)
-SELECT
-  p.PROJECT_NAME          AS process_app,
-  s.SNAPSHOT_NAME         AS snapshot,
-  SUM(CASE WHEN inst.ts >= (CURRENT_TIMESTAMP - 3 MONTHS) THEN 1 ELSE 0 END) AS last_3_months_count,
-  SUM(CASE WHEN inst.ts >= (CURRENT_TIMESTAMP - 6 MONTHS) THEN 1 ELSE 0 END) AS last_6_months_count
-FROM LSW_PROJECT  p
-JOIN LSW_SNAPSHOT s  ON s.PROJECT_ID  = p.PROJECT_ID
-LEFT JOIN inst       ON inst.SNAPSHOT_ID = s.SNAPSHOT_ID
-GROUP BY p.PROJECT_NAME, s.SNAPSHOT_NAME
-ORDER BY p.PROJECT_NAME, s.SNAPSHOT_NAME;
+# venafi\_cert — Complete Ansible Role for Venafi Certificate Lifecycle
 
-WITH inst AS (
-  SELECT
-    SNAPSHOT_ID,
-    CREATE_DATETIME AS ts
-  FROM LSW_BPD_INSTANCE
-)
-SELECT
-  p.PROJECT_NAME   AS process_app,
-  s.SNAPSHOT_NAME  AS snapshot,
-  SUM(CASE WHEN inst.ts >= (CURRENT_TIMESTAMP - 3 MONTHS) THEN 1 ELSE 0 END) AS last_3_months_count,
-  SUM(CASE WHEN inst.ts >= (CURRENT_TIMESTAMP - 6 MONTHS) THEN 1 ELSE 0 END) AS last_6_months_count
-FROM LSW_PROJECT  p
-JOIN LSW_SNAPSHOT s ON s.PROJECT_ID = p.PROJECT_ID
-LEFT JOIN inst      ON inst.SNAPSHOT_ID = s.SNAPSHOT_ID
-GROUP BY p.PROJECT_NAME, s.SNAPSHOT_NAME
-ORDER BY p.PROJECT_NAME, s.SNAPSHOT_NAME;
+A production-ready, Ansible 2.9-compatible role that requests/renews certificates from Venafi (TPP or VaaS via **VCert CLI**), stages them, deploys to target hosts (PEM/JKS/KDB), verifies, and generates a consolidated HTML report (optional email). Handlers encapsulate all VCert actions. Designed for AWX/Tower workflows with idempotent checks and per-host reporting.
+
+---
+
+## Role Tree
+
+```
+roles/venafi_cert/
+├── README.md
+├── LICENSE
+├── meta/
+│   └── main.yml
+├── defaults/
+│   └── main.yml
+├── vars/
+│   └── main.yml
+├── handlers/
+│   └── main.yml
+├── tasks/
+│   ├── main.yml
+│   ├── validate_env.yml
+│   ├── discover_current_cert.yml
+│   ├── request_or_renew.yml
+│   ├── pickup_and_stage.yml
+│   ├── deploy.yml
+│   ├── verify.yml
+│   ├── report.yml
+│   └── cleanup.yml
+├── templates/
+│   ├── report.html.j2
+│   ├── ihs_gsk_import.sh.j2
+│   └── jks_import.sh.j2
+└── tests/
+    ├── inventory
+    └── test.yml
+```
+
+> **Note on 2.9:** Only core/builtin modules and shell/command are used. All VCert operations are delegated to localhost **without become**.
+
+---
+
+## File Contents
+
+### `defaults/main.yml`
+
+```yaml
+# Venafi platform & VCert
+venafi_platform: "tpp"  # choices: tpp, vaas
+venafi_vcert_bin: "/usr/local/bin/vcert"
+venafi_delegate_to: "localhost"   # where vcert runs
+venafi_output_root: "{{ playbook_dir }}/artifacts"  # on controller
+venafi_output_dir: "{{ venafi_output_root }}/{{ inventory_hostname }}"
+
+# TPP/VaaS connection
+venafi_tpp_url: ""           # e.g. https://tpp.company.com/vedsdk
+venafi_zone: ""              # e.g. Dev\Team\App
+venafi_access_token: ""      # prefer vault/env; can be empty if VCert uses SSO
+venafi_pickup_id: ""         # if doing pickup by request id
+
+# Enrollment settings
+venafi_cert_subject: "CN={{ inventory_hostname }}"
+venafi_dns_sans: []          # ["app.example.com","api.example.com"]
+venafi_ip_sans: []
+venafi_email_sans: []
+venafi_uri_sans: []
+venafi_key_type: "rsa"       # rsa|ecdsa
+venafi_key_bits: 2048
+venafi_ecdsa_curve: "p256"
+venafi_chain_format: "pem"   # pem|p7b
+
+# Renewal policy
+venafi_force_renew: false
+venafi_renew_threshold_days: 30
+
+# Deployment format/paths on remote
+venafi_cert_format: "pem"    # pem|jks|kdb|pkcs12
+venafi_stage_dir: "/tmp/venafi/{{ inventory_hostname }}"
+
+# PEM destinations
+venafi_dest_cert: "/etc/pki/tls/certs/{{ inventory_hostname }}.pem"
+venafi_dest_key:  "/etc/pki/tls/private/{{ inventory_hostname }}.key"
+venafi_dest_chain:"/etc/pki/tls/certs/{{ inventory_hostname }}-chain.pem"
+venafi_key_mode: "0600"
+venafi_cert_mode: "0644"
+
+# JKS destinations (if venafi_cert_format == 'jks')
+venafi_jks_path: "/etc/pki/java/keystore.jks"
+venafi_jks_storepass: "changeit"
+venafi_jks_keypass: "changeit"
+venafi_jks_alias: "{{ inventory_hostname }}"
+
+# KDB (IBM IHS/GSKit) destinations (if venafi_cert_format == 'kdb')
+venafi_kdb_path: "/opt/IBM/HTTPServer/key.kdb"
+venafi_kdb_stash: true
+venafi_kdb_label: "{{ inventory_hostname }}"
+
+# Service restart
+venafi_service_restart: false
+venafi_restart_cmd: "systemctl reload httpd"
+
+# Verify endpoints (optional)
+venafi_verify_endpoints: []   # [{host: "app.example.com", port: 443, sni: "app.example.com"}]
+venafi_verify_timeout: 10
+
+# Reporting
+venafi_report_enable: true
+venafi_report_path: "{{ playbook_dir }}/reports/venafi_report_{{ ansible_date_time.date }}.html"
+venafi_email_report: false
+venafi_report_mail_host: "localhost"
+venafi_report_mail_to: []     # ["tls-ops@example.com"]
+venafi_report_mail_from: "ansible@{{ ansible_fqdn | default('localhost') }}"
+
+# Cleanup staged output on targets
+venafi_cleanup: true
+
+# Safety
+venafi_fail_if_vcert_missing: true
+```
+
+---
+
+### `vars/main.yml`
+
+```yaml
+# OS-specific helpers & paths (override in inventory/group_vars as needed)
+openssl_bin: "/usr/bin/openssl"
+keytool_bin: "/usr/bin/keytool"
+gskcapicmd_bin: "/opt/IBM/HTTPServer/bin/gskcapicmd"
+
+# Build VCert SAN flags
+venafi_san_flags: >-
+  {% set parts = [] %}
+  {% if venafi_dns_sans %}{% for s in venafi_dns_sans %}{% set _ = parts.append('--san ' ~ s) %}{% endfor %}{% endif %}
+  {% if venafi_ip_sans %}{% for s in venafi_ip_sans %}{% set _ = parts.append('--ip ' ~ s) %}{% endfor %}{% endif %}
+  {% if venafi_email_sans %}{% for s in venafi_email_sans %}{% set _ = parts.append('--email ' ~ s) %}{% endfor %}{% endif %}
+  {% if venafi_uri_sans %}{% for s in venafi_uri_sans %}{% set _ = parts.append('--uri ' ~ s) %}{% endfor %}{% endif %}
+  {{ parts | join(' ') }}
+```
+
+---
+
+### `meta/main.yml`
+
+```yaml
+---
+dependencies: []
+
+galaxy_info:
+  role_name: venafi_cert
+  author: your-name
+  description: Request/Renew/Deploy/Verify TLS certificates with Venafi (VCert) and generate reports.
+  license: MIT
+  min_ansible_version: 2.9
+  platforms:
+    - name: EL
+      versions: [7, 8, 9]
+    - name: AIX
+      versions: [7.2]
+    - name: Ubuntu
+      versions: [18.04, 20.04, 22.04]
+  galaxy_tags: [venafi, vcert, tls, certificate, ihs, websphere, kdb, jks]
+```
+
+---
+
+### `handlers/main.yml`
+
+```yaml
+---
+# All VCert operations live here and are triggered via notify/handlers.
+
+- name: Ensure output directory exists (controller)
+  listen: "vcert_prepare_output_dir"
+  file:
+    path: "{{ venafi_output_dir }}"
+    state: directory
+    mode: "0750"
+  delegate_to: "{{ venafi_delegate_to }}"
+  become: false
+
+- name: VCert Enroll (request new certificate)
+  listen: "vcert_enroll"
+  delegate_to: "{{ venafi_delegate_to }}"
+  become: false
+  environment:
+    VENAFI_TOKEN: "{{ venafi_access_token | default(omit) }}"
+  command: >-
+    {{ venafi_vcert_bin }} enroll
+    {% if venafi_platform == 'tpp' %}-u {{ venafi_tpp_url }}{% endif %}
+    -z {{ venafi_zone }}
+    -cn "{{ venafi_cert_subject }}"
+    {{ venafi_san_flags }}
+    {% if venafi_key_type == 'rsa' %}--key-type rsa --key-size {{ venafi_key_bits }}{% else %}--ecdsa-curve {{ venafi_ecdsa_curve }}{% endif %}
+    --chain-file "{{ venafi_output_dir }}/chain.pem"
+    --file "{{ venafi_output_dir }}/cert.pem"
+    --key-file "{{ venafi_output_dir }}/key.pem"
+    --format pem --no-prompt
+  args:
+    creates: "{{ venafi_output_dir }}/cert.pem"
+  register: vcert_enroll_result
+  changed_when: "vcert_enroll_result.rc == 0"
+  notify:
+    - vcert_compute_new_serial
+
+- name: VCert Pickup (by request id)
+  listen: "vcert_pickup"
+  when: venafi_pickup_id | length > 0
+  delegate_to: "{{ venafi_delegate_to }}"
+  become: false
+  environment:
+    VENAFI_TOKEN: "{{ venafi_access_token | default(omit) }}"
+  command: >-
+    {{ venafi_vcert_bin }} pickup
+    {% if venafi_platform == 'tpp' %}-u {{ venafi_tpp_url }}{% endif %}
+    -t {{ venafi_access_token }}
+    --pickup-id {{ venafi_pickup_id }}
+    --chain-file "{{ venafi_output_dir }}/chain.pem"
+    --file "{{ venafi_output_dir }}/cert.pem"
+    --key-file "{{ venafi_output_dir }}/key.pem"
+    --format pem --no-prompt
+  register: vcert_pickup_result
+  changed_when: "vcert_pickup_result.rc == 0"
+  notify:
+    - vcert_compute_new_serial
+
+- name: Compute NEW cert serial (from controller staged cert)
+  listen: "vcert_compute_new_serial"
+  delegate_to: "{{ venafi_delegate_to }}"
+  become: false
+  command: >-
+    {{ openssl_bin }} x509 -in "{{ venafi_output_dir }}/cert.pem" -noout -serial -enddate
+  register: vcert_newcert_info
+  changed_when: false
+
+- name: Set stats for controller-side outputs
+  listen: "vcert_compute_new_serial"
+  set_stats:
+    data:
+      venafi_new_serial: "{{ (vcert_newcert_info.stdout | regex_search('serial=([^\n]+)', '\\1')) | default('') }}"
+      venafi_new_notafter_raw: "{{ (vcert_newcert_info.stdout | regex_search('notAfter=([^\n]+)', '\\1')) | default('') }}"
+  changed: false
+```
+
+---
+
+### `tasks/main.yml`
+
+```yaml
+---
+- name: Validate controller & target prerequisites
+  include_tasks: validate_env.yml
+
+- name: Discover current certificate on target (if present)
+  include_tasks: discover_current_cert.yml
+
+- name: Decide request/renew and trigger VCert handlers
+  include_tasks: request_or_renew.yml
+
+- name: Stage certificate/key/chain from controller to target
+  include_tasks: pickup_and_stage.yml
+
+- name: Deploy certificate to application keystore/paths
+  include_tasks: deploy.yml
+
+- name: Verify deployment (serial/expiry and optional TLS check)
+  include_tasks: verify.yml
+
+- name: Generate consolidated report (optional email)
+  when: venafi_report_enable | bool
+  include_tasks: report.yml
+
+- name: Cleanup staged artifacts on target
+  when: venafi_cleanup | bool
+  include_tasks: cleanup.yml
+```
+
+---
+
+### `tasks/validate_env.yml`
+
+```yaml
+---
+- name: Check VCert binary on controller
+  stat:
+    path: "{{ venafi_vcert_bin }}"
+  register: vcert_bin_stat
+  delegate_to: "{{ venafi_delegate_to }}"
+  become: false
+
+- name: Fail if VCert is missing
+  when: venafi_fail_if_vcert_missing | bool and not vcert_bin_stat.stat.exists
+  fail:
+    msg: >-
+      VCert binary not found at {{ venafi_vcert_bin }} on {{ venafi_delegate_to }}.
+      Install VCert CLI or set venafi_vcert_bin.
+
+- name: Ensure controller output root exists
+  file:
+    path: "{{ venafi_output_dir }}"
+    state: directory
+    mode: "0750"
+  delegate_to: "{{ venafi_delegate_to }}"
+  become: false
+  notify: vcert_prepare_output_dir
+
+- name: Create staging directory on target
+  file:
+    path: "{{ venafi_stage_dir }}"
+    state: directory
+    mode: "0750"
+
+- name: Ensure OpenSSL exists on target
+  stat:
+    path: "{{ openssl_bin }}"
+  register: openssl_stat
+
+- name: Warn if OpenSSL missing (some verify steps will be skipped)
+  when: not openssl_stat.stat.exists
+  debug:
+    msg: "openssl not found at {{ openssl_bin }}; skipping some verifications"
+```
+
+---
+
+### `tasks/discover_current_cert.yml`
+
+```yaml
+---
+- name: Detect current certificate (PEM)
+  when: venafi_cert_format == 'pem'
+  block:
+    - name: Read current cert file if present
+      stat:
+        path: "{{ venafi_dest_cert }}"
+      register: current_pem
+
+    - name: Extract current cert serial & notAfter
+      when: current_pem.stat.exists
+      command: >-
+        {{ openssl_bin }} x509 -in "{{ venafi_dest_cert }}" -noout -serial -enddate
+      register: current_cert_info
+      changed_when: false
+
+    - name: Save current cert facts
+      set_fact:
+        venafi_current_serial: >-
+          {{ (current_cert_info.stdout | regex_search('serial=([^\n]+)', '\\1')) | default('') }}
+        venafi_current_notafter_raw: >-
+          {{ (current_cert_info.stdout | regex_search('notAfter=([^\n]+)', '\\1')) | default('') }}
+
+- name: Detect current certificate (JKS)
+  when: venafi_cert_format == 'jks'
+  block:
+    - name: List JKS alias
+      command: >-
+        {{ keytool_bin }} -list -keystore "{{ venafi_jks_path }}" -storepass "{{ venafi_jks_storepass }}" -alias "{{ venafi_jks_alias }}" -v
+      register: jks_list
+      changed_when: false
+      failed_when: false
+    - name: Parse JKS serial/expiry (best effort)
+      set_fact:
+        venafi_current_serial: "{{ (jks_list.stdout | regex_search('Serial number: ([^\n]+)', '\\1')) | default('') }}"
+        venafi_current_notafter_raw: "{{ (jks_list.stdout | regex_search('Valid from: .*? to: ([^\n]+)', '\\1')) | default('') }}"
+
+- name: Detect current certificate (KDB)
+  when: venafi_cert_format == 'kdb'
+  block:
+    - name: Show KDB label details (requires stashed password)
+      command: >-
+        {{ gskcapicmd_bin }} -cert -details -db "{{ venafi_kdb_path }}" -stashed -label "{{ venafi_kdb_label }}"
+      register: kdb_details
+      changed_when: false
+      failed_when: false
+    - name: Parse KDB serial/expiry (best effort)
+      set_fact:
+        venafi_current_serial: "{{ (kdb_details.stdout | regex_search('Serial Number:\\s*([^\n]+)', '\\1')) | default('') }}"
+        venafi_current_notafter_raw: "{{ (kdb_details.stdout | regex_search('Not After:\\s*([^\n]+)', '\\1')) | default('') }}"
+
+- name: Compute days remaining (approx)
+  vars:
+    # Normalize formats like "Jul 20 12:00:00 2025 GMT" or "2025-07-20 12:00:00"
+    _raw: "{{ venafi_current_notafter_raw | default('') }}"
+  set_fact:
+    venafi_current_days_left: >-
+      {% if _raw %}
+      {% set ts = (_raw | regex_replace('^notAfter=', '')).strip() %}
+      {% set dt = ts | to_datetime(default_tz='UTC', errors='ignore') %}
+      {% if dt %}
+      {{ ((dt | to_datetime).timestamp() | int - ansible_date_time.epoch | int) // 86400 }}
+      {% else %}999999{% endif %}
+      {% else %}999999{% endif %}
+  when: _raw is defined
+  changed_when: false
+```
+
+> *The calculation uses `to_datetime` which is available in Ansible 2.9; if parsing fails, it defaults to a very large number to avoid accidental renewal.*
+
+---
+
+### `tasks/request_or_renew.yml`
+
+```yaml
+---
+- name: Decide whether to enroll/renew
+  set_fact:
+    venafi_should_enroll: >-
+      {{ venafi_force_renew | bool or (venafi_current_days_left | default(999999) | int) <= (venafi_renew_threshold_days | int) or (venafi_current_serial | default('')) == '' }}
+
+- name: Queue VCert Enroll (new/renew)
+  when: venafi_should_enroll | bool and venafi_pickup_id | length == 0
+  debug:
+    msg: "Queuing VCert Enroll for {{ inventory_hostname }}"
+  notify:
+    - vcert_enroll
+
+- name: Queue VCert Pickup (by request id)
+  when: venafi_should_enroll | bool and venafi_pickup_id | length > 0
+  debug:
+    msg: "Queuing VCert Pickup id={{ venafi_pickup_id }} for {{ inventory_hostname }}"
+  notify:
+    - vcert_pickup
+
+- name: Trigger VCert handlers immediately (flush)
+  meta: flush_handlers
+```
+
+---
+
+### `tasks/pickup_and_stage.yml`
+
+```yaml
+---
+# Copy staged outputs from controller to target staging dir
+- name: Stage cert
+  copy:
+    src: "{{ venafi_output_dir }}/cert.pem"
+    dest: "{{ venafi_stage_dir }}/cert.pem"
+    mode: "0644"
+  register: copy_cert
+
+- name: Stage key
+  copy:
+    src: "{{ venafi_output_dir }}/key.pem"
+    dest: "{{ venafi_stage_dir }}/key.pem"
+    mode: "0600"
+  register: copy_key
+
+- name: Stage chain
+  copy:
+    src: "{{ venafi_output_dir }}/chain.pem"
+    dest: "{{ venafi_stage_dir }}/chain.pem"
+    mode: "0644"
+  register: copy_chain
+  failed_when: false
+
+- name: Mark staged change
+  set_fact:
+    venafi_staged_changed: "{{ copy_cert.changed or copy_key.changed or copy_chain.changed }}"
+```
+
+---
+
+### `tasks/deploy.yml`
+
+```yaml
+---
+- name: Deploy PEM bundle
+  when: venafi_cert_format == 'pem'
+  block:
+    - name: Backup existing cert/key if present
+      copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}.bak-{{ ansible_date_time.epoch }}"
+        remote_src: true
+      loop:
+        - { src: "{{ venafi_dest_cert }}", dest: "{{ venafi_dest_cert }}" }
+        - { src: "{{ venafi_dest_key }}",  dest: "{{ venafi_dest_key }}" }
+        - { src: "{{ venafi_dest_chain }}",dest: "{{ venafi_dest_chain }}" }
+      when: item.src is exists
+      ignore_errors: true
+
+    - name: Install cert/key/chain to final paths
+      copy:
+        src: "{{ venafi_stage_dir }}/{{ item.name }}"
+        dest: "{{ item.dest }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { name: 'cert.pem',  dest: "{{ venafi_dest_cert }}",  mode: "{{ venafi_cert_mode }}" }
+        - { name: 'key.pem',   dest: "{{ venafi_dest_key }}",   mode: "{{ venafi_key_mode }}" }
+        - { name: 'chain.pem', dest: "{{ venafi_dest_chain }}", mode: "{{ venafi_cert_mode }}" }
+      register: pem_install
+
+    - name: Flag deployment changed
+      set_fact:
+        venafi_deployed_changed: "{{ pem_install.results | selectattr('changed','defined') | selectattr('changed') | list | length > 0 }}"
+
+- name: Deploy to JKS
+  when: venafi_cert_format == 'jks'
+  block:
+    - name: Render JKS import helper
+      template:
+        src: jks_import.sh.j2
+        dest: "{{ venafi_stage_dir }}/jks_import.sh"
+        mode: "0750"
+    - name: Run JKS import
+      shell: "{{ venafi_stage_dir }}/jks_import.sh"
+      register: jks_import
+      changed_when: "'Certificate reply was installed' in jks_import.stdout or jks_import.rc == 0"
+    - set_fact:
+        venafi_deployed_changed: "{{ (jks_import.rc | int) == 0 }}"
+
+- name: Deploy to KDB (IBM IHS)
+  when: venafi_cert_format == 'kdb'
+  block:
+    - name: Render KDB import helper
+      template:
+        src: ihs_gsk_import.sh.j2
+        dest: "{{ venafi_stage_dir }}/ihs_gsk_import.sh"
+        mode: "0750"
+    - name: Run KDB import
+      shell: "{{ venafi_stage_dir }}/ihs_gsk_import.sh"
+      register: ihs_import
+      changed_when: "'Certificate added to the database' in ihs_import.stdout or ihs_import.rc == 0"
+    - set_fact:
+        venafi_deployed_changed: "{{ (ihs_import.rc | int) == 0 }}"
+
+- name: Restart/reload service if requested and changed
+  when: venafi_service_restart | bool and venafi_deployed_changed | default(false)
+  shell: "{{ venafi_restart_cmd }}"
+```
+
+---
+
+### `tasks/verify.yml`
+
+```yaml
+---
+- name: Compute DEPLOYED cert serial
+  when: venafi_cert_format == 'pem'
+  command: >-
+    {{ openssl_bin }} x509 -in "{{ venafi_dest_cert }}" -noout -serial -enddate
+  register: deployed_info
+  changed_when: false
+  failed_when: false
+
+- name: Parse deployed serial/enddate
+  set_fact:
+    venafi_deployed_serial: "{{ (deployed_info.stdout | regex_search('serial=([^\n]+)', '\\1')) | default('') }}"
+    venafi_deployed_notafter_raw: "{{ (deployed_info.stdout | regex_search('notAfter=([^\n]+)', '\\1')) | default('') }}"
+
+- name: Optional live TLS check with s_client
+  when: venafi_verify_endpoints | length > 0
+  vars:
+    verify_cmd: >-
+      echo | {{ openssl_bin }} s_client -connect {{ item.host }}:{{ item.port }} -servername {{ item.sni | default(item.host) }} -showcerts -verify 5 -brief 2>/dev/null
+  shell: "{{ verify_cmd }} | {{ openssl_bin }} x509 -noout -serial -enddate"
+  with_items: "{{ venafi_verify_endpoints }}"
+  register: live_checks
+  changed_when: false
+  failed_when: false
+
+- name: Set verification summary
+  set_fact:
+    venafi_verify_result:
+      new_serial: "{{ hostvars[inventory_hostname].venafi_new_serial | default('') }}"
+      deployed_serial: "{{ venafi_deployed_serial | default('') }}"
+      matched: "{{ (hostvars[inventory_hostname].venafi_new_serial | default('')) == (venafi_deployed_serial | default('')) }}"
+      deployed_notafter: "{{ venafi_deployed_notafter_raw | default('') }}"
+      endpoints: "{{ (live_checks.results | default([])) | map(attribute='stdout') | list }}"
+```
+
+---
+
+### `tasks/report.yml`
+
+```yaml
+---
+- name: Aggregate host report stats
+  set_stats:
+    data:
+      venafi_report_item:
+        host: "{{ inventory_hostname }}"
+        old_serial: "{{ venafi_current_serial | default('') }}"
+        new_serial: "{{ hostvars[inventory_hostname].venafi_new_serial | default('') }}"
+        deployed_serial: "{{ venafi_deployed_serial | default('') }}"
+        not_after: "{{ venafi_deployed_notafter_raw | default(venafi_current_notafter_raw | default('')) }}"
+        changed: "{{ venafi_deployed_changed | default(false) }}"
+        days_left_before: "{{ venafi_current_days_left | default('unknown') }}"
+        result_match: "{{ venafi_verify_result.matched | default(false) }}"
+
+- name: Build consolidated HTML report on controller
+  run_once: true
+  delegate_to: "{{ venafi_delegate_to }}"
+  become: false
+  template:
+    src: report.html.j2
+    dest: "{{ venafi_report_path }}"
+    mode: "0644"
+
+- name: Email report (optional)
+  when: venafi_email_report | bool and (venafi_report_mail_to | length > 0)
+  run_once: true
+  delegate_to: "{{ venafi_delegate_to }}"
+  become: false
+  mail:
+    host: "{{ venafi_report_mail_host }}"
+    to: "{{ venafi_report_mail_to | join(',') }}"
+    from: "{{ venafi_report_mail_from }}"
+    subject: "Venafi Certificate Report {{ ansible_date_time.iso8601 }}"
+    subtype: html
+    body: "{{ lookup('file', venafi_report_path) }}"
+```
+
+---
+
+### `tasks/cleanup.yml`
+
+```yaml
+---
+- name: Remove staged files on target
+  file:
+    path: "{{ venafi_stage_dir }}"
+    state: absent
+```
+
+---
+
+### `templates/report.html.j2`
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Venafi Certificate Report</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ccc; padding: 6px 8px; font-size: 13px; }
+    th { background: #f3f3f3; text-align: left; }
+    .ok { color: #0a7a0a; font-weight: bold; }
+    .warn { color: #b36b00; font-weight: bold; }
+    .bad { color: #c62828; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h2>Venafi Certificate Report — {{ ansible_date_time.date }} {{ ansible_date_time.time }}</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Host</th>
+        <th>Old Serial</th>
+        <th>New Serial</th>
+        <th>Deployed Serial</th>
+        <th>Deployed NotAfter</th>
+        <th>Changed</th>
+        <th>Matched</th>
+        <th>Days Left (Before)</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for h in ansible_play_hosts_all %}
+      {% set item = hostvars[h].venafi_report_item | default({}) %}
+      {% set matched = item.result_match | default(false) %}
+      {% set changed = item.changed | default(false) %}
+      <tr>
+        <td>{{ h }}</td>
+        <td>{{ item.old_serial | default('') }}</td>
+        <td>{{ item.new_serial | default('') }}</td>
+        <td>{{ item.deployed_serial | default('') }}</td>
+        <td>{{ item.not_after | default('') }}</td>
+        <td class="{{ 'ok' if changed else '' }}">{{ changed }}</td>
+        <td class="{{ 'ok' if matched else 'bad' }}">{{ matched }}</td>
+        <td class="{{ 'warn' if (item.days_left_before | default(999999) | int) < 30 else '' }}">{{ item.days_left_before | default('unknown') }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p style="margin-top:16px; font-size:12px; color:#666">Generated by venafi_cert role.</p>
+</body>
+</html>
+```
+
+---
+
+### `templates/jks_import.sh.j2`
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+KEYTOOL="{{ keytool_bin }}"
+STAGE="{{ venafi_stage_dir }}"
+JKS="{{ venafi_jks_path }}"
+STOREPASS="{{ venafi_jks_storepass }}"
+KEYPASS="{{ venafi_jks_keypass }}"
+ALIAS="{{ venafi_jks_alias }}"
+
+# Create PKCS12 from PEM key+cert+chain
+cat "$STAGE/cert.pem" "$STAGE/chain.pem" > "$STAGE/fullchain.pem" || true
+openssl pkcs12 -export -inkey "$STAGE/key.pem" -in "$STAGE/fullchain.pem" -name "$ALIAS" -passout pass:"$KEYPASS" -out "$STAGE/bundle.p12"
+
+# Import into JKS
+"$KEYTOOL" -importkeystore -srckeystore "$STAGE/bundle.p12" -srcstoretype PKCS12 -srcstorepass "$KEYPASS" \
+  -destkeystore "$JKS" -deststoretype JKS -deststorepass "$STOREPASS" -alias "$ALIAS" -noprompt
+
+# Trust chain (optional)
+if [ -f "$STAGE/chain.pem" ]; then
+  csplit -s -z -f "$STAGE/ca-" "$STAGE/chain.pem" '/-----BEGIN CERTIFICATE-----/' '{*}' || true
+  for f in "$STAGE"/ca-*; do
+    [ -s "$f" ] || continue
+    "$KEYTOOL" -import -keystore "$JKS" -storepass "$STOREPASS" -alias "ca-$(basename "$f")" -file "$f" -noprompt || true
+  done
+fi
+```
+
+---
+
+### `templates/ihs_gsk_import.sh.j2`
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+GSK="{{ gskcapicmd_bin }}"
+DB="{{ venafi_kdb_path }}"
+LABEL="{{ venafi_kdb_label }}"
+STAGE="{{ venafi_stage_dir }}"
+
+# Remove existing label if present (ignore failures)
+"$GSK" -cert -delete -db "$DB" -stashed -label "$LABEL" || true
+
+# Add key+cert (PEM)
+"$GSK" -cert -add -db "$DB" -stashed -label "$LABEL" -file "$STAGE/cert.pem"
+
+# Add chain certificates (split & add)
+if [ -f "$STAGE/chain.pem" ]; then
+  csplit -s -z -f "$STAGE/ca-" "$STAGE/chain.pem" '/-----BEGIN CERTIFICATE-----/' '{*}' || true
+  for f in "$STAGE"/ca-*; do
+    [ -s "$f" ] || continue
+    "$GSK" -cert -add -db "$DB" -stashed -label "${LABEL}-$(basename "$f")" -file "$f" || true
+  done
+fi
+```
+
+---
+
+### `tests/inventory`
+
+```ini
+[web]
+web1.example.com
+web2.example.com
+```
+
+### `tests/test.yml`
+
+```yaml
+---
+- hosts: web
+  gather_facts: true
+  roles:
+    - role: venafi_cert
+      vars:
+        venafi_platform: tpp
+        venafi_tpp_url: https://tpp.example.com/vedsdk
+        venafi_zone: Dev\\Team\\App
+        venafi_access_token: "{{ lookup('env','VENAFI_TOKEN') }}"
+        venafi_dns_sans: ["web.example.com"]
+        venafi_service_restart: true
+        venafi_restart_cmd: "systemctl reload httpd"
+```
+
+---
+
+### `LICENSE`
+
+```text
+MIT License
+
+Copyright (c) 2025 Your Name
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to do so, subject to the
+following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+### `README.md`
+
+````markdown
+# venafi_cert — Venafi + Ansible (VCert) Role
+
+**Ansible 2.9 compatible.** Requests/renews certificates from Venafi (TPP/VaaS) using **VCert CLI**, deploys to PEM/JKS/KDB, verifies, and generates an HTML report with optional email. Designed for **AWX/Tower** workflows. All VCert operations live in **handlers** and are triggered by the role logic.
+
+## Features
+- 🔐 **Enroll / Pickup / Renew** via VCert (delegated to controller, no sudo)
+- 🧩 **Idempotent**: only renews when `force` or days-left ≤ threshold
+- 📦 **Deploy** to PEM, JKS, or IBM **KDB (IHS/GSKit)**
+- ✅ **Verify** deployed serial vs. new serial; optional live TLS `s_client` check
+- 🧾 **Report**: Consolidated HTML report (optional email)
+- 🧰 **AWX-friendly**: uses `set_stats` for cross-job/workflow variables
+- 🛡️ **Safe defaults**: backs up, avoids renew if parsing fails
+
+## Requirements
+- Controller: VCert CLI installed (`venafi_vcert_bin`) and reachable Venafi endpoint
+- Targets: `openssl` (PEM), `keytool` (JKS), `gskcapicmd` (KDB)
+- Access token in `venafi_access_token` (via Vault or `VENAFI_TOKEN` env)
+
+## Quick Start
+```yaml
+- hosts: web
+  gather_facts: true
+  roles:
+    - role: venafi_cert
+      vars:
+        venafi_platform: tpp
+        venafi_tpp_url: https://tpp.example.com/vedsdk
+        venafi_zone: Dev\\Team\\MyApp
+        venafi_access_token: "{{ lookup('env','VENAFI_TOKEN') }}"
+        venafi_dns_sans: ["app.example.com","api.example.com"]
+        venafi_cert_format: pem
+        venafi_service_restart: true
+        venafi_restart_cmd: "systemctl reload httpd"
+````
+
+## Variables (highlights)
+
+| Var                           | Default      | Notes                       |
+| ----------------------------- | ------------ | --------------------------- |
+| `venafi_platform`             | `tpp`        | `tpp` or `vaas`             |
+| `venafi_tpp_url`              | `""`         | Required for TPP            |
+| `venafi_zone`                 | `""`         | Venafi policy folder        |
+| `venafi_access_token`         | `""`         | Use vault/env               |
+| `venafi_dns_sans`             | `[]`         | Additional SANs             |
+| `venafi_renew_threshold_days` | `30`         | Renew when days-left ≤ this |
+| `venafi_cert_format`          | `pem`        | `pem` \| `jks` \| `kdb`     |
+| `venafi_dest_*`               | see defaults | PEM paths                   |
+| `venafi_jks_*`                | see defaults | JKS paths/passwords         |
+| `venafi_kdb_*`                | see defaults | KDB DB & label              |
+| `venafi_report_enable`        | `true`       | Build HTML report           |
+| `venafi_email_report`         | `false`      | Send report email           |
+
+## AWX/Tower Workflow Pattern
+
+**Nodes:**
+
+1. *Discover* — run role with `venafi_force_renew=false` and report only.
+2. *Enroll/Renew* — same role; the logic queues VCert handlers if needed.
+3. *Deploy & Verify* — same run; deploys and verifies.
+4. *Report/Notify* — `venafi_email_report=true`.
+
+**Passing Vars Between Job Templates**
+
+* The role uses `set_stats` to publish `venafi_new_serial`, `venafi_report_item`, etc.
+* In later workflow nodes, you can reference `{{ hostvars[inventory_hostname].venafi_new_serial }}`.
+
+**Retry on Failed Hosts Only**
+
+* In AWX UI, use **Relaunch > Failed hosts**.
+* CLI equivalent: `ansible-playbook play.yml --limit @.retry` (AWX generates retry files for CLI; in UI use *Relaunch (Failed)*).
+
+## Idempotency & Safety
+
+* Renewal occurs only if:
+
+  * `venafi_force_renew: true`, or
+  * current days-left ≤ `venafi_renew_threshold_days`, or
+  * no current cert detected.
+* If date parsing fails, days-left → very large number; renewal is skipped rather than unsafe.
+* Deploy tasks back up existing files (PEM) with timestamp suffix.
+
+## IBM IHS / KDB Notes
+
+* Requires `gskcapicmd` and a stashed DB password (`*.sth`).
+* Script `ihs_gsk_import.sh.j2` removes existing label then imports new cert + chain.
+
+## JKS Notes
+
+* Creates a temporary PKCS12 from staged PEM, then imports to JKS.
+
+## Reporting
+
+* HTML report at `venafi_report_path` consolidates all hosts with serials and expiry.
+* Optional email via Ansible `mail` module (controller must reach SMTP host).
+
+## Troubleshooting
+
+* **VCert missing**: set `venafi_vcert_bin` or install VCert; set `venafi_fail_if_vcert_missing=false` to soft-warn.
+* **`sudo: not found` on localhost**: all delegated VCert tasks run with `become: false`.
+* **Template errors**: render report with `-vvv` to see context; role keeps templating simple and avoids risky filters.
+
+## Tags
+
+`discover`, `enroll`, `deploy`, `verify`, `report`, `cleanup`
+
+## License
+
+MIT
+
+```
+```
