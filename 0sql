@@ -466,75 +466,161 @@ galaxy_info:
 
 ```yaml
 ---
-- name: Deploy PEM bundle
-  when: venafi_cert_format == 'pem'
-  block:
-    - name: Backup existing cert/key if present
-      copy:
-        src: "{{ item.src }}"
-        dest: "{{ item.dest }}.bak-{{ ansible_date_time.epoch }}"
-        remote_src: true
-      loop:
-        - { src: "{{ venafi_dest_cert }}", dest: "{{ venafi_dest_cert }}" }
-        - { src: "{{ venafi_dest_key }}",  dest: "{{ venafi_dest_key }}" }
-        - { src: "{{ venafi_dest_chain }}",dest: "{{ venafi_dest_chain }}" }
-      when: item.src is exists
-      ignore_errors: true
+# Wrap deployment in block/rescue so we can aggregate failed hosts for workflow retry
+- block:
+    - name: Deploy PEM bundle
+      when: venafi_cert_format == 'pem'
+      block:
+        - name: Backup existing cert/key if present
+          copy:
+            src: "{{ item.src }}"
+            dest: "{{ item.dest }}.bak-{{ ansible_date_time.epoch }}"
+            remote_src: true
+          loop:
+            - { src: "{{ venafi_dest_cert }}", dest: "{{ venafi_dest_cert }}" }
+            - { src: "{{ venafi_dest_key }}",  dest: "{{ venafi_dest_key }}" }
+            - { src: "{{ venafi_dest_chain }}",dest: "{{ venafi_dest_chain }}" }
+          when: item.src is exists
+          ignore_errors: true
 
-    - name: Install cert/key/chain to final paths
-      copy:
-        src: "{{ venafi_stage_dir }}/{{ item.name }}"
-        dest: "{{ item.dest }}"
-        mode: "{{ item.mode }}"
-      loop:
-        - { name: 'cert.pem',  dest: "{{ venafi_dest_cert }}",  mode: "{{ venafi_cert_mode }}" }
-        - { name: 'key.pem',   dest: "{{ venafi_dest_key }}",   mode: "{{ venafi_key_mode }}" }
-        - { name: 'chain.pem', dest: "{{ venafi_dest_chain }}", mode: "{{ venafi_cert_mode }}" }
-      register: pem_install
+        - name: Install cert/key/chain to final paths
+          copy:
+            src: "{{ venafi_stage_dir }}/{{ item.name }}"
+            dest: "{{ item.dest }}"
+            mode: "{{ item.mode }}"
+          loop:
+            - { name: 'cert.pem',  dest: "{{ venafi_dest_cert }}",  mode: "{{ venafi_cert_mode }}" }
+            - { name: 'key.pem',   dest: "{{ venafi_dest_key }}",   mode: "{{ venafi_key_mode }}" }
+            - { name: 'chain.pem', dest: "{{ venafi_dest_chain }}", mode: "{{ venafi_cert_mode }}" }
+          register: pem_install
 
-    - name: Flag deployment changed
-      set_fact:
-        venafi_deployed_changed: "{{ pem_install.results | selectattr('changed','defined') | selectattr('changed') | list | length > 0 }}"
+        - name: Flag deployment changed
+          set_fact:
+            venafi_deployed_changed: "{{ pem_install.results | selectattr('changed','defined') | selectattr('changed') | list | length > 0 }}"
 
-- name: Deploy to JKS
-  when: venafi_cert_format == 'jks'
-  block:
-    - name: Render JKS import helper
-      template:
-        src: jks_import.sh.j2
-        dest: "{{ venafi_stage_dir }}/jks_import.sh"
-        mode: "0750"
-    - name: Run JKS import
-      shell: "{{ venafi_stage_dir }}/jks_import.sh"
-      register: jks_import
-      changed_when: "'Certificate reply was installed' in jks_import.stdout or jks_import.rc == 0"
-    - set_fact:
-        venafi_deployed_changed: "{{ (jks_import.rc | int) == 0 }}"
+    - name: Deploy to JKS
+      when: venafi_cert_format == 'jks'
+      block:
+        - name: Render JKS import helper
+          template:
+            src: jks_import.sh.j2
+            dest: "{{ venafi_stage_dir }}/jks_import.sh"
+            mode: "0750"
+        - name: Run JKS import
+          shell: "{{ venafi_stage_dir }}/jks_import.sh"
+          register: jks_import
+          changed_when: "'Certificate reply was installed' in jks_import.stdout or jks_import.rc == 0"
+        - set_fact:
+            venafi_deployed_changed: "{{ (jks_import.rc | int) == 0 }}"
 
-- name: Deploy to KDB (IBM IHS)
-  when: venafi_cert_format == 'kdb'
-  block:
-    - name: Render KDB import helper
-      template:
-        src: ihs_gsk_import.sh.j2
-        dest: "{{ venafi_stage_dir }}/ihs_gsk_import.sh"
-        mode: "0750"
-    - name: Run KDB import
-      shell: "{{ venafi_stage_dir }}/ihs_gsk_import.sh"
-      register: ihs_import
-      changed_when: "'Certificate added to the database' in ihs_import.stdout or ihs_import.rc == 0"
-    - set_fact:
-        venafi_deployed_changed: "{{ (ihs_import.rc | int) == 0 }}"
+    - name: Deploy to KDB (IBM IHS)
+      when: venafi_cert_format == 'kdb'
+      block:
+        - name: Render KDB import helper
+          template:
+            src: ihs_gsk_import.sh.j2
+            dest: "{{ venafi_stage_dir }}/ihs_gsk_import.sh"
+            mode: "0750"
+        - name: Run KDB import
+          shell: "{{ venafi_stage_dir }}/ihs_gsk_import.sh"
+          register: ihs_import
+          changed_when: "'Certificate added to the database' in ihs_import.stdout or ihs_import.rc == 0"
+        - set_fact:
+            venafi_deployed_changed: "{{ (ihs_import.rc | int) == 0 }}"
 
-- name: Restart/reload service if requested and changed
-  when: venafi_service_restart | bool and venafi_deployed_changed | default(false)
-  shell: "{{ venafi_restart_cmd }}"
+    - name: Restart/reload service if requested and changed
+      when: venafi_service_restart | bool and venafi_deployed_changed | default(false)
+      shell: "{{ venafi_restart_cmd }}"
+
+  rescue:
+    - name: Append this host to aggregated failed-deploy list (for workflow retry)
+      set_stats:
+        data:
+          venafi_failed_deploy_hosts: >-
+            {{ (venafi_failed_deploy_hosts | default([])) + [inventory_hostname] }}
+        aggregate: true
+
+    - name: Mark deployment as failed
+      fail:
+        msg: "Deployment failed on {{ inventory_hostname }}; recorded for retry workflow"
 ```
 
 ---
 
-### `tasks/verify.yml`
+* name: Deploy PEM bundle
+  when: venafi\_cert\_format == 'pem'
+  block:
 
+  * name: Backup existing cert/key if present
+    copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}.bak-{{ ansible\_date\_time.epoch }}"
+    remote\_src: true
+    loop:
+
+    * { src: "{{ venafi\_dest\_cert }}", dest: "{{ venafi\_dest\_cert }}" }
+    * { src: "{{ venafi\_dest\_key }}",  dest: "{{ venafi\_dest\_key }}" }
+    * { src: "{{ venafi\_dest\_chain }}",dest: "{{ venafi\_dest\_chain }}" }
+      when: item.src is exists
+      ignore\_errors: true
+
+  * name: Install cert/key/chain to final paths
+    copy:
+    src: "{{ venafi\_stage\_dir }}/{{ item.name }}"
+    dest: "{{ item.dest }}"
+    mode: "{{ item.mode }}"
+    loop:
+
+    * { name: 'cert.pem',  dest: "{{ venafi\_dest\_cert }}",  mode: "{{ venafi\_cert\_mode }}" }
+    * { name: 'key.pem',   dest: "{{ venafi\_dest\_key }}",   mode: "{{ venafi\_key\_mode }}" }
+    * { name: 'chain.pem', dest: "{{ venafi\_dest\_chain }}", mode: "{{ venafi\_cert\_mode }}" }
+      register: pem\_install
+
+  * name: Flag deployment changed
+    set\_fact:
+    venafi\_deployed\_changed: "{{ pem\_install.results | selectattr('changed','defined') | selectattr('changed') | list | length > 0 }}"
+
+* name: Deploy to JKS
+  when: venafi\_cert\_format == 'jks'
+  block:
+
+  * name: Render JKS import helper
+    template:
+    src: jks\_import.sh.j2
+    dest: "{{ venafi\_stage\_dir }}/jks\_import.sh"
+    mode: "0750"
+  * name: Run JKS import
+    shell: "{{ venafi\_stage\_dir }}/jks\_import.sh"
+    register: jks\_import
+    changed\_when: "'Certificate reply was installed' in jks\_import.stdout or jks\_import.rc == 0"
+  * set\_fact:
+    venafi\_deployed\_changed: "{{ (jks\_import.rc | int) == 0 }}"
+
+* name: Deploy to KDB (IBM IHS)
+  when: venafi\_cert\_format == 'kdb'
+  block:
+
+  * name: Render KDB import helper
+    template:
+    src: ihs\_gsk\_import.sh.j2
+    dest: "{{ venafi\_stage\_dir }}/ihs\_gsk\_import.sh"
+    mode: "0750"
+  * name: Run KDB import
+    shell: "{{ venafi\_stage\_dir }}/ihs\_gsk\_import.sh"
+    register: ihs\_import
+    changed\_when: "'Certificate added to the database' in ihs\_import.stdout or ihs\_import.rc == 0"
+  * set\_fact:
+    venafi\_deployed\_changed: "{{ (ihs\_import.rc | int) == 0 }}"
+
+* name: Restart/reload service if requested and changed
+  when: venafi\_service\_restart | bool and venafi\_deployed\_changed | default(false)
+  shell: "{{ venafi\_restart\_cmd }}"
+
+````
+
+---
+
+### `tasks/verify.yml`
 ```yaml
 ---
 - name: Compute DEPLOYED cert serial
@@ -569,7 +655,7 @@ galaxy_info:
       matched: "{{ (hostvars[inventory_hostname].venafi_new_serial | default('')) == (venafi_deployed_serial | default('')) }}"
       deployed_notafter: "{{ venafi_deployed_notafter_raw | default('') }}"
       endpoints: "{{ (live_checks.results | default([])) | map(attribute='stdout') | list }}"
-```
+````
 
 ---
 
@@ -815,6 +901,88 @@ SOFTWARE.
 - ✅ **Verify** deployed serial vs. new serial; optional live TLS `s_client` check
 - 🧾 **Report**: Consolidated HTML report (optional email)
 - 🧰 **AWX-friendly**: uses `set_stats` for cross-job/workflow variables
+- 🔁 **Auto-Retry Ready:** deployment is wrapped in `block/rescue` that aggregates failed hosts into `venafi_failed_deploy_hosts` for a workflow retry node with dynamic `limit`.
+- 🛡️ **Safe defaults**: backs up, avoids renew if parsing fails
+
+## Requirements
+- Controller: VCert CLI installed (`venafi_vcert_bin`) and reachable Venafi endpoint
+- Targets: `openssl` (PEM), `keytool` (JKS), `gskcapicmd` (KDB)
+- Access token in `venafi_access_token` (via Vault or `VENAFI_TOKEN` env)
+
+## Quick Start
+```yaml
+- hosts: web
+  gather_facts: true
+  roles:
+    - role: venafi_cert
+      vars:
+        venafi_platform: tpp
+        venafi_tpp_url: https://tpp.example.com/vedsdk
+        venafi_zone: Dev\Team\MyApp
+        venafi_access_token: "{{ lookup('env','VENAFI_TOKEN') }}"
+        venafi_dns_sans: ["app.example.com","api.example.com"]
+        venafi_cert_format: pem
+        venafi_service_restart: true
+        venafi_restart_cmd: "systemctl reload httpd"
+````
+
+## Variables (highlights)
+
+| Var                           | Default      | Notes                                                     |
+| ----------------------------- | ------------ | --------------------------------------------------------- |
+| `venafi_platform`             | `tpp`        | `tpp` or `vaas`                                           |
+| `venafi_tpp_url`              | `""`         | Required for TPP                                          |
+| `venafi_zone`                 | `""`         | Venafi policy folder                                      |
+| `venafi_access_token`         | `""`         | Use vault/env                                             |
+| `venafi_dns_sans`             | `[]`         | Additional SANs                                           |
+| `venafi_renew_threshold_days` | `30`         | Renew when days-left ≤ this                               |
+| `venafi_cert_format`          | `pem`        | `pem` \| `jks` \| `kdb`                                   |
+| `venafi_dest_*`               | see defaults | PEM paths                                                 |
+| `venafi_jks_*`                | see defaults | JKS paths/passwords                                       |
+| `venafi_kdb_*`                | see defaults | KDB DB & label                                            |
+| `venafi_report_enable`        | `true`       | Build HTML report                                         |
+| `venafi_email_report`         | `false`      | Send report email                                         |
+| `venafi_failed_deploy_hosts`  | *(dynamic)*  | Aggregated list of failed deploy hosts for workflow retry |
+
+## AWX/Tower Workflow Pattern
+
+**Nodes:**
+
+1. *Deploy* — runs role. On any per-host failure, role aggregates the host in `venafi_failed_deploy_hosts` and fails the node.
+2. *Retry Failed* — runs the same playbook with **Limit** set to:
+
+   ```
+   {{ venafi_failed_deploy_hosts | default([]) | join(',') }}
+   ```
+3. *(Optional)* Verify / Report / Notify nodes.
+
+**Passing Vars Between Job Templates**
+
+* The role uses `set_stats` to publish `venafi_new_serial`, `venafi_report_item`, and `venafi_failed_deploy_hosts`.
+* In later workflow nodes, reference them directly (no `hostvars[...]` needed in workflow `limit`).
+
+## Troubleshooting
+
+* **Dynamic limit lint error**: Use `{{ venafi_failed_deploy_hosts | default([]) | join(',') }}` in workflow nodes (do **not** use `hostvars[...]`).
+* **VCert missing**: set `venafi_vcert_bin` or install VCert; set `venafi_fail_if_vcert_missing=false` to soft-warn.
+* **`sudo: not found` on localhost**: all delegated VCert tasks run with `become: false`.
+
+## License
+
+MIT
+
+````markdown
+# venafi_cert — Venafi + Ansible (VCert) Role
+
+**Ansible 2.9 compatible.** Requests/renews certificates from Venafi (TPP/VaaS) using **VCert CLI**, deploys to PEM/JKS/KDB, verifies, and generates an HTML report with optional email. Designed for **AWX/Tower** workflows. All VCert operations live in **handlers** and are triggered by the role logic.
+
+## Features
+- 🔐 **Enroll / Pickup / Renew** via VCert (delegated to controller, no sudo)
+- 🧩 **Idempotent**: only renews when `force` or days-left ≤ threshold
+- 📦 **Deploy** to PEM, JKS, or IBM **KDB (IHS/GSKit)**
+- ✅ **Verify** deployed serial vs. new serial; optional live TLS `s_client` check
+- 🧾 **Report**: Consolidated HTML report (optional email)
+- 🧰 **AWX-friendly**: uses `set_stats` for cross-job/workflow variables
 - 🛡️ **Safe defaults**: backs up, avoids renew if parsing fails
 
 ## Requirements
@@ -913,5 +1081,118 @@ SOFTWARE.
 
 MIT
 
-```
+````
+
+
+---
+
+### AWX/Controller Job & Workflow Templates (Auto‑Retry on Failed Nodes)
+
+#### `awx/create_team_config_workflow.yml`
+```yaml
+---
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  collections: [ awx.awx ]
+
+  vars:
+    org: "Team Config"
+    project_name: "Venafi Project"
+    inventory_name: "Venafi Inventory"
+    credential_name: "Machine Cred"
+    repo_url: "https://your.git/repo.git"
+    playbook_path: "playbooks/venafi_deploy.yml"
+
+    jt_deploy: "Venafi Deploy"
+    jt_deploy_retry: "Venafi Deploy (Retry Failed)"
+    wfj_name: "Team Config — Venafi Deploy with Auto-Retry"
+
+  tasks:
+    - name: Ensure org
+      organization:
+        name: "{{ org }}"
+
+    - name: Ensure project
+      project:
+        name: "{{ project_name }}"
+        organization: "{{ org }}"
+        scm_type: git
+        scm_url: "{{ repo_url }}"
+        scm_update_on_launch: true
+
+    - name: Ensure inventory
+      inventory:
+        name: "{{ inventory_name }}"
+        organization: "{{ org }}"
+
+    - name: Ensure credential
+      credential:
+        name: "{{ credential_name }}"
+        organization: "{{ org }}"
+        credential_type: "Machine"
+
+    - name: Job Template — Venafi Deploy
+      job_template:
+        name: "{{ jt_deploy }}"
+        organization: "{{ org }}"
+        inventory: "{{ inventory_name }}"
+        project: "{{ project_name }}"
+        playbook: "{{ playbook_path }}"
+        credentials:
+          - "{{ credential_name }}"
+        ask_variables_on_launch: true
+
+    - name: Job Template — Venafi Deploy (Retry Failed)
+      job_template:
+        name: "{{ jt_deploy_retry }}"
+        organization: "{{ org }}"
+        inventory: "{{ inventory_name }}"
+        project: "{{ project_name }}"
+        playbook: "{{ playbook_path }}"
+        credentials:
+          - "{{ credential_name }}"
+        ask_limit_on_launch: true
+        ask_variables_on_launch: true
+
+    - name: Workflow — Team Config (create or update)
+      workflow_job_template:
+        name: "{{ wfj_name }}"
+        organization: "{{ org }}"
+        ask_variables_on_launch: true
+
+    # Node A — First Deploy
+    - name: Node A (Deploy)
+      workflow_job_template_node:
+        workflow_job_template: "{{ wfj_name }}"
+        identifier: "deploy_a"
+        unified_job_template: "{{ jt_deploy }}"
+      register: node_a
+
+    # Node B — Retry Failed (dynamic limit from aggregated var)
+    - name: Node B (Retry Failed)
+      workflow_job_template_node:
+        workflow_job_template: "{{ wfj_name }}"
+        identifier: "deploy_retry_b"
+        unified_job_template: "{{ jt_deploy_retry }}"
+        limit: "{{ venafi_failed_deploy_hosts | default([]) | join(',') }}"
+      register: node_b
+
+    # Connect failure edge: A (failure) -> B
+    - name: Link failure from A to B
+      workflow_job_template_node:
+        workflow_job_template: "{{ wfj_name }}"
+        identifier: "{{ node_a.node.identifier }}"
+        failure_nodes:
+          - "{{ node_b.node.identifier }}"
+````
+
+#### `playbooks/venafi_deploy.yml`
+
+```yaml
+---
+- hosts: all
+  gather_facts: true
+  roles:
+    - role: venafi_cert
 ```
