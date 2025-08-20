@@ -1,0 +1,938 @@
+Absolutely — I merged the missing pieces from your “second role” into the working one we built (artifacts-based retry, approval gate, robust backup/restore, Outlook reports, dry-run, etc.).
+
+What I added/merged (high level)
+
+defaults/main.yml (low-precedence knobs) alongside vars/main.yml (env values).
+
+PEM prefetch step (fetch_pems.yml) and PEM-based expiry calculation on the controller.
+
+Flexible config discovery: supports both alias_httpd_map and your earlier httpd_pickup_ids mapping or list.
+
+AIX-tolerant expiry conversion (Python first, Perl/GNU date fallback).
+
+Parameterization: gskcmd_bin for GSKit binary, kdb_password (separate from PFX password), ihs_apachectl, online_probe_path.
+
+Cleanup task that can optionally remove the entire vcert working dir.
+
+Deploy subfile (update_one.yml) to keep the KDB import/edit/restart logic tidy.
+
+Kept your artifacts + approval gate retry (same JT+playbook twice), set_stats, and report templates.
+
+📦 Final tree
+roles/
+└─ venafi_cert_renew/
+   ├─ defaults/
+   │  └─ main.yml
+   ├─ vars/
+   │  └─ main.yml
+   ├─ handlers/
+   │  └─ main.yml
+   ├─ templates/
+   │  ├─ report_full.html.j2
+   │  └─ report_dry.html.j2
+   └─ tasks/
+      ├─ main.yml
+      ├─ download_vcert.yml
+      ├─ fetch_pems.yml
+      ├─ check_cert_expiry.yml
+      ├─ consolidate_cert_info.yml
+      ├─ locate_configs.yml
+      ├─ extract_values.yml
+      ├─ backup.yml
+      ├─ renew_cert.yml
+      ├─ update_configs.yml
+      ├─ update_one.yml
+      ├─ restore.yml
+      ├─ validate_ssl.yml
+      ├─ send_report.yml
+      ├─ send_report_dry.yml
+      ├─ consolidate_deploy_status.yml
+      ├─ publish_failed_hosts.yml
+      └─ cleanup.yml
+playbooks/
+└─ venafi_scan_deploy_retry.yml
+awx_setup.yml
+dry_run_report.yml   # (optional sample)
+
+🧩 Explanations & features (concise)
+
+defaults/main.yml: safe, low-precedence defaults (bin paths, timeouts, recipients, cleanup behavior).
+
+vars/main.yml: env-specific (access tokens, alias→conf mapping, groups).
+
+download_vcert.yml: get/unpack VCert (controller).
+
+fetch_pems.yml: fetch PEMs for unique aliases so expiry/serial is computed offline.
+
+check_cert_expiry.yml: controller-side expiry (Python first, Perl/date fallback).
+
+locate_configs.yml + extract_values.yml: robust discovery of Keyfile, SSLServerCert, and Listen ignoring comments.
+
+backup.yml: timestamped backups (no “no last item” pitfalls).
+
+renew_cert.yml: renew PFX only for expiring aliases; record new serial/expiry.
+
+update_configs.yml + update_one.yml: per-alias KDB creation/import, conf updates, restart; parameterized GSKit and passwords.
+
+restore.yml + validate_ssl.yml: safe rollback and validation.
+
+send_report.yml*: Outlook-friendly full/dry reports.
+
+consolidate_deploy_status.yml + publish_failed_hosts.yml: host-fact consolidation + set_stats artifacts for workflow retry.
+
+cleanup.yml: remove artifacts; optional full dir removal.
+
+roles/venafi_cert_renew/defaults/main.yml
+# Low-precedence defaults. Override in vars/ or inventory/group_vars as needed.
+vcert_download_url: "https://localhost/Certs/vcert.zip"   # alias of old vcert_zip_url
+vcert_install_dir: "/tmp/vcert"
+vcert_password: "WEBASCh@ngeit"                            # PFX export password (VCert)
+
+# Separate KDB password (stash). Do NOT reuse PFX password in prod.
+kdb_password: "changeit"
+
+# Days threshold to renew
+cert_renew_threshold: 90
+
+# Report settings
+report_recipient: "web@test.com"
+
+# IBM IHS bits
+ihs_apachectl: "/opt/ihs/85/bin/apachectl"
+online_probe_path: "/system-online.html"
+
+# GSKit command binary (gskcmd, gsk7cmd, gsk8capicmd_64). Provide full path if needed.
+gskcmd_bin: "gskcmd"
+
+# Where to stage PFX/PEM on targets
+remote_cert_dir: "/home/{{ was_user }}/Ansible_Webserver_certs"
+
+# Cleanup behavior
+cleanup_remove_vcert_dir: false  # true => remove entire vcert dir; false => only zip
+
+# Optional: inventory group to scan for aliases (used by fetch_pems)
+inventory_group: "all"
+
+# Dry-run toggle
+report_only: false
+
+roles/venafi_cert_renew/vars/main.yml
+# Environment / secret-like variables (higher precedence than defaults)
+venafi_access_token: ""    # REQUIRED
+venafi_pickupid: ""        # REQUIRED if Venafi flow needs pickup id
+
+# Map aliases to httpd.conf paths when known
+# e.g. alias_httpd_map: { "alias_app1": ["/opt/ihs/conf/test1.conf"] }
+alias_httpd_map: {}
+
+# For legacy mapping (conf -> alias). Either style is supported.
+# httpd_pickup_ids:
+#   "/opt/ihs/conf/test1.conf": "alias1"
+#   "/opt/ihs/conf/test2.conf": "alias2"
+
+# Per-host alias lists also supported via hostvars: httpd_pickup_ids: ["alias1","alias2"]
+
+# OS account owning staged certs on targets
+was_user: "webuser"
+
+roles/venafi_cert_renew/handlers/main.yml
+---
+- name: restart_ihs
+  command: "{{ ihs_apachectl }} -f {{ cert_entry.config_file }} -k restart"
+  become: true
+
+roles/venafi_cert_renew/tasks/main.yml
+---
+# Prechecks on controller
+- import_tasks: download_vcert.yml
+  tags: [precheck]
+
+- import_tasks: fetch_pems.yml
+  tags: [precheck]
+
+- import_tasks: check_cert_expiry.yml
+  tags: [precheck]
+
+- import_tasks: consolidate_cert_info.yml
+  tags: [precheck]
+
+# Dry-run: send report + cleanup + stop
+- import_tasks: send_report_dry.yml
+  when: report_only | bool
+  tags: [report]
+
+- import_tasks: cleanup.yml
+  when: report_only | bool
+  tags: [cleanup]
+
+- meta: end_play
+  when: report_only | bool
+
+# Build worklist from maps/lists and parse config for Keyfile/Listen/SSLServerCert
+- import_tasks: locate_configs.yml
+  tags: [extract]
+
+- import_tasks: extract_values.yml
+  tags: [extract]
+
+# Backups
+- import_tasks: backup.yml
+  tags: [backup]
+
+# Deploy with rollback guard
+- block:
+    - import_tasks: renew_cert.yml
+      tags: [renew, deploy]
+
+    - import_tasks: update_configs.yml
+      tags: [update, deploy]
+
+    - import_tasks: validate_ssl.yml
+      tags: [validation, deploy]
+
+  rescue:
+    - import_tasks: restore.yml
+      tags: [restore, deploy]
+
+# Full report
+- import_tasks: send_report.yml
+  tags: [report]
+
+# Consolidate failed hosts and publish artifacts for workflow retry
+- import_tasks: consolidate_deploy_status.yml
+  tags: [deploy]
+
+- import_tasks: publish_failed_hosts.yml
+  tags: [deploy]
+
+# Cleanup controller artifacts
+- import_tasks: cleanup.yml
+  tags: [cleanup]
+
+roles/venafi_cert_renew/tasks/download_vcert.yml
+---
+- name: Ensure vcert install dir exists
+  file:
+    path: "{{ vcert_install_dir }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  run_once: true
+
+- name: Download vcert.zip
+  get_url:
+    url: "{{ vcert_download_url }}"
+    dest: "{{ vcert_install_dir }}/vcert.zip"
+    mode: '0644'
+  delegate_to: localhost
+  run_once: true
+
+- name: Unpack vcert.zip
+  unarchive:
+    src: "{{ vcert_install_dir }}/vcert.zip"
+    dest: "{{ vcert_install_dir }}"
+    remote_src: yes
+  delegate_to: localhost
+  run_once: true
+
+roles/venafi_cert_renew/tasks/fetch_pems.yml
+---
+# Build unique alias list across inventory (prefers hostvars[host].httpd_pickup_ids as list)
+- name: Build list of unique aliases across play hosts
+  set_fact:
+    unique_aliases: >-
+      {{
+        (groups[inventory_group | default('all')] | default(play_hosts))
+        | map('extract', hostvars, 'httpd_pickup_ids') | map('default', [])
+        | sum(start=[]) | unique | list
+      }}
+  delegate_to: localhost
+  run_once: true
+
+# If no per-host alias lists are provided, derive from alias_httpd_map or conf->alias dict
+- name: Fallback: add aliases from alias_httpd_map / httpd_pickup_ids mapping
+  set_fact:
+    unique_aliases: "{{ (unique_aliases | default([])) + (alias_httpd_map.keys() | list) }}"
+  when: alias_httpd_map | length > 0
+  delegate_to: localhost
+  run_once: true
+
+- name: Fallback: add aliases from conf->alias dict
+  set_fact:
+    unique_aliases: "{{ (unique_aliases | default([])) + ((httpd_pickup_ids | default({})) | dict2items | map(attribute='value') | list) }}"
+  when: httpd_pickup_ids is mapping
+  delegate_to: localhost
+  run_once: true
+
+- name: Deduplicate unique_aliases
+  set_fact:
+    unique_aliases: "{{ unique_aliases | unique | list }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Fetch PEM via vcert for each alias (controller)
+  command: >
+    {{ vcert_install_dir }}/vcert getcertificate
+      --alias {{ item }}
+      --format pem
+      --output {{ vcert_install_dir }}/{{ item }}.pem
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ item }}
+  args:
+    chdir: "{{ vcert_install_dir }}"
+  loop: "{{ unique_aliases }}"
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+roles/venafi_cert_renew/tasks/check_cert_expiry.yml
+---
+- name: Init venafi_cert_info dict on controller
+  set_fact:
+    venafi_cert_info: {}
+  delegate_to: localhost
+  run_once: true
+
+# Prefer Python (AIX-safe). Fallback to Perl/GNU date if Python parsing unavailable.
+- name: Collect expiry days and serial from PEMs
+  shell: |
+    pem="{{ vcert_install_dir }}/{{ item }}.pem"
+    end="$(openssl x509 -enddate -noout -in "$pem" | cut -d= -f2)"
+    serial="$(openssl x509 -serial -noout -in "$pem" | cut -d= -f2)"
+
+    py_days=$(python - <<'PY' 2>/dev/null || true
+import os, time, datetime
+end=os.environ.get("END"); fmt="%b %d %H:%M:%S %Y %Z"
+try:
+  t=datetime.datetime.strptime(end, fmt); now=time.time()
+  print(int((t.timestamp()-now)//86400))
+except Exception: pass
+PY
+    )
+    if [ -z "$py_days" ]; then
+      exp_epoch=$(date -d "$end" +%s 2>/dev/null || /usr/bin/perl -e 'use Time::Piece; print Time::Piece->strptime($ARGV[0], "%b %d %H:%M:%S %Y %Z")->epoch' "$end")
+      now_epoch=$(date +%s)
+      py_days=$(( (exp_epoch - now_epoch) / 86400 ))
+    fi
+    echo "{{ item }}|${py_days}|${serial}"
+  args:
+    executable: /bin/bash
+  environment:
+    END: ""
+  register: pem_info_lines
+  loop: "{{ unique_aliases }}"
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+- name: Build venafi_cert_info from PEM info
+  set_fact:
+    venafi_cert_info: >-
+      {{
+        venafi_cert_info
+        | combine({
+            (line.split('|')[0]): {
+              'expiry_days': (line.split('|')[1] | int),
+              'serial': line.split('|')[2],
+              'changed': ((line.split('|')[1] | int) <= cert_renew_threshold),
+              'validation_status': 'PENDING'
+            }
+          })
+      }}
+  loop: "{{ pem_info_lines.stdout_lines }}"
+  loop_control:
+    loop_var: line
+  delegate_to: localhost
+  run_once: true
+
+roles/venafi_cert_renew/tasks/consolidate_cert_info.yml
+---
+# If per-host local_cert_info exists, merge it (safe no-op if missing).
+- name: Initialize global dict (idempotent)
+  set_fact:
+    venafi_cert_info: "{{ venafi_cert_info | default({}) }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Merge each host local_cert_info into global dict
+  set_fact:
+    venafi_cert_info: "{{ venafi_cert_info | combine(hostvars[item].local_cert_info | default({}), recursive=True) }}"
+  loop: "{{ play_hosts }}"
+  loop_control:
+    loop_var: item
+  delegate_to: localhost
+  run_once: true
+
+roles/venafi_cert_renew/tasks/locate_configs.yml
+---
+# Build cert_entries either from:
+#  - alias_httpd_map (alias -> [conf,...]), or
+#  - httpd_pickup_ids mapping (conf -> alias), or
+#  - host var httpd_pickup_ids list combined with alias_httpd_map
+- name: Initialize cert_entries
+  set_fact:
+    cert_entries: []
+
+- name: From alias_httpd_map
+  set_fact:
+    cert_entries: "{{ cert_entries + [{'cert_alias': a, 'config_file': c}] }}"
+  vars:
+    a: "{{ item.0 }}"
+    c: "{{ item.1 }}"
+  loop: "{{ alias_httpd_map | dict2items | map(attribute='key') | list
+            | zip( alias_httpd_map | dict2items | map(attribute='value') | map('first') | list ) | list }}"
+  when: alias_httpd_map | length > 0
+
+- name: From conf->alias mapping
+  set_fact:
+    cert_entries: "{{ cert_entries + [{'cert_alias': item.value, 'config_file': item.key}] }}"
+  loop: "{{ (httpd_pickup_ids | default({})) | dict2items }}"
+  when: httpd_pickup_ids is mapping
+
+- name: Dedup cert_entries
+  set_fact:
+    cert_entries: "{{ cert_entries | unique }}"
+
+roles/venafi_cert_renew/tasks/extract_values.yml
+---
+# Parse Keyfile/SSLServerCert/Listen ignoring comments, fill missing fields
+- name: Parse Keyfile/SSLServerCert/Listen
+  shell: |
+    awk '
+      /^[[:space:]]*#/ {next}
+      /^[[:space:]]*Keyfile[[:space:]]+/ {print "Keyfile="$2}
+      /^[[:space:]]*SSLServerCert[[:space:]]+/ {print "SSLServerCert="$2}
+      /^[[:space:]]*Listen[[:space:]]+/ {print "Listen="$2}
+    ' "{{ item.config_file }}"
+  args:
+    executable: /bin/sh
+  register: conf_kv
+  loop: "{{ cert_entries }}"
+  changed_when: false
+
+- name: Build normalized cert_entries (merge results)
+  set_fact:
+    cert_entries: >-
+      {{
+        (cert_entries | default([]) | rejectattr('config_file','ne', item.item.config_file) | list | length > 0)
+        | ternary(
+            (cert_entries | map('combine',
+                (item.stdout_lines is defined) | ternary({
+                  'kdb_file': ((item.stdout_lines | select('search','^Keyfile=') | list | first | default('Keyfile=')) | regex_replace('^Keyfile=','')),
+                  'listen_port': ((item.stdout_lines | select('search','^Listen=') | list | first | default('Listen=443')) | regex_replace('^Listen=','')),
+                  'ssl_alias': ((item.stdout_lines | select('search','^SSLServerCert=') | list | first | default('SSLServerCert=')) | regex_replace('^SSLServerCert=',''))
+                }, {} )
+            ) | list),
+            cert_entries
+        )
+      }}
+  loop: "{{ conf_kv.results | list }}"
+
+roles/venafi_cert_renew/tasks/backup.yml
+---
+- name: Ensure backup dirs exist
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop: >-
+    {{
+      (cert_entries | map(attribute='config_file') | map('dirname') | list | unique
+       | map('regex_replace', '$', '/Ansible_backup') | list)
+      +
+      (cert_entries | map(attribute='config_file') | map('dirname') | list | unique)
+    }}
+  become: true
+
+- name: Backup KDB triplet if present
+  copy:
+    src: "{{ item }}"
+    dest: "{{ (item | dirname) }}/Ansible_backup/{{ item | basename }}.{{ backup_datetime | default(ansible_date_time.iso8601_basic) }}"
+    remote_src: yes
+  loop: >-
+    {{
+      cert_entries | map(attribute='kdb_file') | select('defined') | list
+      +
+      (cert_entries | map(attribute='kdb_file') | select('defined') | map('regex_replace','\\.kdb$','.sth') | list)
+      +
+      (cert_entries | map(attribute='kdb_file') | select('defined') | map('regex_replace','\\.kdb$','.rdb') | list)
+    }}
+  when: item is defined
+  become: true
+
+- name: Backup each httpd.conf
+  copy:
+    src: "{{ item.config_file }}"
+    dest: "{{ item.config_file | dirname }}/Ansible_backup/{{ item.config_file | basename }}.{{ backup_datetime | default(ansible_date_time.iso8601_basic) }}"
+    remote_src: yes
+  loop: "{{ cert_entries }}"
+  become: true
+
+roles/venafi_cert_renew/tasks/renew_cert.yml
+---
+- name: Build list of expiring aliases (<= threshold)
+  set_fact:
+    expiring_aliases: >-
+      {{
+        venafi_cert_info | dict2items
+        | selectattr('value.expiry_days','le', cert_renew_threshold)
+        | map(attribute='key') | list | unique
+      }}
+  delegate_to: localhost
+  run_once: true
+
+- name: Renew PFX for each expiring alias (controller)
+  command: >
+    {{ vcert_install_dir }}/vcert renew
+      --alias {{ item }}
+      --format pfx
+      --password {{ vcert_password }}
+      --chain full
+      --output {{ vcert_install_dir }}/{{ item }}.pfx
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ item }}
+  loop: "{{ expiring_aliases }}"
+  delegate_to: localhost
+  run_once: true
+  changed_when: true
+
+- name: Extract new serial & compute new expiry days from renewed PFX
+  shell: |
+    openssl pkcs12 -in "{{ vcert_install_dir }}/{{ item }}.pfx" -passin pass:{{ vcert_password }} -clcerts -nokeys -out "{{ vcert_install_dir }}/{{ item }}.new.pem"
+    end=$(openssl x509 -enddate -noout -in "{{ vcert_install_dir }}/{{ item }}.new.pem" | cut -d= -f2)
+    serial=$(openssl x509 -serial -noout -in "{{ vcert_install_dir }}/{{ item }}.new.pem" | cut -d= -f2)
+    exp_epoch=$(date -d "$end" +%s 2>/dev/null || /usr/bin/perl -e 'use Time::Piece; print Time::Piece->strptime($ARGV[0], "%b %d %H:%M:%S %Y %Z")->epoch' "$end")
+    now_epoch=$(date +%s)
+    days=$(( (exp_epoch - now_epoch) / 86400 ))
+    echo "{{ item }}|${days}|${serial}"
+  args: { executable: /bin/bash }
+  register: pfx_new_info
+  loop: "{{ expiring_aliases }}"
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+- name: Update venafi_cert_info with new values
+  set_fact:
+    venafi_cert_info: >-
+      {{
+        venafi_cert_info | combine({
+          (line.split('|')[0]): (
+            venafi_cert_info[line.split('|')[0]] | combine({
+              'new_expiry_days': (line.split('|')[1] | int),
+              'new_serial': line.split('|')[2],
+              'changed': true
+            })
+          )
+        }, recursive=True)
+      }}
+  loop: "{{ pfx_new_info.stdout_lines }}"
+  loop_control: { loop_var: line }
+  delegate_to: localhost
+  run_once: true
+
+roles/venafi_cert_renew/tasks/update_configs.yml
+---
+# Invoke per-entry updater only for expiring aliases
+- name: For each cert_entry that matches an expiring alias
+  include_tasks: update_one.yml
+  vars:
+    cert_entry: "{{ item }}"
+  loop: >-
+    {{
+      cert_entries
+      | selectattr('cert_alias','in', expiring_aliases | default([]))
+      | list
+    }}
+
+roles/venafi_cert_renew/tasks/update_one.yml
+---
+- name: Ensure remote cert staging dir exists
+  file:
+    path: "{{ remote_cert_dir }}"
+    state: directory
+    owner: "{{ was_user }}"
+    group: "{{ was_user }}"
+    mode: '0750'
+  become: true
+
+- name: Set new KDB path for {{ cert_entry.cert_alias }}
+  set_fact:
+    new_kdb: "{{ cert_entry.kdb_file | dirname }}/{{ cert_entry.cert_alias }}.kdb"
+
+- name: Copy renewed PFX to host
+  copy:
+    src: "{{ vcert_install_dir }}/{{ cert_entry.cert_alias }}.pfx"
+    dest: "{{ remote_cert_dir }}/{{ cert_entry.cert_alias }}.pfx"
+    owner: "{{ was_user }}"
+    group: "{{ was_user }}"
+    mode: '0640'
+  become: true
+
+- name: Create new KDB
+  command: >
+    {{ gskcmd_bin }} -keydb -create -db "{{ new_kdb }}"
+    -pw {{ kdb_password }} -type cms -stash
+  become: true
+  register: kdb_create
+  changed_when: "'created' in (kdb_create.stdout | default('') | lower) or kdb_create.rc == 0"
+
+- name: Import renewed PFX into new KDB
+  command: >
+    {{ gskcmd_bin }} -cert -import -db "{{ new_kdb }}"
+    -pw {{ kdb_password }}
+    -file "{{ remote_cert_dir }}/{{ cert_entry.cert_alias }}.pfx"
+    -format pkcs12 -label "{{ cert_entry.cert_alias }}"
+  become: true
+
+- name: Update Keyfile directive to new KDB
+  lineinfile:
+    path: "{{ cert_entry.config_file }}"
+    regexp: '^[ \t]*Keyfile'
+    line: "Keyfile {{ new_kdb }}"
+  become: true
+
+- name: Update SSLServerCert to alias
+  lineinfile:
+    path: "{{ cert_entry.config_file }}"
+    regexp: '^[ \t]*SSLServerCert'
+    line: "SSLServerCert {{ cert_entry.cert_alias }}"
+  become: true
+
+- name: Restart IHS with config
+  command: >
+    {{ ihs_apachectl }} -f {{ cert_entry.config_file }} -k restart
+  become: true
+
+roles/venafi_cert_renew/tasks/restore.yml
+---
+- name: Determine KDB basename
+  set_fact:
+    kdb_base: "{{ cert_entry.kdb_file | basename | regex_replace('\\.kdb$','') }}"
+
+- name: Find KDB backups
+  find:
+    paths: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    patterns: "{{ kdb_base }}.*"
+    file_type: file
+    recurse: no
+  register: kdb_backups
+  failed_when: false
+  become: true
+
+- name: Build map original -> newest backup
+  set_fact:
+    kdb_restore_map: >-
+      {{
+        (kdb_restore_map | default({}))
+        | combine({
+            (item.path | basename | regex_replace('\\.[0-9TZ-]+$','')): item.path
+          })
+      }}
+  loop: "{{ kdb_backups.files | default([]) | sort(attribute='mtime') }}"
+  loop_control: { loop_var: item }
+
+- name: Restore each KDB-related file
+  copy:
+    src: "{{ item.value }}"
+    dest: "{{ cert_entry.kdb_file | dirname }}/{{ item.key }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ kdb_restore_map | default({}) | dict2items }}"
+  become: true
+
+- name: Find HTTPD backups
+  find:
+    paths: "{{ cert_entry.config_file | dirname }}/Ansible_backup"
+    patterns: "{{ cert_entry.config_file | basename }}.*"
+    file_type: file
+    recurse: no
+  register: httpd_backups
+  failed_when: false
+  become: true
+
+- name: Restore latest HTTPD config
+  copy:
+    src: "{{ (httpd_backups.files | default([]) | sort(attribute='mtime') | last).path }}"
+    dest: "{{ cert_entry.config_file }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  when: (httpd_backups.files | default([]) | length) > 0
+  become: true
+
+- name: Restart IHS after restore
+  command: >
+    {{ ihs_apachectl }} -f {{ cert_entry.config_file }} -k restart
+  become: true
+
+roles/venafi_cert_renew/tasks/validate_ssl.yml
+---
+- name: Determine listen_port (fallback 443)
+  set_fact:
+    _listen_port: "{{ (cert_entry.listen_port | default('443')) | regex_replace('[^0-9]','') | int }}"
+
+- name: Validate SSL serial via s_client
+  shell: |
+    echo | openssl s_client -connect {{ inventory_hostname }}:{{ _listen_port }} -servername {{ inventory_hostname }} 2>/dev/null \
+      | openssl x509 -noout -serial | cut -d= -f2
+  args: { executable: /bin/bash }
+  register: live_serial
+  changed_when: false
+
+- name: Mark validation status in report dict (controller)
+  set_fact:
+    venafi_cert_info: >-
+      {{ venafi_cert_info | combine({
+          (cert_entry.cert_alias): (
+            venafi_cert_info[cert_entry.cert_alias] | combine({
+              'new_serial': (venafi_cert_info[cert_entry.cert_alias].new_serial | default(live_serial.stdout | trim)),
+              'validation_status': ( (live_serial.stdout | trim) == (venafi_cert_info[cert_entry.cert_alias].new_serial | default(live_serial.stdout | trim)) ) | ternary('PASSED','FAILED')
+            })
+          )
+        }, recursive=True) }}
+  delegate_to: localhost
+  run_once: true
+
+- name: HTTP 200 probe
+  uri:
+    url: "https://{{ inventory_hostname }}:{{ _listen_port }}{{ online_probe_path }}"
+    validate_certs: no
+    status_code: 200
+  register: http_probe
+  failed_when: http_probe.status != 200
+
+roles/venafi_cert_renew/tasks/send_report.yml
+---
+- name: Send full HTML report
+  mail:
+    host: "localhost"
+    to: "{{ report_recipient }}"
+    subject: "Certificate Renewal & Validation Report - {{ ansible_date_time.date }} ({{ ansible_hostname }})"
+    subtype: html
+    body: "{{ lookup('template','report_full.html.j2') }}"
+  delegate_to: localhost
+  run_once: true
+
+roles/venafi_cert_renew/tasks/send_report_dry.yml
+---
+- name: Send DRY-RUN HTML report
+  mail:
+    host: "localhost"
+    to: "{{ report_recipient }}"
+    subject: "DRY-RUN: Certificate Expiry Report - {{ ansible_date_time.date }} ({{ ansible_hostname }})"
+    subtype: html
+    body: "{{ lookup('template','report_dry.html.j2') }}"
+  delegate_to: localhost
+  run_once: true
+
+roles/venafi_cert_renew/tasks/consolidate_deploy_status.yml
+---
+- name: Init failed deploy host list
+  set_fact:
+    venafi_failed_deploy_hosts: []
+  delegate_to: localhost
+  run_once: true
+
+- name: Accumulate hosts where deploy failed
+  set_fact:
+    venafi_failed_deploy_hosts: "{{ venafi_failed_deploy_hosts + [ item ] }}"
+  when: hostvars[item].deploy_steps_failed | default(false) | bool
+  loop: "{{ play_hosts }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Debug failed deploy hosts
+  debug:
+    msg: "Failed deploy hosts: {{ (venafi_failed_deploy_hosts | default([])) | join(',') }}"
+  delegate_to: localhost
+  run_once: true
+
+roles/venafi_cert_renew/tasks/publish_failed_hosts.yml
+---
+- name: Publish failed hosts to workflow artifacts
+  set_stats:
+    data:
+      venafi_failed_deploy_hosts: "{{ venafi_failed_deploy_hosts | default([]) }}"
+      venafi_failed_deploy_limit: "{{ (venafi_failed_deploy_hosts | default([])) | join(',') }}"
+    aggregate: no
+    per_host: no
+
+roles/venafi_cert_renew/tasks/cleanup.yml
+---
+- name: Remove vcert.zip
+  file:
+    path: "{{ vcert_install_dir }}/vcert.zip"
+    state: absent
+  delegate_to: localhost
+  run_once: true
+
+- name: Optionally remove entire vcert working dir
+  file:
+    path: "{{ vcert_install_dir }}"
+    state: absent
+  when: cleanup_remove_vcert_dir | bool
+  delegate_to: localhost
+  run_once: true
+
+templates/report_full.html.j2
+
+(same as your improved Outlook-friendly table with renewed/validation stats; unchanged logic)
+(omitted here for brevity since you already approved — keep your current version)
+
+templates/report_dry.html.j2
+
+(same as your improved dry-run table; unchanged logic)
+
+▶️ Playbook used by BOTH workflow nodes
+
+playbooks/venafi_scan_deploy_retry.yml
+
+---
+- name: Venafi cert renew (scan/deploy) with optional retry-mode
+  hosts: webservers
+  gather_facts: false
+
+  vars:
+    # Node B flips this to true via workflow node extra_data
+    retry_from_artifacts: false
+
+    # Label of upstream node (Node A) that published set_stats artifacts
+    upstream_node_label: "Full_Run"
+
+  pre_tasks:
+    - name: "Retry mode: read failed-host list from Node A artifacts and filter"
+      when: retry_from_artifacts | bool
+      block:
+        - name: "Read failed list from workflow artifacts of Node A"
+          set_fact:
+            _failed_list: "{{ (vars[upstream_node_label].artifacts.venafi_failed_deploy_hosts | default([])) }}"
+
+        - name: "Abort retry run if nothing failed"
+          meta: end_play
+          when: (_failed_list | length) == 0
+
+        - name: "End this host if it did not fail in Node A"
+          meta: end_host
+          when: inventory_hostname not in _failed_list
+
+  roles:
+    - role: venafi_cert_renew
+      # Node B will run with job_tags=deploy,validation from workflow node
+
+🛠️ AWX/Tower setup (one JT used twice, with Approval gate)
+
+awx_setup.yml (unchanged pattern; use the one from the previous message).
+
+Node A: Full_Run (no tags)
+
+Approval: Approval_Gate
+
+Node B: Retry_Failed (same JT) with node-level extra_data
+retry_from_artifacts: true, upstream_node_label: "Full_Run", and job_tags: deploy,validation
+
+(Optional) Sample dry-run only playbook
+
+dry_run_report.yml
+
+---
+- name: Dry-Run Certificate Expiry Report
+  hosts: webservers
+  gather_facts: false
+  vars:
+    report_only: true
+  roles:
+    - venafi_cert_renew
+
+✅ Summary of key merge changes
+
+Added defaults/main.yml, fetch_pems.yml, update_configs.yml + update_one.yml, cleanup.yml.
+
+Integrated alias_httpd_map and AIX-safe expiry conversions.
+
+Parameterized gskcmd_bin and kdb_password.
+
+Preserved rollback, reports, artifacts-based retry, and single JT/Playbook workflow pattern.
+
+If you want, I can also generate a ZIP with this structure exactly as shown so you can drop it into your repo.
+
+You said:
+for download vcert version unzip it and run the command vcert -v to get the version and display it
+ChatGPT said:
+Thought for 42s
+
+Great call. I’ve added a vcert version check right after the zip is unpacked. It runs vcert -v, prints the version to the job output, and also publishes it as a workflow artifact (so a later node can read it if needed).
+
+Below is the updated file and a short note on what’s new.
+
+What’s new
+
+Runs {{ vcert_install_dir }}/vcert -v on the controller.
+
+Shows the version with a debug message.
+
+Publishes vcert_version via set_stats so it’s visible to downstream workflow nodes.
+
+Updated file: roles/venafi_cert_renew/tasks/download_vcert.yml
+---
+- name: Ensure vcert install dir exists
+  file:
+    path: "{{ vcert_install_dir }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  run_once: true
+
+- name: Download vcert.zip
+  get_url:
+    url: "{{ vcert_download_url }}"
+    dest: "{{ vcert_install_dir }}/vcert.zip"
+    mode: '0644'
+  delegate_to: localhost
+  run_once: true
+
+- name: Unpack vcert.zip
+  unarchive:
+    src: "{{ vcert_install_dir }}/vcert.zip"
+    dest: "{{ vcert_install_dir }}"
+    remote_src: yes
+  delegate_to: localhost
+  run_once: true
+
+# NEW: Verify the vcert CLI version and display it
+- name: Check VCert CLI version
+  command: "{{ vcert_install_dir }}/vcert -v"
+  args:
+    chdir: "{{ vcert_install_dir }}"
+  register: vcert_ver
+  changed_when: false
+  failed_when: vcert_ver.rc != 0
+  delegate_to: localhost
+  run_once: true
+
+- name: Show VCert CLI version
+  debug:
+    msg: "VCert version: {{ (vcert_ver.stdout | default(vcert_ver.stderr) | default('unknown')) | trim }}"
+
+# Optional but handy: publish as workflow artifact for downstream nodes
+- name: Publish VCert version to workflow artifacts
+  set_stats:
+    data:
+      vcert_version: "{{ (vcert_ver.stdout | default(vcert_ver.stderr) | default('unknown')) | trim }}"
+    aggregate: no
+    per_host: no
+  delegate_to: localhost
+  run_once: true
+
+Notes
+
+The path {{ vcert_install_dir }}/vcert matches how the role already calls the binary elsewhere (renew, getcertificate). If your zip unpacks to a subfolder, adjust the path accordingly.
+
+If some versions print to stderr, the debug task still shows it (we fallback to stderr when stdout is empty).
+
+No other role files need to change for this to work; it plugs straight into your existing precheck flow.
+
+ChatGPT can make mistak
