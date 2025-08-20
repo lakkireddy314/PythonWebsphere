@@ -1,0 +1,872 @@
+roles/venafi_cert_renew/defaults/main.yml
+# Low-precedence defaults. Override in vars/ or inventory/group_vars as needed.
+vcert_download_url: "https://localhost/Certs/vcert.zip"
+vcert_install_dir: "/tmp/vcert"
+
+# Passwords
+vcert_password: "WEBASCh@ngeit"     # PFX export password (VCert)
+kdb_password: "changeit"            # GSKit KDB password (stash)
+
+# Renew threshold (days)
+cert_renew_threshold: 90
+
+# Reporting
+report_recipient: "web@test.com"
+report_only: false
+
+# IBM IHS / health probe
+ihs_apachectl: "/opt/ihs/85/bin/apachectl"
+online_probe_path: "/system-online.html"
+
+# GSKit binary (gskcmd / gsk7cmd / gsk8capicmd_64)
+gskcmd_bin: "gskcmd"
+
+# Where to stage certs on targets
+remote_cert_dir: "/home/{{ was_user }}/Ansible_Webserver_certs"
+
+# Cleanup behavior
+cleanup_remove_vcert_dir: false
+
+roles/venafi_cert_renew/vars/main.yml
+# Env / higher-precedence vars (secrets, per-env knobs)
+venafi_access_token: ""   # REQUIRED
+venafi_pickupid: ""       # REQUIRED if Venafi flow needs pickup id
+
+# Define per-host httpd_pickup_ids:
+# - EITHER as a list of aliases (for report-only)
+# - OR as a mapping of httpd.conf -> alias (required for deploy)
+#
+# Examples:
+# httpd_pickup_ids: ["alias_app1","alias_app2"]
+# httpd_pickup_ids:
+#   "/opt/ihs/conf/test1.conf": "alias_app1"
+#   "/opt/ihs/conf/test2.conf": "alias_app2"
+
+# OS account owning staged certs on targets
+was_user: "webuser"
+
+roles/venafi_cert_renew/handlers/main.yml
+---
+- name: restart_ihs
+  command: "{{ ihs_apachectl }} -f {{ cert_entry.config_file }} -k restart"
+  become: true
+
+roles/venafi_cert_renew/tasks/main.yml
+---
+# Controller prechecks
+- import_tasks: download_vcert.yml
+  tags: [precheck]
+
+- import_tasks: fetch_pems.yml
+  tags: [precheck]
+
+- import_tasks: check_cert_expiry.yml
+  tags: [precheck]
+
+- import_tasks: consolidate_cert_info.yml
+  tags: [precheck]
+
+# Dry-run: send report + cleanup + stop
+- import_tasks: send_report_dry.yml
+  when: report_only | bool
+  tags: [report]
+
+- import_tasks: cleanup.yml
+  when: report_only | bool
+  tags: [cleanup]
+
+- meta: end_play
+  when: report_only | bool
+
+# Build worklist & parse configs
+- import_tasks: locate_configs.yml
+  tags: [extract]
+
+- import_tasks: extract_values.yml
+  tags: [extract]
+
+# Backups
+- import_tasks: backup.yml
+  tags: [backup]
+
+# Deploy with rollback guard
+- block:
+    - import_tasks: renew_cert.yml
+      tags: [renew, deploy]
+
+    - import_tasks: update_configs.yml
+      tags: [update, deploy]
+
+    - import_tasks: validate_ssl.yml
+      tags: [validation, deploy]
+
+  rescue:
+    - import_tasks: restore.yml
+      tags: [restore, deploy]
+
+    - name: Mark deploy failure for workflow retry artifacts
+      set_fact:
+        deploy_steps_failed: true
+      tags: [deploy]
+
+# Report + failed-host artifacts
+- import_tasks: send_report.yml
+  tags: [report]
+
+- import_tasks: consolidate_deploy_status.yml
+  tags: [deploy]
+
+- import_tasks: publish_failed_hosts.yml
+  tags: [deploy]
+
+# Cleanup controller artifacts
+- import_tasks: cleanup.yml
+  tags: [cleanup]
+
+roles/venafi_cert_renew/tasks/download_vcert.yml
+---
+- name: Ensure vcert install dir exists
+  file:
+    path: "{{ vcert_install_dir }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  run_once: true
+
+- name: Download vcert.zip
+  get_url:
+    url: "{{ vcert_download_url }}"
+    dest: "{{ vcert_install_dir }}/vcert.zip"
+    mode: '0644'
+  delegate_to: localhost
+  run_once: true
+
+- name: Unpack vcert.zip
+  unarchive:
+    src: "{{ vcert_install_dir }}/vcert.zip"
+    dest: "{{ vcert_install_dir }}"
+    remote_src: yes
+  delegate_to: localhost
+  run_once: true
+
+# Show version and expose as artifact
+- name: Check VCert CLI version
+  command: "{{ vcert_install_dir }}/vcert -v"
+  args:
+    chdir: "{{ vcert_install_dir }}"
+  register: vcert_ver
+  changed_when: false
+  failed_when: vcert_ver.rc != 0
+  delegate_to: localhost
+  run_once: true
+
+- name: Show VCert CLI version
+  debug:
+    msg: "VCert version: {{ (vcert_ver.stdout | default(vcert_ver.stderr) | default('unknown')) | trim }}"
+
+- name: Publish VCert version to workflow artifacts
+  set_stats:
+    data:
+      vcert_version: "{{ (vcert_ver.stdout | default(vcert_ver.stderr) | default('unknown')) | trim }}"
+    aggregate: no
+    per_host: no
+  delegate_to: localhost
+  run_once: true
+
+roles/venafi_cert_renew/tasks/fetch_pems.yml
+---
+# Build unique aliases from THIS host only.
+# Supports:
+#   - httpd_pickup_ids: ["alias1","alias2"]         (sequence)
+#   - httpd_pickup_ids: {"/path/httpd.conf":"a"}    (mapping)
+
+- name: Build unique_aliases (sequence style)
+  set_fact:
+    unique_aliases: "{{ (httpd_pickup_ids | list) | unique | list }}"
+  when:
+    - httpd_pickup_ids is defined
+    - httpd_pickup_ids is sequence
+
+- name: Build unique_aliases (mapping style)
+  set_fact:
+    unique_aliases: "{{ (httpd_pickup_ids | dict2items | map(attribute='value') | list) | unique | list }}"
+  when:
+    - httpd_pickup_ids is defined
+    - httpd_pickup_ids is mapping
+
+- name: Fail early if no aliases are defined on this host
+  fail:
+    msg: "No httpd_pickup_ids found on {{ inventory_hostname }}; cannot fetch PEMs."
+  when: unique_aliases | default([]) | length == 0
+
+# Fetch PEMs on the controller; 'creates' prevents duplicate downloads across hosts.
+- name: Fetch PEM via VCert for each alias (controller; idempotent)
+  command: >
+    {{ vcert_install_dir }}/vcert getcertificate
+      --alias {{ item }}
+      --format pem
+      --output {{ vcert_install_dir }}/{{ item }}.pem
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ item }}
+  args:
+    chdir: "{{ vcert_install_dir }}"
+    creates: "{{ vcert_install_dir }}/{{ item }}.pem"
+  loop: "{{ unique_aliases }}"
+  delegate_to: localhost
+  changed_when: false
+
+roles/venafi_cert_renew/tasks/check_cert_expiry.yml
+---
+# Per-host: compute expiry_days & serial for this host's aliases from controller-staged PEMs
+
+- name: Init local_cert_info (per host)
+  set_fact:
+    local_cert_info: {}
+
+- name: Collect expiry days and serial from PEMs (controller)
+  shell: |
+    pem="{{ vcert_install_dir }}/{{ item }}.pem"
+    end="$(openssl x509 -enddate -noout -in "$pem" | cut -d= -f2)"
+    serial="$(openssl x509 -serial -noout -in "$pem" | cut -d= -f2)"
+
+    py_days=$(python - <<'PY' 2>/dev/null || true
+import os, time, datetime
+end=os.environ.get("END"); fmt="%b %d %H:%M:%S %Y %Z"
+try:
+  t=datetime.datetime.strptime(end, fmt); now=time.time()
+  print(int((t.timestamp()-now)//86400))
+except Exception: pass
+PY
+    )
+    if [ -z "$py_days" ]; then
+      exp_epoch=$(date -d "$end" +%s 2>/dev/null || /usr/bin/perl -e 'use Time::Piece; print Time::Piece->strptime($ARGV[0], "%b %d %H:%M:%S %Y %Z")->epoch' "$end")
+      now_epoch=$(date +%s)
+      py_days=$(( (exp_epoch - now_epoch) / 86400 ))
+    fi
+    echo "{{ item }}|${py_days}|${serial}"
+  args: { executable: /bin/bash }
+  register: pem_info_lines
+  loop: "{{ unique_aliases | default([]) }}"
+  delegate_to: localhost
+  changed_when: false
+
+- name: Build local_cert_info for this host
+  set_fact:
+    local_cert_info: >-
+      {{
+        local_cert_info
+        | combine({
+            (line.split('|')[0]): {
+              'expiry_days': (line.split('|')[1] | int),
+              'serial': line.split('|')[2]
+            }
+          })
+      }}
+  loop: "{{ pem_info_lines.stdout_lines }}"
+  loop_control: { loop_var: line }
+
+roles/venafi_cert_renew/tasks/consolidate_cert_info.yml
+---
+# Controller: merge all hosts' local_cert_info into venafi_cert_info
+- name: Init venafi_cert_info
+  set_fact:
+    venafi_cert_info: {}
+  delegate_to: localhost
+  run_once: true
+
+- name: Merge each host's local_cert_info
+  set_fact:
+    venafi_cert_info: "{{ venafi_cert_info | combine(hostvars[item].local_cert_info | default({}), recursive=True) }}"
+  loop: "{{ play_hosts }}"
+  loop_control: { loop_var: item }
+  delegate_to: localhost
+  run_once: true
+
+roles/venafi_cert_renew/tasks/locate_configs.yml
+---
+# Build cert_entries only from mapping-style httpd_pickup_ids (conf -> alias).
+# If sequence (alias list) is provided, we can't deploy (no config paths) — fail clearly.
+
+- name: Initialize cert_entries
+  set_fact:
+    cert_entries: []
+
+- name: Build cert_entries from conf->alias mapping
+  set_fact:
+    cert_entries: "{{ cert_entries + [{'cert_alias': item.value, 'config_file': item.key}] }}"
+  loop: "{{ (httpd_pickup_ids | default({})) | dict2items }}"
+  when:
+    - httpd_pickup_ids is defined
+    - httpd_pickup_ids is mapping
+
+- name: Fail if deployment requested without config mapping
+  fail:
+    msg: >-
+      httpd_pickup_ids must be a mapping of /path/to/httpd.conf -> alias to run deploy/update.
+      Provide mapping on {{ inventory_hostname }}, or set report_only=true for a report-only run.
+  when:
+    - (httpd_pickup_ids is not mapping) or (cert_entries | length == 0)
+    - not report_only | bool
+
+roles/venafi_cert_renew/tasks/extract_values.yml
+---
+# Parse Keyfile/SSLServerCert/Listen from each config (ignore comments)
+- name: Parse Keyfile/SSLServerCert/Listen
+  shell: |
+    awk '
+      /^[[:space:]]*#/ {next}
+      /^[[:space:]]*Keyfile[[:space:]]+/ {print "Keyfile="$2}
+      /^[[:space:]]*SSLServerCert[[:space:]]+/ {print "SSLServerCert="$2}
+      /^[[:space:]]*Listen[[:space:]]+/ {print "Listen="$2}
+    ' "{{ item.config_file }}"
+  args:
+    executable: /bin/sh
+  register: conf_kv
+  loop: "{{ cert_entries }}"
+  changed_when: false
+
+- name: Merge parsed values into cert_entries
+  set_fact:
+    cert_entries: >-
+      {{
+        cert_entries | map('combine',
+          (
+            item.item.config_file in (cert_entries | map(attribute='config_file') | list)
+          )
+          | ternary({
+              'kdb_file':    (item.stdout_lines | select('search','^Keyfile=') | list | first | default('Keyfile=')) | regex_replace('^Keyfile=',''),
+              'listen_port': (item.stdout_lines | select('search','^Listen=') | list | first | default('Listen=443')) | regex_replace('^Listen=',''),
+              'ssl_alias':   (item.stdout_lines | select('search','^SSLServerCert=') | list | first | default('SSLServerCert=')) | regex_replace('^SSLServerCert=','')
+            }, {})
+        ) | list
+      }}
+  loop: "{{ conf_kv.results | list }}"
+
+roles/venafi_cert_renew/tasks/backup.yml
+---
+- name: Ensure backup dirs exist
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop: >-
+    {{
+      (cert_entries | map(attribute='config_file') | map('dirname') | list | unique
+       | map('regex_replace', '$', '/Ansible_backup') | list)
+      +
+      (cert_entries | map(attribute='config_file') | map('dirname') | list | unique)
+    }}
+  become: true
+
+- name: Backup KDB triplet if present
+  copy:
+    src: "{{ item }}"
+    dest: "{{ (item | dirname) }}/Ansible_backup/{{ item | basename }}.{{ backup_datetime | default(ansible_date_time.iso8601_basic) }}"
+    remote_src: yes
+  loop: >-
+    {{
+      cert_entries | map(attribute='kdb_file') | select('defined') | list
+      +
+      (cert_entries | map(attribute='kdb_file') | select('defined') | map('regex_replace','\\.kdb$','.sth') | list)
+      +
+      (cert_entries | map(attribute='kdb_file') | select('defined') | map('regex_replace','\\.kdb$','.rdb') | list)
+    }}
+  when: item is defined
+  become: true
+
+- name: Backup each httpd.conf
+  copy:
+    src: "{{ item.config_file }}"
+    dest: "{{ item.config_file | dirname }}/Ansible_backup/{{ item.config_file | basename }}.{{ backup_datetime | default(ansible_date_time.iso8601_basic) }}"
+    remote_src: yes
+  loop: "{{ cert_entries }}"
+  become: true
+
+roles/venafi_cert_renew/tasks/renew_cert.yml
+---
+- name: Build list of expiring aliases (<= threshold) from consolidated info
+  set_fact:
+    expiring_aliases: >-
+      {{
+        venafi_cert_info | dict2items
+        | selectattr('value.expiry_days','le', cert_renew_threshold)
+        | map(attribute='key') | list | unique
+      }}
+  delegate_to: localhost
+  run_once: true
+
+- name: Renew PFX for each expiring alias (controller)
+  command: >
+    {{ vcert_install_dir }}/vcert renew
+      --alias {{ item }}
+      --format pfx
+      --password {{ vcert_password }}
+      --chain full
+      --output {{ vcert_install_dir }}/{{ item }}.pfx
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ item }}
+  loop: "{{ expiring_aliases }}"
+  delegate_to: localhost
+  run_once: true
+  changed_when: true
+
+- name: Extract new serial & compute new expiry days from renewed PFX
+  shell: |
+    openssl pkcs12 -in "{{ vcert_install_dir }}/{{ item }}.pfx" -passin pass:{{ vcert_password }} -clcerts -nokeys -out "{{ vcert_install_dir }}/{{ item }}.new.pem"
+    end=$(openssl x509 -enddate -noout -in "{{ vcert_install_dir }}/{{ item }}.new.pem" | cut -d= -f2)
+    serial=$(openssl x509 -serial -noout -in "{{ vcert_install_dir }}/{{ item }}.new.pem" | cut -d= -f2)
+    exp_epoch=$(date -d "$end" +%s 2>/dev/null || /usr/bin/perl -e 'use Time::Piece; print Time::Piece->strptime($ARGV[0], "%b %d %H:%M:%S %Y %Z")->epoch' "$end")
+    now_epoch=$(date +%s)
+    days=$(( (exp_epoch - now_epoch) / 86400 ))
+    echo "{{ item }}|${days}|${serial}"
+  args: { executable: /bin/bash }
+  register: pfx_new_info
+  loop: "{{ expiring_aliases }}"
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+- name: Update venafi_cert_info with new values
+  set_fact:
+    venafi_cert_info: >-
+      {{
+        venafi_cert_info | combine({
+          (line.split('|')[0]): (
+            venafi_cert_info[line.split('|')[0]] | combine({
+              'new_expiry_days': (line.split('|')[1] | int),
+              'new_serial': line.split('|')[2],
+              'changed': true
+            })
+          )
+        }, recursive=True)
+      }}
+  loop: "{{ pfx_new_info.stdout_lines }}"
+  loop_control: { loop_var: line }
+  delegate_to: localhost
+  run_once: true
+
+roles/venafi_cert_renew/tasks/update_configs.yml
+---
+# Invoke per-entry updater only for expiring aliases
+- name: For each cert_entry that matches an expiring alias
+  include_tasks: update_one.yml
+  vars:
+    cert_entry: "{{ item }}"
+  loop: >-
+    {{
+      cert_entries
+      | selectattr('cert_alias','in', expiring_aliases | default([]))
+      | list
+    }}
+
+roles/venafi_cert_renew/tasks/update_one.yml
+---
+- name: Ensure remote cert staging dir exists
+  file:
+    path: "{{ remote_cert_dir }}"
+    state: directory
+    owner: "{{ was_user }}"
+    group: "{{ was_user }}"
+    mode: '0750'
+  become: true
+
+- name: Set new KDB path for {{ cert_entry.cert_alias }}
+  set_fact:
+    new_kdb: "{{ cert_entry.kdb_file | dirname }}/{{ cert_entry.cert_alias }}.kdb"
+
+- name: Copy renewed PFX to host
+  copy:
+    src: "{{ vcert_install_dir }}/{{ cert_entry.cert_alias }}.pfx"
+    dest: "{{ remote_cert_dir }}/{{ cert_entry.cert_alias }}.pfx"
+    owner: "{{ was_user }}"
+    group: "{{ was_user }}"
+    mode: '0640'
+  become: true
+
+- name: Create new KDB
+  command: >
+    {{ gskcmd_bin }} -keydb -create -db "{{ new_kdb }}"
+    -pw {{ kdb_password }} -type cms -stash
+  become: true
+  register: kdb_create
+  changed_when: "'created' in (kdb_create.stdout | default('') | lower) or kdb_create.rc == 0"
+
+- name: Import renewed PFX into new KDB
+  command: >
+    {{ gskcmd_bin }} -cert -import -db "{{ new_kdb }}"
+    -pw {{ kdb_password }}
+    -file "{{ remote_cert_dir }}/{{ cert_entry.cert_alias }}.pfx"
+    -format pkcs12 -label "{{ cert_entry.cert_alias }}"
+  become: true
+
+- name: Update Keyfile directive to new KDB
+  lineinfile:
+    path: "{{ cert_entry.config_file }}"
+    regexp: '^[ \t]*Keyfile'
+    line: "Keyfile {{ new_kdb }}"
+  become: true
+
+- name: Update SSLServerCert to alias
+  lineinfile:
+    path: "{{ cert_entry.config_file }}"
+    regexp: '^[ \t]*SSLServerCert'
+    line: "SSLServerCert {{ cert_entry.cert_alias }}"
+  become: true
+
+- name: Restart IHS with config
+  command: >
+    {{ ihs_apachectl }} -f {{ cert_entry.config_file }} -k restart
+  become: true
+
+roles/venafi_cert_renew/tasks/restore.yml
+---
+- name: Determine KDB basename
+  set_fact:
+    kdb_base: "{{ cert_entry.kdb_file | basename | regex_replace('\\.kdb$','') }}"
+
+- name: Find KDB backups
+  find:
+    paths: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    patterns: "{{ kdb_base }}.*"
+    file_type: file
+    recurse: no
+  register: kdb_backups
+  failed_when: false
+  become: true
+
+- name: Build map original -> newest backup
+  set_fact:
+    kdb_restore_map: >-
+      {{
+        (kdb_restore_map | default({}))
+        | combine({
+            (item.path | basename | regex_replace('\\.[0-9TZ:-]+$','')): item.path
+          })
+      }}
+  loop: "{{ kdb_backups.files | default([]) | sort(attribute='mtime') }}"
+  loop_control: { loop_var: item }
+
+- name: Restore each KDB-related file
+  copy:
+    src: "{{ item.value }}"
+    dest: "{{ cert_entry.kdb_file | dirname }}/{{ item.key }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ kdb_restore_map | default({}) | dict2items }}"
+  become: true
+
+- name: Find HTTPD backups
+  find:
+    paths: "{{ cert_entry.config_file | dirname }}/Ansible_backup"
+    patterns: "{{ cert_entry.config_file | basename }}.*"
+    file_type: file
+    recurse: no
+  register: httpd_backups
+  failed_when: false
+  become: true
+
+- name: Restore latest HTTPD config
+  copy:
+    src: "{{ (httpd_backups.files | default([]) | sort(attribute='mtime') | last).path }}"
+    dest: "{{ cert_entry.config_file }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  when: (httpd_backups.files | default([]) | length) > 0
+  become: true
+
+- name: Restart IHS after restore
+  command: >
+    {{ ihs_apachectl }} -f {{ cert_entry.config_file }} -k restart
+  become: true
+
+roles/venafi_cert_renew/tasks/validate_ssl.yml
+---
+- name: Determine listen_port (fallback 443)
+  set_fact:
+    _listen_port: "{{ (cert_entry.listen_port | default('443')) | regex_replace('[^0-9]','') | int }}"
+
+- name: Validate SSL serial via s_client
+  shell: |
+    echo | openssl s_client -connect {{ inventory_hostname }}:{{ _listen_port }} -servername {{ inventory_hostname }} 2>/dev/null \
+      | openssl x509 -noout -serial | cut -d= -f2
+  args: { executable: /bin/bash }
+  register: live_serial
+  changed_when: false
+
+- name: Mark validation status in report dict (controller)
+  set_fact:
+    venafi_cert_info: >-
+      {{ venafi_cert_info | combine({
+          (cert_entry.cert_alias): (
+            venafi_cert_info[cert_entry.cert_alias] | combine({
+              'new_serial': (venafi_cert_info[cert_entry.cert_alias].new_serial | default(live_serial.stdout | trim)),
+              'validation_status': ( (live_serial.stdout | trim) == (venafi_cert_info[cert_entry.cert_alias].new_serial | default(live_serial.stdout | trim)) ) | ternary('PASSED','FAILED')
+            })
+          )
+        }, recursive=True) }}
+  delegate_to: localhost
+  run_once: true
+
+- name: HTTP 200 probe
+  uri:
+    url: "https://{{ inventory_hostname }}:{{ _listen_port }}{{ online_probe_path }}"
+    validate_certs: no
+    status_code: 200
+  register: http_probe
+  failed_when: http_probe.status != 200
+
+roles/venafi_cert_renew/tasks/send_report.yml
+---
+- name: Send full HTML report
+  mail:
+    host: "localhost"
+    to: "{{ report_recipient }}"
+    subject: "Certificate Renewal & Validation Report - {{ ansible_date_time.date }} ({{ ansible_hostname }})"
+    subtype: html
+    body: "{{ lookup('template','report_full.html.j2') }}"
+  delegate_to: localhost
+  run_once: true
+
+roles/venafi_cert_renew/tasks/send_report_dry.yml
+---
+- name: Send DRY-RUN HTML report
+  mail:
+    host: "localhost"
+    to: "{{ report_recipient }}"
+    subject: "DRY-RUN: Certificate Expiry Report - {{ ansible_date_time.date }} ({{ ansible_hostname }})"
+    subtype: html
+    body: "{{ lookup('template','report_dry.html.j2') }}"
+  delegate_to: localhost
+  run_once: true
+
+roles/venafi_cert_renew/tasks/consolidate_deploy_status.yml
+---
+- name: Init failed deploy host list
+  set_fact:
+    venafi_failed_deploy_hosts: []
+  delegate_to: localhost
+  run_once: true
+
+- name: Accumulate hosts where deploy failed
+  set_fact:
+    venafi_failed_deploy_hosts: "{{ venafi_failed_deploy_hosts + [ item ] }}"
+  when: hostvars[item].deploy_steps_failed | default(false) | bool
+  loop: "{{ play_hosts }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Debug failed deploy hosts
+  debug:
+    msg: "Failed deploy hosts: {{ (venafi_failed_deploy_hosts | default([])) | join(',') }}"
+  delegate_to: localhost
+  run_once: true
+
+roles/venafi_cert_renew/tasks/publish_failed_hosts.yml
+---
+- name: Publish failed hosts to workflow artifacts
+  set_stats:
+    data:
+      venafi_failed_deploy_hosts: "{{ venafi_failed_deploy_hosts | default([]) }}"
+      venafi_failed_deploy_limit: "{{ (venafi_failed_deploy_hosts | default([])) | join(',') }}"
+    aggregate: no
+    per_host: no
+
+roles/venafi_cert_renew/tasks/cleanup.yml
+---
+- name: Remove vcert.zip
+  file:
+    path: "{{ vcert_install_dir }}/vcert.zip"
+    state: absent
+  delegate_to: localhost
+  run_once: true
+
+- name: Optionally remove entire vcert working dir
+  file:
+    path: "{{ vcert_install_dir }}"
+    state: absent
+  when: cleanup_remove_vcert_dir | bool
+  delegate_to: localhost
+  run_once: true
+
+roles/venafi_cert_renew/templates/report_full.html.j2
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Certificate Renewal &amp; Validation Report</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f4f4;">
+    <tr><td align="center">
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
+        <tr>
+          <td style="padding:20px;background:#2a8cff;color:#fff;font-size:24px;font-weight:bold;">
+            Certificate Renewal &amp; Validation Report
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px;background:#e9ecef;">
+            <table width="100%" cellpadding="10" cellspacing="0" border="0">
+              <tr>
+                <td style="background:#cce5ff;color:#004085;text-align:center;">
+                  📊 Total Scanned: {{ venafi_cert_info|length }}
+                </td>
+                <td style="background:#d4edda;color:#155724;text-align:center;">
+                  ✅ Renewed: {{
+                    venafi_cert_info|dict2items
+                    |selectattr('value.changed','equalto',true)|list|length
+                  }}
+                </td>
+                <td style="background:#fff3cd;color:#856404;text-align:center;">
+                  ⚠️ Expiring Soon: {{
+                    venafi_cert_info|dict2items
+                    |selectattr('value.expiry_days','le', cert_renew_threshold)|list|length
+                  }}
+                </td>
+                <td style="background:#d1ecf1;color:#0c5460;text-align:center;">
+                  ✔️ Passed: {{
+                    venafi_cert_info|dict2items
+                    |selectattr('value.validation_status','equalto','PASSED')|list|length
+                  }}
+                </td>
+                <td style="background:#dc3545;color:#fff;text-align:center;">
+                  ❌ Failed: {{
+                    venafi_cert_info|dict2items
+                    |selectattr('value.validation_status','equalto','FAILED')|list|length
+                  }}
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px;">
+            <table width="100%" cellpadding="5" cellspacing="0" border="1" style="border-collapse:collapse;border-color:#ddd;">
+              <tr style="background:#f0f0f0;">
+                <th>Alias</th>
+                <th>Expiry (days: old » new)</th>
+                <th>Serial (old » new)</th>
+                <th>Action</th>
+                <th>Validation</th>
+              </tr>
+              {% for alias, info in venafi_cert_info.items() %}
+              <tr>
+                <td style="border-top:1px solid #ddd;">{{ alias }}</td>
+                <td align="right" style="border-top:1px solid #ddd;">
+                  {{ info.expiry_days | default('N/A') }} &nbsp;&raquo;&nbsp;
+                  {{ info.new_expiry_days | default('—') }}
+                </td>
+                <td style="border-top:1px solid #ddd;">
+                  {{ info.serial | default('') }} &nbsp;&raquo;&nbsp;
+                  {{ info.new_serial | default('—') }}
+                </td>
+                <td style="border-top:1px solid #ddd;">
+                  {% if info.changed %}
+                    <span style="padding:3px 8px;background:#28a745;color:#fff;font-size:12px;">Renewed</span>
+                  {% else %}
+                    <span style="padding:3px 8px;background:#6c757d;color:#fff;font-size:12px;">Skipped</span>
+                  {% endif %}
+                </td>
+                <td style="border-top:1px solid #ddd;">
+                  {% if info.validation_status == 'PASSED' %}
+                    <span style="padding:3px 8px;background:#28a745;color:#fff;font-size:12px;">PASSED</span>
+                  {% else %}
+                    <span style="padding:3px 8px;background:#dc3545;color:#fff;font-size:12px;">FAILED</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px;font-size:12px;color:#777;text-align:center;">
+            © {{ ansible_date_time.date[:4] }} Your Company
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+
+roles/venafi_cert_renew/templates/report_dry.html.j2
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DRY-RUN: Certificate Expiry Report</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f4f4;">
+    <tr><td align="center">
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
+        <tr>
+          <td style="padding:20px;background:#2a8cff;color:#fff;font-size:24px;font-weight:bold;">
+            DRY-RUN: Certificate Expiry Report
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px;background:#e9ecef;">
+            <table width="100%" cellpadding="10" cellspacing="0" border="0">
+              <tr>
+                <td style="background:#cce5ff;color:#004085;text-align:center;">
+                  📊 Total Scanned: {{ venafi_cert_info | length }}
+                </td>
+                <td style="background:#fff3cd;color:#856404;text-align:center;">
+                  ⚠️ Expiring Soon: {{
+                    venafi_cert_info|dict2items
+                    |selectattr('value.expiry_days','le', cert_renew_threshold)|list|length
+                  }}
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px;">
+            <table width="100%" cellpadding="5" cellspacing="0" border="1" style="border-collapse:collapse;border-color:#ddd;">
+              <tr style="background:#f0f0f0;">
+                <th>Alias</th>
+                <th>Expiry (days: old » new)</th>
+                <th>Serial (old » new)</th>
+              </tr>
+              {% for alias, info in venafi_cert_info.items()
+                   if info.expiry_days is defined and info.expiry_days <= cert_renew_threshold %}
+              <tr>
+                <td style="border-top:1px solid #ddd;">{{ alias }}</td>
+                <td align="right" style="border-top:1px solid #ddd;">
+                  {{ info.expiry_days }} &nbsp;&raquo;&nbsp; {{ info.new_expiry_days | default('—') }}
+                </td>
+                <td style="border-top:1px solid #ddd;">
+                  {{ info.serial }} &nbsp;&raquo;&nbsp; {{ info.new_serial | default('—') }}
+                </td>
+              </tr>
+              {% endfor %}
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px;font-size:12px;color:#777;text-align:center;">
+            <em>Dry-run report. No changes performed.</em> • © {{ ansible_date_time.date[:4] }} Your Company
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+
+Notes
+
+No alias_httpd_map anywhere. Deploy path requires httpd_pickup_ids as a mapping (conf → alias). If you only provide an alias list, you can still do report-only runs.
+
+PEM fetching is per-host (controller-executed) and idempotent (via creates:). Consolidation then builds the global venafi_cert_info for reporting/renew selection.
+
+download_vcert.yml now prints and publishes vcert -v.
+
+ChatGPT can make mista
