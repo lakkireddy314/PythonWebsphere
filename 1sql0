@@ -1,0 +1,925 @@
+Awesome—here’s a clean, Ansible 2.9–compatible version of the venafi_cert_renew role with all the key files and fixes we’ve been iterating on (global dict consolidation, robust backup/restore without “no last item”, Outlook‑friendly reports, dry‑run mode, etc.). I’ll show:
+
+The role layout
+
+Every YAML you need under tasks/
+
+defaults/, vars/, and handlers/
+
+The two HTML templates
+
+A sample dry‑run playbook
+
+I’ve kept comments concise so you can drop this straight into a repo.
+
+Role layout
+roles/
+└─ venafi_cert_renew/
+   ├─ defaults/
+   │  └─ main.yml
+   ├─ vars/
+   │  └─ main.yml
+   ├─ handlers/
+   │  └─ main.yml
+   ├─ templates/
+   │  ├─ report_full.html.j2
+   │  └─ report_dry.html.j2
+   └─ tasks/
+      ├─ main.yml
+      ├─ download_vcert.yml
+      ├─ fetch_pems.yml
+      ├─ check_cert_expiry.yml
+      ├─ consolidate_cert_info.yml
+      ├─ locate_configs.yml
+      ├─ extract_values.yml
+      ├─ backup.yml
+      ├─ renew_cert.yml
+      ├─ update_configs.yml
+      ├─ restore.yml
+      ├─ validate_ssl.yml
+      ├─ send_report.yml
+      ├─ send_report_dry.yml
+      └─ cleanup.yml
+
+defaults/main.yml
+
+Baseline knobs; override as needed.
+
+---
+vcert_zip_url: "https://localhost/Certs/vcert.zip"
+vcert_install_dir: "/tmp/vcert"
+vcert_password: "WEBASCh@ngeit"
+cert_renew_threshold: 90              # days
+report_only: false                    # set true for dry run
+
+# Where to email the report
+report_recipient: "web@test.com"
+
+# IBM IHS restart command (per conf)
+ihs_apachectl: "/opt/ihs/85/bin/apachectl"
+
+# HTTP probe path for online check
+online_probe_path: "/system-online.html"
+
+vars/main.yml
+
+Per‑environment variables (aliases, tokens, mappings, etc.).
+
+---
+# Venafi access
+venafi_access_token: "REDACTED"
+# Mapping of host → pickup IDs (alias names). If multiple certs per host, list them.
+httpd_pickup_ids:
+  # Example host var structure; you can also keep these in group_vars/env.yml
+  # web01: ["alias_app1", "alias_app2"]
+
+# If you keep httpd.conf paths in group vars, you can map alias → conf file(s) here
+alias_httpd_map: {}   # e.g. { "alias_app1": ["/opt/ihs/conf/test1.conf"] }
+
+# AIX-safe sed (no -E). All regex in tasks avoid -E on purpose.
+
+handlers/main.yml
+
+We’re not using classic handlers for renew (we do explicit restarts after updates/restore), but you can still keep one for general restart if you want to trigger it by notify.
+
+---
+- name: restart_ihs
+  command: "{{ ihs_apachectl }} -f {{ cert_entry.config_file }} -k restart"
+  become: true
+
+tasks/main.yml
+
+Top-level orchestration. Uses block/rescue around mutate steps; honors report_only.
+
+---
+# tasks/main.yml
+
+- import_tasks: download_vcert.yml
+  tags: [precheck]
+
+- import_tasks: fetch_pems.yml
+  tags: [precheck]
+
+- import_tasks: check_cert_expiry.yml
+  tags: [precheck]
+
+- import_tasks: consolidate_cert_info.yml
+  tags: [precheck]
+
+# Stop here for dry-run reporting
+- import_tasks: send_report_dry.yml
+  when: report_only | bool
+  tags: [report]
+- import_tasks: cleanup.yml
+  when: report_only | bool
+  tags: [cleanup]
+- meta: end_play
+  when: report_only | bool
+
+# From here onward: actual renewal workflow (only for expiring certs)
+- import_tasks: locate_configs.yml
+  tags: [extract]
+
+- import_tasks: extract_values.yml
+  tags: [extract]
+
+- import_tasks: backup.yml
+  tags: [backup]
+
+- block:
+    - import_tasks: renew_cert.yml
+      tags: [renew]
+
+    - import_tasks: update_configs.yml
+      tags: [update]
+
+    - import_tasks: validate_ssl.yml
+      tags: [validation]
+
+  rescue:
+    - import_tasks: restore.yml
+      tags: [restore]
+
+- import_tasks: send_report.yml
+  tags: [report]
+
+- import_tasks: cleanup.yml
+  tags: [cleanup]
+
+tasks/download_vcert.yml
+
+Downloads and unzips vcert on the controller.
+
+---
+- name: Ensure vcert install dir exists
+  ansible.builtin.file:
+    path: "{{ vcert_install_dir }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  run_once: true
+  tags: [precheck]
+
+- name: Download vcert.zip
+  ansible.builtin.get_url:
+    url: "{{ vcert_zip_url }}"
+    dest: "{{ vcert_install_dir }}/vcert.zip"
+    mode: '0644'
+  delegate_to: localhost
+  run_once: true
+  tags: [precheck]
+
+- name: Unpack vcert.zip
+  ansible.builtin.unarchive:
+    src: "{{ vcert_install_dir }}/vcert.zip"
+    dest: "{{ vcert_install_dir }}"
+    remote_src: yes
+  delegate_to: localhost
+  run_once: true
+  tags: [precheck]
+
+tasks/fetch_pems.yml
+
+Fetch PEM per unique alias (controller‑only). Avoids duplicates.
+
+---
+- name: Build list of unique aliases across play hosts
+  ansible.builtin.set_fact:
+    unique_aliases: >-
+      {{
+        (groups[inventory_group | default('all')] | default(play_hosts))
+        | map('extract', hostvars, 'httpd_pickup_ids')
+        | map('default', [])
+        | sum(start=[])
+        | unique
+        | list
+      }}
+  delegate_to: localhost
+  run_once: true
+  tags: [precheck]
+
+- name: Fetch PEM via vcert for each alias
+  ansible.builtin.command: >
+    {{ vcert_install_dir }}/vcert getcertificate
+      --alias {{ item }}
+      --format pem
+      --output {{ vcert_install_dir }}/{{ item }}.pem
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ item }}
+  args:
+    chdir: "{{ vcert_install_dir }}"
+  loop: "{{ unique_aliases }}"
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+  tags: [precheck]
+
+tasks/check_cert_expiry.yml
+
+Compute days & serial for each PEM on controller; host‑local checks can stay separate if you need.
+
+---
+- name: Init venafi_cert_info dict on controller
+  ansible.builtin.set_fact:
+    venafi_cert_info: {}
+  delegate_to: localhost
+  run_once: true
+  tags: [precheck]
+
+- name: Collect expiry days and serial from PEMs
+  ansible.builtin.shell: |
+    exp=$(openssl x509 -enddate -noout -in "{{ vcert_install_dir }}/{{ item }}.pem" | cut -d= -f2)
+    serial=$(openssl x509 -in "{{ vcert_install_dir }}/{{ item }}.pem" -serial -noout | cut -d= -f2)
+    # Convert to epoch and compute days remaining (Linux/BSD portable)
+    exp_epoch=$(date -d "$exp" +%s 2>/dev/null || /usr/bin/perl -e 'use Time::Piece; print Time::Piece->strptime($ARGV[0], "%b %d %H:%M:%S %Y %Z")->epoch' "$exp")
+    now_epoch=$(date +%s)
+    days=$(( (exp_epoch - now_epoch) / 86400 ))
+    echo "{{ item }}|${days}|${serial}"
+  args:
+    executable: /bin/bash
+  register: pem_info_lines
+  loop: "{{ unique_aliases }}"
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+  tags: [precheck]
+
+- name: Build venafi_cert_info from PEM info
+  ansible.builtin.set_fact:
+    venafi_cert_info: >-
+      {{
+        venafi_cert_info
+        | combine({
+            (line.split('|')[0]): {
+              'expiry_days': (line.split('|')[1] | int),
+              'serial': line.split('|')[2],
+              'changed': ((line.split('|')[1] | int) <= cert_renew_threshold),
+              'validation_status': 'PENDING'
+            }
+          })
+      }}
+  loop: "{{ pem_info_lines.stdout_lines }}"
+  loop_control:
+    loop_var: line
+  delegate_to: localhost
+  run_once: true
+  tags: [precheck]
+
+tasks/consolidate_cert_info.yml
+
+If you also compute per‑host info, merge it here. Safe even if some hosts don’t set the fact.
+
+---
+- name: Initialize global dict (idempotent)
+  ansible.builtin.set_fact:
+    venafi_cert_info: "{{ venafi_cert_info | default({}) }}"
+  delegate_to: localhost
+  run_once: true
+  tags: [precheck]
+
+- name: Merge each host local_cert_info into global dict
+  ansible.builtin.set_fact:
+    venafi_cert_info: "{{ venafi_cert_info | combine(hostvars[item].local_cert_info | default({})) }}"
+  loop: "{{ play_hosts }}"
+  loop_control:
+    loop_var: item
+  delegate_to: localhost
+  run_once: true
+  tags: [precheck]
+
+tasks/locate_configs.yml
+
+Identify relevant httpd.conf paths per alias/host (use your existing group var mappings).
+
+---
+# Expect alias_httpd_map OR host vars to provide config paths
+- name: Build cert->config entries on host
+  ansible.builtin.set_fact:
+    host_cert_configs: >-
+      {{
+        (host_cert_configs | default([])) +
+        [
+          {
+            'cert_alias': item,
+            'config_file': (alias_httpd_map.get(item, [] ) | first | default('')),
+          }
+        ]
+      }}
+  loop: "{{ httpd_pickup_ids | default([]) }}"
+  when: httpd_pickup_ids is defined
+  tags: [extract]
+
+tasks/extract_values.yml
+
+Parse Keyfile, SSLServerCert, Listen (ignore commented lines).
+
+---
+- name: Parse Keyfile/SSLServerCert/Listen from each config
+  ansible.builtin.shell: |
+    awk '
+      /^[[:space:]]*#/ {next}
+      /^[[:space:]]*Keyfile[[:space:]]+/ {print "Keyfile="$2}
+      /^[[:space:]]*SSLServerCert[[:space:]]+/ {print "SSLServerCert="$2}
+      /^[[:space:]]*Listen[[:space:]]+/ {print "Listen="$2}
+    ' "{{ item.config_file }}"
+  args:
+    executable: /bin/sh
+  register: conf_kv
+  loop: "{{ host_cert_configs | default([]) }}"
+  changed_when: false
+  tags: [extract]
+
+- name: Build normalized cert_entries (merge results)
+  ansible.builtin.set_fact:
+    cert_entries: >-
+      {{
+        (cert_entries | default([])) + [{
+          'cert_alias': item.item.cert_alias,
+          'config_file': item.item.config_file,
+          'kdb_file': (item.stdout_lines | select('search','^Keyfile=') | list | first | default('Keyfile=') | regex_replace('^Keyfile=','')),
+          'listen_port': (item.stdout_lines | select('search','^Listen=') | list | first | default('Listen=443') | regex_replace('^Listen=','')),
+          'ssl_alias': (item.stdout_lines | select('search','^SSLServerCert=') | list | first | default('SSLServerCert=') | regex_replace('^SSLServerCert=',''))
+        }] }}
+  loop: "{{ conf_kv.results | list }}"
+  tags: [extract]
+
+tasks/backup.yml
+
+Back up all KDB artifacts and httpd.conf with timestamp.
+
+---
+- name: Determine KDB basename
+  ansible.builtin.set_fact:
+    kdb_base: "{{ cert_entry.kdb_file | basename | regex_replace('\\.kdb$','') }}"
+  tags: [backup]
+
+- name: Find KDB-related files
+  ansible.builtin.find:
+    paths: "{{ cert_entry.kdb_file | dirname }}"
+    patterns: "{{ kdb_base }}.*"
+    file_type: file
+    recurse: no
+  register: kdb_files
+  become: true
+  tags: [backup]
+
+- name: Ensure KDB backup dir exists
+  ansible.builtin.file:
+    path: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    state: directory
+    mode: '0755'
+  become: true
+  tags: [backup]
+
+- name: Backup each KDB file
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup/{{ item.path | basename }}.{{ backup_datetime | default(ansible_date_time.iso8601_basic) }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ kdb_files.files }}"
+  become: true
+  tags: [backup]
+
+- name: Ensure HTTPD backup dir exists
+  ansible.builtin.file:
+    path: "{{ cert_entry.config_file | dirname }}/Ansible_backup"
+    state: directory
+    mode: '0755'
+  become: true
+  tags: [backup]
+
+- name: Backup HTTPD config
+  ansible.builtin.copy:
+    src: "{{ cert_entry.config_file }}"
+    dest: "{{ cert_entry.config_file | dirname }}/Ansible_backup/{{ cert_entry.config_file | basename }}.{{ backup_datetime | default(ansible_date_time.iso8601_basic) }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  tags: [backup]
+
+tasks/renew_cert.yml
+
+Renew + download PFX for each expiring alias; also stash new serial/expiry in global dict.
+
+---
+- name: Build list of expiring aliases (<= threshold)
+  ansible.builtin.set_fact:
+    expiring_aliases: >-
+      {{
+        venafi_cert_info
+        | dict2items
+        | selectattr('value.expiry_days','le', cert_renew_threshold)
+        | map(attribute='key') | list
+      }}
+  delegate_to: localhost
+  run_once: true
+  tags: [renew]
+
+- name: Renew PFX for each expiring alias
+  ansible.builtin.command: >
+    {{ vcert_install_dir }}/vcert renew
+      --alias {{ item }}
+      --format pfx
+      --password {{ vcert_password }}
+      --chain full
+      --output {{ vcert_install_dir }}/{{ item }}.pfx
+      --access_token {{ venafi_access_token }}
+      --pickupid {{ item }}
+  loop: "{{ expiring_aliases }}"
+  delegate_to: localhost
+  run_once: true
+  changed_when: true
+  tags: [renew]
+
+- name: Extract new serial & compute new expiry (days) from renewed PFX (converted to PEM)
+  ansible.builtin.shell: |
+    openssl pkcs12 -in "{{ vcert_install_dir }}/{{ item }}.pfx" -passin pass:{{ vcert_password }} -clcerts -nokeys -out "{{ vcert_install_dir }}/{{ item }}.new.pem"
+    exp=$(openssl x509 -enddate -noout -in "{{ vcert_install_dir }}/{{ item }}.new.pem" | cut -d= -f2)
+    serial=$(openssl x509 -in "{{ vcert_install_dir }}/{{ item }}.new.pem" -serial -noout | cut -d= -f2)
+    exp_epoch=$(date -d "$exp" +%s 2>/dev/null || /usr/bin/perl -e 'use Time::Piece; print Time::Piece->strptime($ARGV[0], "%b %d %H:%M:%S %Y %Z")->epoch' "$exp")
+    now_epoch=$(date +%s)
+    days=$(( (exp_epoch - now_epoch) / 86400 ))
+    echo "{{ item }}|${days}|${serial}"
+  args:
+    executable: /bin/bash
+  register: pfx_new_info
+  loop: "{{ expiring_aliases }}"
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+  tags: [renew]
+
+- name: Update venafi_cert_info with new values
+  ansible.builtin.set_fact:
+    venafi_cert_info: >-
+      {{
+        venafi_cert_info | combine({
+          (line.split('|')[0]): (
+            venafi_cert_info[line.split('|')[0]] | combine({
+              'new_expiry_days': (line.split('|')[1] | int),
+              'new_serial': line.split('|')[2],
+              'changed': true
+            })
+          )
+        }, recursive=True)
+      }}
+  loop: "{{ pfx_new_info.stdout_lines }}"
+  loop_control:
+    loop_var: line
+  delegate_to: localhost
+  run_once: true
+  tags: [renew]
+
+tasks/update_configs.yml
+
+Create a new KDB named after the alias, import PFX cert into it, update httpd.conf Keyfile & SSLServerCert, then restart.
+
+---
+- name: For each cert_entry that matches an expiring alias
+  ansible.builtin.include_tasks: update_one.yml
+  vars:
+    cert_entry: "{{ item }}"
+  loop: >-
+    {{
+      cert_entries
+      | selectattr('cert_alias','in', expiring_aliases | default([]))
+      | list
+    }}
+  tags: [update]
+
+
+Create tasks/update_one.yml:
+
+---
+# Create new KDB named <alias>.kdb under existing KDB directory, import PFX
+
+- name: Set new KDB path for {{ cert_entry.cert_alias }}
+  ansible.builtin.set_fact:
+    new_kdb: "{{ cert_entry.kdb_file | dirname }}/{{ cert_entry.cert_alias }}.kdb"
+  tags: [update]
+
+- name: Create new KDB (gsk7cmd)
+  ansible.builtin.command: >
+    gsk7cmd -keydb -create -db "{{ new_kdb }}"
+    -pw {{ vcert_password }} -type cms -stash
+  become: true
+  tags: [update]
+
+- name: Copy renewed PFX to host
+  ansible.builtin.copy:
+    src: "{{ vcert_install_dir }}/{{ cert_entry.cert_alias }}.pfx"
+    dest: "/home/{{ ansible_user | default('root') }}/Ansible_Webserver_certs/{{ cert_entry.cert_alias }}.pfx"
+    mode: '0600'
+  become: true
+  tags: [update]
+
+- name: Import renewed PFX into new KDB
+  ansible.builtin.command: >
+    gsk7cmd -cert -import -db "{{ new_kdb }}"
+    -pw {{ vcert_password }}
+    -file "/home/{{ ansible_user | default('root') }}/Ansible_Webserver_certs/{{ cert_entry.cert_alias }}.pfx"
+    -format pkcs12 -label "{{ cert_entry.cert_alias }}"
+  become: true
+  tags: [update]
+
+- name: Update Keyfile directive to new KDB (replace line)
+  ansible.builtin.lineinfile:
+    path: "{{ cert_entry.config_file }}"
+    regexp: '^[[:space:]]*Keyfile[[:space:]]+.*$'
+    line: "Keyfile {{ new_kdb }}"
+    backrefs: no
+  become: true
+  tags: [update]
+
+- name: Update SSLServerCert to alias
+  ansible.builtin.lineinfile:
+    path: "{{ cert_entry.config_file }}"
+    regexp: '^[[:space:]]*SSLServerCert[[:space:]]+.*$'
+    line: "SSLServerCert {{ cert_entry.cert_alias }}"
+    backrefs: no
+  become: true
+  tags: [update]
+
+- name: Restart IHS with config
+  ansible.builtin.command: >
+    {{ ihs_apachectl }} -f {{ cert_entry.config_file }} -k restart
+  become: true
+  tags: [update]
+
+tasks/restore.yml
+
+No empty sequence; restores newest backup for each original file name (kdb/sth/rdb) and httpd.conf.
+
+---
+- name: Determine KDB basename
+  ansible.builtin.set_fact:
+    kdb_base: "{{ cert_entry.kdb_file | basename | regex_replace('\\.kdb$','') }}"
+  tags: [restore]
+
+- name: Find KDB backups
+  ansible.builtin.find:
+    paths: "{{ cert_entry.kdb_file | dirname }}/Ansible_backup"
+    patterns: "{{ kdb_base }}.*"
+    file_type: file
+    recurse: no
+  register: kdb_backups
+  become: true
+  tags: [restore]
+
+- name: Build map original -> newest backup by combining sorted list
+  ansible.builtin.set_fact:
+    kdb_restore_map: >-
+      {{
+        kdb_restore_map | default({})
+        | combine({
+            (item.path | basename | regex_replace('\\.[0-9]+$','')): item.path
+          })
+      }}
+  loop: "{{ kdb_backups.files | sort(attribute='mtime') }}"
+  loop_control:
+    loop_var: item
+  tags: [restore]
+
+- name: Restore each KDB-related file
+  ansible.builtin.copy:
+    src: "{{ item.value }}"
+    dest: "{{ cert_entry.kdb_file | dirname }}/{{ item.key }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ kdb_restore_map | default({}) | dict2items }}"
+  become: true
+  tags: [restore]
+
+- name: Find HTTPD backups
+  ansible.builtin.find:
+    paths: "{{ cert_entry.config_file | dirname }}/Ansible_backup"
+    patterns: "{{ cert_entry.config_file | basename }}.*"
+    file_type: file
+    recurse: no
+  register: httpd_backups
+  become: true
+  tags: [restore]
+
+- name: Restore latest HTTPD config
+  ansible.builtin.copy:
+    src: "{{ (httpd_backups.files | sort(attribute='mtime') | last).path }}"
+    dest: "{{ cert_entry.config_file }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0644'
+  when: (httpd_backups.files | length) > 0
+  become: true
+  tags: [restore]
+
+- name: Restart IHS after restore
+  ansible.builtin.command: >
+    {{ ihs_apachectl }} -f {{ cert_entry.config_file }} -k restart
+  become: true
+  tags: [restore]
+
+tasks/validate_ssl.yml
+
+Validate SSL via openssl s_client, compare serials, optional HTTP 200 probe.
+
+---
+- name: Validate SSL serial via s_client
+  ansible.builtin.shell: |
+    serial=$(echo | openssl s_client -connect {{ inventory_hostname }}:{{ cert_entry.listen_port }} -servername {{ inventory_hostname }} 2>/dev/null \
+      | openssl x509 -noout -serial | cut -d= -f2)
+    echo "$serial"
+  args:
+    executable: /bin/bash
+  register: live_serial
+  changed_when: false
+  tags: [validation]
+
+- name: Mark validation status in report dict
+  ansible.builtin.set_fact:
+    venafi_cert_info: >-
+      {{ venafi_cert_info | combine({
+          (cert_entry.cert_alias): (
+            venafi_cert_info[cert_entry.cert_alias] | combine({
+              'validation_status': ('PASSED' if (live_serial.stdout | trim) == (venafi_cert_info[cert_entry.cert_alias].new_serial | default('')) else 'FAILED')
+            })
+          )
+        }, recursive=True) }}
+  delegate_to: localhost
+  run_once: true
+  tags: [validation]
+
+- name: Optional HTTP 200 probe
+  ansible.builtin.uri:
+    url: "https://{{ inventory_hostname }}:{{ cert_entry.listen_port }}{{ online_probe_path }}"
+    validate_certs: no
+    status_code: 200
+  register: http_probe
+  failed_when: http_probe.status != 200
+  tags: [validation]
+
+tasks/send_report.yml
+
+Full report (after renew/update/validate).
+
+---
+- name: Send full HTML report
+  ansible.builtin.mail:
+    host: "localhost"
+    to: "{{ report_recipient }}"
+    subject: "Certificate Renewal & Validation Report - {{ ansible_date_time.date }} ({{ ansible_hostname }})"
+    subtype: html
+    body: "{{ lookup('template','report_full.html.j2') }}"
+  delegate_to: localhost
+  run_once: true
+  tags: [report]
+
+tasks/send_report_dry.yml
+
+Dry‑run (no changes).
+
+---
+- name: Send DRY-RUN HTML report
+  ansible.builtin.mail:
+    host: "localhost"
+    to: "{{ report_recipient }}"
+    subject: "DRY-RUN: Certificate Expiry Report - {{ ansible_date_time.date }} ({{ ansible_hostname }})"
+    subtype: html
+    body: "{{ lookup('template','report_dry.html.j2') }}"
+  delegate_to: localhost
+  run_once: true
+  tags: [report]
+
+tasks/cleanup.yml
+
+Remove controller artifacts to keep it tidy.
+
+---
+- name: Remove vcert working files from controller
+  ansible.builtin.file:
+    path: "{{ vcert_install_dir }}"
+    state: absent
+  delegate_to: localhost
+  run_once: true
+  tags: [cleanup]
+
+templates/report_full.html.j2
+
+(Combined old » new, fixed “Expiring Soon”, and a one‑liner for absolute expiry date example included in a second column if you want—commented.)
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Certificate Renewal &amp; Validation Report</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f4f4;">
+    <tr><td align="center">
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
+
+        <tr>
+          <td style="padding:20px;background:#2a8cff;color:#fff;font-size:24px;font-weight:bold;">
+            Certificate Renewal &amp; Validation Report
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:20px;background:#e9ecef;">
+            <table width="100%" cellpadding="10" cellspacing="0" border="0">
+              <tr>
+                <td style="background:#cce5ff;color:#004085;text-align:center;">
+                  📊 Total Scanned: {{ venafi_cert_info|length }}
+                </td>
+                <td style="background:#d4edda;color:#155724;text-align:center;">
+                  ✅ Renewed: {{
+                    venafi_cert_info|dict2items
+                    |selectattr('value.changed','equalto',true)|list|length
+                  }}
+                </td>
+                <td style="background:#fff3cd;color:#856404;text-align:center;">
+                  ⚠️ Expiring Soon: {{
+                    venafi_cert_info|dict2items
+                    |selectattr('value.expiry_days','le', cert_renew_threshold)|list|length
+                  }}
+                </td>
+                <td style="background:#d1ecf1;color:#0c5460;text-align:center;">
+                  ✔️ Passed: {{
+                    venafi_cert_info|dict2items
+                    |selectattr('value.validation_status','equalto','PASSED')|list|length
+                  }}
+                </td>
+                <td style="background:#dc3545;color:#fff;text-align:center;">
+                  ❌ Failed: {{
+                    venafi_cert_info|dict2items
+                    |selectattr('value.validation_status','equalto','FAILED')|list|length
+                  }}
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:20px;">
+            <table width="100%" cellpadding="5" cellspacing="0" border="1" style="border-collapse:collapse;border-color:#ddd;">
+              <tr style="background:#f0f0f0;">
+                <th>Alias</th>
+                <th>Expiry (days: old » new)</th>
+                <th>Serial (old » new)</th>
+                <!-- Optional absolute date column:
+                <th>Expires On</th>
+                -->
+                <th>Action</th>
+                <th>Validation</th>
+              </tr>
+              {% for alias, info in venafi_cert_info.items() %}
+              <tr>
+                <td style="border-top:1px solid #ddd;">{{ alias }}</td>
+                <td align="right" style="border-top:1px solid #ddd;">
+                  {{ info.expiry_days | default('N/A') }} &nbsp;&raquo;&nbsp;
+                  {{ info.new_expiry_days | default('—') }}
+                </td>
+                <td style="border-top:1px solid #ddd;">
+                  {{ info.serial | default('') }} &nbsp;&raquo;&nbsp;
+                  {{ info.new_serial | default('—') }}
+                </td>
+                <!-- Optional absolute date (commented):
+                <td style="border-top:1px solid #ddd; text-align:right;">
+                  {{ (
+                       (
+                         (ansible_date_time.epoch|int)
+                         + ((info.expiry_days|default(0)|int) * 86400)
+                       )
+                       | to_datetime("%s")
+                       | strftime("%Y-%m-%d")
+                     ) }}
+                </td>
+                -->
+                <td style="border-top:1px solid #ddd;">
+                  {% if info.changed %}
+                    <span style="padding:3px 8px;background:#28a745;color:#fff;font-size:12px;">Renewed</span>
+                  {% else %}
+                    <span style="padding:3px 8px;background:#6c757d;color:#fff;font-size:12px;">Skipped</span>
+                  {% endif %}
+                </td>
+                <td style="border-top:1px solid #ddd;">
+                  {% if info.validation_status == 'PASSED' %}
+                    <span style="padding:3px 8px;background:#28a745;color:#fff;font-size:12px;">PASSED</span>
+                  {% else %}
+                    <span style="padding:3px 8px;background:#dc3545;color:#fff;font-size:12px;">FAILED</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </table>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:20px;font-size:12px;color:#777;text-align:center;">
+            © {{ ansible_date_time.date[:4] }} Your Company
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+
+templates/report_dry.html.j2
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DRY-RUN: Certificate Expiry Report</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f4f4;">
+    <tr><td align="center">
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;">
+
+        <tr>
+          <td style="padding:20px;background:#2a8cff;color:#fff;font-size:24px;font-weight:bold;">
+            DRY-RUN: Certificate Expiry Report
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:20px;background:#e9ecef;">
+            <table width="100%" cellpadding="10" cellspacing="0" border="0">
+              <tr>
+                <td style="background:#cce5ff;color:#004085;text-align:center;">
+                  📊 Total Scanned: {{ venafi_cert_info | length }}
+                </td>
+                <td style="background:#fff3cd;color:#856404;text-align:center;">
+                  ⚠️ Expiring Soon: {{
+                    venafi_cert_info|dict2items
+                    |selectattr('value.expiry_days','le', cert_renew_threshold)|list|length
+                  }}
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:20px;">
+            <table width="100%" cellpadding="5" cellspacing="0" border="1" style="border-collapse:collapse;border-color:#ddd;">
+              <tr style="background:#f0f0f0;">
+                <th>Alias</th>
+                <th>Expiry (days: old » new)</th>
+                <th>Serial (old » new)</th>
+              </tr>
+              {% for alias, info in venafi_cert_info.items()
+                   if info.expiry_days is defined and info.expiry_days <= cert_renew_threshold %}
+              <tr>
+                <td style="border-top:1px solid #ddd;">{{ alias }}</td>
+                <td align="right" style="border-top:1px solid #ddd;">
+                  {{ info.expiry_days }} &nbsp;&raquo;&nbsp; {{ info.new_expiry_days | default('—') }}
+                </td>
+                <td style="border-top:1px solid #ddd;">
+                  {{ info.serial }} &nbsp;&raquo;&nbsp; {{ info.new_serial | default('—') }}
+                </td>
+              </tr>
+              {% endfor %}
+            </table>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:20px;font-size:12px;color:#777;text-align:center;">
+            <em>Dry-run report. No changes performed.</em> • © {{ ansible_date_time.date[:4] }} Your Company
+          </td>
+        </tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+
+Sample playbook (dry run only)
+---
+# dry_run_report.yml
+- name: Dry-Run Certificate Expiry Report
+  hosts: webservers
+  gather_facts: true
+  vars:
+    report_only: true
+  tasks:
+    - name: Run role (checks + report only)
+      import_role:
+        name: venafi_cert_renew
+      tags:
+        - precheck
+        - extract
+        - validation
+        - report
