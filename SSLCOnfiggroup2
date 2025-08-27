@@ -1,0 +1,47 @@
+def updateDmgrAdminHostSecure(cellName, nodeName, sslAlias):
+    """
+    Endpoint scope (INBOUND) for WC_adminhost_secure on server=dmgr.
+    If certificateAlias is empty/missing => do nothing.
+    Else => AdminTask.modifySSLConfigGroup to map endpoint to sslAlias.
+    """
+    scope_ep = '(cell):%s:(node):%s:(server):dmgr:(endpoint):WC_adminhost_secure' % (cellName, nodeName)
+
+    # Get the INBOUND SSL config group for this endpoint
+    try:
+        grp = AdminTask.getSSLConfigGroup([
+            '-scopeName', scope_ep,
+            '-name', 'WC_adminhost_secure',
+            '-direction', 'inbound'
+        ])
+    except:
+        print 'INFO: getSSLConfigGroup(INBOUND) failed at %s; skipping DMGR endpoint update.' % scope_ep
+        return
+
+    # Extract ONLY certificateAlias from bracketed output:
+    # [[name WC_adminhost_secure] [direction inbound] [certificateAlias dmgr01_subca_ss] ...]
+    cert_alias = ''
+    if grp:
+        norm = grp.replace('[',' ').replace(']',' ').replace('{',' ').replace('}',' ')
+        toks = [t for t in norm.split() if t]
+        for i in range(len(toks) - 1):
+            if toks[i] == 'certificateAlias':
+                cert_alias = toks[i + 1]
+                break
+
+    # If empty/null, do nothing
+    if not cert_alias or cert_alias in ('None','none','NULL','null','-'):
+        print 'INFO: WC_adminhost_secure certificateAlias empty/null at %s; leaving unchanged.' % scope_ep
+        return
+
+    # Map the endpoint group (inbound) to the desired SSL settings alias
+    try:
+        AdminTask.modifySSLConfigGroup([
+            '-scopeName',     scope_ep,
+            '-name',          'WC_adminhost_secure',
+            '-direction',     'inbound',
+            '-sslConfigAlias', sslAlias
+        ])
+        AdminConfig.save()
+        print 'INFO: Mapped WC_adminhost_secure (inbound @ endpoint) to SSL alias %s.' % sslAlias
+    except:
+        print 'WARNING: modifySSLConfigGroup failed at %s (alias=%s); continuing.' % (scope_ep, sslAlias)
