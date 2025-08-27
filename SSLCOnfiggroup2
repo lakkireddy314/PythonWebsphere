@@ -21,11 +21,21 @@ def updateDmgrAdminHostSecure(cellName, nodeName, sslAlias):
     # [[name WC_adminhost_secure] [direction inbound] [certificateAlias dmgr01_subca_ss] ...]
     cert_alias = ''
 if grp:
-    norm = grp.replace('[',' ').replace(']',' ').replace('{',' ').replace('}',' ')
-    toks = [t for t in norm.split() if t]
-    for i in range(len(toks)-1):
-        if toks[i] == 'certificateAlias':
-            cert_alias = toks[i+1]; break
+    # Split by ']' into bracketed segments, then inspect each segment
+    segments = [seg for seg in grp.split(']') if seg.strip()]
+    for seg in segments:
+        # remove the leading '[' and trim
+        seg = seg.lstrip('[').strip()
+        if not seg:
+            continue
+        # split each bracketed segment into key + rest
+        parts = seg.split(None, 1)  # split once: ['certificateAlias', 'dmgr01_subca_ss']
+        if len(parts) == 2 and parts[0] == 'certificateAlias':
+            cert_alias = parts[1].strip()
+            break
+
+# cert_alias is now 'dmgr01_subca_ss' (or '' if missing/empty)
+print 'DEBUG: certificateAlias parsed as: %s' % (cert_alias or '""')
 
 
     # If empty/null, do nothing
