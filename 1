@@ -1,3 +1,10 @@
+- name: Push dict to all hosts
+      add_host:
+        name: "{{ item }}"
+        shared_dict: "{{ hostvars[inventory_hostname].shared_dict }}"
+      loop: "{{ groups['all'] }}"
+
+
 <td style="border-top:1px solid #ddd; text-align:right;">
   {{ ((ansible_date_time.epoch | int + entry.expiry_days | int * 86400)
       | to_datetime("%s")
