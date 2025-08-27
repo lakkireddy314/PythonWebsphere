@@ -1,0 +1,70 @@
+Here’s the updated Jython 2.7 function using the fixed DMGR server name dmgr in the endpoint scope, exactly as you asked. It:
+
+Targets endpoint: ...:(server):dmgr:(endpoint):WC_adminhost_secure
+
+Reads only certificateAlias from the group output
+
+If certificateAlias is empty → does nothing
+
+Otherwise maps the endpoint group to your SSL settings alias via AdminTask.modifySSLConfigGroup with -name WC_adminhost_secure -direction inbound
+
+# Jython 2.7
+
+def updateDmgrAdminHostSecure(cellName, nodeName, sslAlias):
+    """
+    Endpoint scope (INBOUND) for WC_adminhost_secure on server=dmgr.
+    - If certificateAlias is empty/missing => do nothing.
+    - Else => map the endpoint's SSLConfigGroup to the provided SSL settings alias (sslAlias).
+      NOTE: Ensure 'sslAlias' (e.g., CellDefaultSSLSettings) has already been updated to use your new key alias.
+    """
+    scope_ep = '(cell):%s:(node):%s:(server):dmgr:(endpoint):WC_adminhost_secure' % (cellName, nodeName)
+
+    # 1) Read INBOUND SSL config group at endpoint scope
+    try:
+        grp = AdminTask.getSSLConfigGroup([
+            '-scopeName', scope_ep,
+            '-name', 'WC_adminhost_secure',
+            '-direction', 'inbound'
+        ])
+    except:
+        print 'INFO: getSSLConfigGroup(INBOUND) failed at %s; skipping.' % scope_ep
+        return
+
+    # 2) Extract ONLY certificateAlias from bracketed output like:
+    # [[name WC_adminhost_secure] [direction inbound] [certificateAlias dmgr01_subca_ss] ...]
+    cert_alias = ''
+    if grp:
+        norm = grp.replace('[', ' ').replace(']', ' ').replace('{', ' ').replace('}', ' ')
+        toks = [t for t in norm.split() if t]
+        for i in range(len(toks) - 1):
+            if toks[i] == 'certificateAlias':
+                cert_alias = toks[i + 1]
+                break
+
+    # Treat empty/missing as "do nothing"
+    if not cert_alias or cert_alias in ('None', 'none', 'NULL', 'null', '-'):
+        print 'INFO: WC_adminhost_secure certificateAlias empty/null at %s; leaving unchanged.' % scope_ep
+        return
+
+    # 3) Map this endpoint group to the desired SSL settings alias at ENDPOINT scope
+    try:
+        AdminTask.modifySSLConfigGroup([
+            '-scopeName',     scope_ep,
+            '-name',          'WC_adminhost_secure',
+            '-direction',     'inbound',
+            '-sslConfigAlias','%s' % sslAlias
+        ])
+        AdminConfig.save()
+        print 'INFO: Mapped WC_adminhost_secure (inbound @ endpoint) to SSL alias %s.' % sslAlias
+    except:
+        print 'WARNING: modifySSLConfigGroup failed at %s (alias=%s); continuing.' % (scope_ep, sslAlias)
+
+How to call it (DMGR branch)
+
+After you’ve already updated your SSL settings alias (e.g., CellDefaultSSLSettings) to use the new DMGR cert alias via AdminTask.modifySSLConfig, call:
+
+# Example:
+# cellName -> current cell
+# nodeName -> node hosting the dmgr server
+# alias_ssl_config -> e.g. 'CellDefaultSSLSettings' (now pointing at your new cert alias)
+updateDmgrAdminHostSecure(cellName, nodeName, alias_ssl_config)
