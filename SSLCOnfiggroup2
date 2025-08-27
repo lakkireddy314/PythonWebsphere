@@ -45,3 +45,10 @@ def updateDmgrAdminHostSecure(cellName, nodeName, sslAlias):
         print 'INFO: Mapped WC_adminhost_secure (inbound @ endpoint) to SSL alias %s.' % sslAlias
     except:
         print 'WARNING: modifySSLConfigGroup failed at %s (alias=%s); continuing.' % (scope_ep, sslAlias)
+
+
+
+if nodeName and nodeName.lower().endswith('-dm'):
+            updateDmgrAdminHostSecure(cellName, nodeName, ssl_settings)
+        else:
+            print 'INFO: Node %s does not end with -dm; skipping WC_adminhost_secure mapping update.' % nodeName
