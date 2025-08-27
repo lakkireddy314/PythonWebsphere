@@ -20,13 +20,13 @@ def updateDmgrAdminHostSecure(cellName, nodeName, sslAlias):
     # Extract ONLY certificateAlias from bracketed output:
     # [[name WC_adminhost_secure] [direction inbound] [certificateAlias dmgr01_subca_ss] ...]
     cert_alias = ''
-    if grp:
-        norm = grp.replace('[',' ').replace(']',' ').replace('{',' ').replace('}',' ')
-        toks = [t for t in norm.split() if t]
-        for i in range(len(toks) - 1):
-            if toks[i] == 'certificateAlias':
-                cert_alias = toks[i + 1]
-                break
+if grp:
+    norm = grp.replace('[',' ').replace(']',' ').replace('{',' ').replace('}',' ')
+    toks = [t for t in norm.split() if t]
+    for i in range(len(toks)-1):
+        if toks[i] == 'certificateAlias':
+            cert_alias = toks[i+1]; break
+
 
     # If empty/null, do nothing
     if not cert_alias or cert_alias in ('None','none','NULL','null','-'):
