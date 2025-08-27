@@ -52,3 +52,10 @@ if nodeName and nodeName.lower().endswith('-dm'):
             updateDmgrAdminHostSecure(cellName, nodeName, ssl_settings)
         else:
             print 'INFO: Node %s does not end with -dm; skipping WC_adminhost_secure mapping update.' % nodeName
+
+
+try:
+    if nodeName and nodeName.lower().endswith('-dm'):
+        updateDmgrAdminHostSecure(cellName, nodeName, 'CellDefaultSSLSettings')
+except:
+    print 'WARNING: updateDmgrAdminHostSecure failed; continuing.'
