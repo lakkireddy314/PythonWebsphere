@@ -1,3 +1,55 @@
+def updateDmgrAdminHostSecure(cellName, nodeName, serverName, newAlias, sslAlias):
+    """
+    Endpoint scope (INBOUND) for WC_adminhost_secure.
+    If certificateAlias is empty/missing -> do nothing.
+    Else -> modify the SSL config alias (sslAlias) at ENDPOINT scope to use newAlias.
+    """
+    scope_ep = '(cell):%s:(node):%s:(server):%s:(endpoint):WC_adminhost_secure' % (
+        cellName, nodeName, serverName
+    )
+
+    # 1) Fetch the INBOUND SSL config group for this endpoint
+    try:
+        grp = AdminTask.getSSLConfigGroup([
+            '-scopeName', scope_ep,
+            '-name', 'WC_adminhost_secure',
+            '-direction', 'inbound'
+        ])
+    except:
+        print 'INFO: getSSLConfigGroup(INBOUND) failed at %s; skipping.' % scope_ep
+        return
+
+    # 2) INLINE: extract ONLY certificateAlias from bracketed output
+    cert_alias = ''
+    if grp:
+        # Normalize brackets to spaces, then split into tokens
+        norm = grp.replace('[', ' ').replace(']', ' ').replace('{', ' ').replace('}', ' ')
+        toks = [t for t in norm.split() if t]
+        for i in range(len(toks) - 1):
+            if toks[i] == 'certificateAlias':
+                cert_alias = toks[i + 1]
+                break
+
+    # Treat empty/missing as "do nothing"
+    if not cert_alias or cert_alias in ('None', 'none', 'NULL', 'null', '-'):
+        print 'INFO: WC_adminhost_secure certificateAlias empty/null at %s; leaving unchanged.' % scope_ep
+        return
+
+    # 3) Re-point the SSL settings alias at ENDPOINT scope to the new key alias
+    try:
+        AdminTask.modifySSLConfig([
+            '-alias', sslAlias,      # e.g. 'CellDefaultSSLSettings' or your alias_ssl_config var
+            '-scopeName', scope_ep,  # endpoint scope (not cell scope)
+            '-clientKeyAlias', newAlias,
+            '-serverKeyAlias', newAlias
+        ])
+        AdminConfig.save()
+        print 'INFO: Updated %s (WC_adminhost_secure inbound @ endpoint) to alias %s.' % (sslAlias, newAlias)
+    except:
+        print 'WARNING: modifySSLConfig failed for %s at %s; continuing.' % (sslAlias, scope_ep)
+
+
+
 - name: Push dict to all hosts
       add_host:
         name: "{{ item }}"
