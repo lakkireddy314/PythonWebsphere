@@ -1,3 +1,5 @@
+when: ((is_dmgr is defined) and (is_dmgr | bool)) or ((is_appserver is defined) and (is_appserver | bool))
+
 - name: Set cell/nodeName for the matching row
       set_fact:
         cell: "{{ item[4] }}"
