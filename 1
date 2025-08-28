@@ -1,3 +1,19 @@
+- name: Set cell/nodeName for the matching row
+      set_fact:
+        cell: "{{ item[4] }}"
+        nodeName: "{{ item[1] }}"
+      loop: "{{ host_port_list }}"
+      when:
+        - item | length >= 5
+        - inventory_hostname == item[2]
+
+    # Optional: guard to detect missing mapping for this host
+    - name: Fail if no mapping found for this host (optional)
+      fail:
+        msg: "No host_port_list row for {{ inventory_hostname }}"
+      when: cell is not defined or nodeName is not defined
+
+
 def updateDmgrAdminHostSecure(cellName, nodeName, serverName, newAlias, sslAlias):
     """
     Endpoint scope (INBOUND) for WC_adminhost_secure.
