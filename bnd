@@ -36,3 +36,49 @@
 
   </application-bnd>
 </application>
+
+
+<server>
+  <featureManager>
+    <!-- Web -->
+    <feature>servlet-5.0</feature>
+    <feature>jsp-3.0</feature>
+
+    <!-- Core app infra -->
+    <feature>jndi-1.0</feature>
+    <feature>transaction-1.3</feature>
+    <feature>cdi-4.0</feature>
+
+    <!-- Persistence -->
+    <feature>jdbc-4.3</feature>
+    <feature>jpa-2.2</feature>
+
+    <!-- Messaging -->
+    <feature>jms-2.0</feature>
+    <feature>wmqJmsClient-2.0</feature>   <!-- only if you use IBM MQ -->
+
+    <!-- REST / JSON -->
+    <feature>jaxrs-2.1</feature>
+    <feature>jsonb-2.0</feature>
+    <feature>jsonp-2.0</feature>
+
+    <!-- EJB / MDB -->
+    <feature>ejbLite-3.2</feature>
+
+    <!-- Security -->
+    <feature>appSecurity-3.0</feature>
+    <feature>ldapRegistry-3.0</feature>
+    <feature>ssl-2.0</feature>
+
+    <!-- Extras (enable if you use them) -->
+    <!-- <feature>concurrent-1.0</feature> -->
+    <!-- <feature>mail-1.6</feature> -->
+    <!-- <feature>websocket-2.0</feature> -->
+    <!-- <feature>batch-2.1</feature> -->
+
+    <!-- Ops -->
+    <!-- <feature>mpHealth-3.1</feature> -->
+    <!-- <feature>mpMetrics-5.0</feature> -->
+  </featureManager>
+</server>
+
