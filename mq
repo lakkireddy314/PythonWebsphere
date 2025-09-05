@@ -1,3 +1,148 @@
+Here’s the clean way to wire IBM MQ over TLS/SSL from WebSphere Liberty. Pick the pattern that matches how your MQ team wants you to connect.
+
+A) Direct host/port + TLS (most common)
+<server>
+  <featureManager>
+    <feature>jms-2.0</feature>
+    <feature>wmqJmsClient-2.0</feature>
+    <feature>ssl-2.0</feature>
+  </featureManager>
+
+  <!-- Keystore only if the SVRCONN channel requires client cert (mTLS) -->
+  <keyStore id="mqKeyStore"
+            location="${server.config.dir}/resources/security/mqclient.p12"
+            password="******" type="PKCS12"/>
+
+  <!-- Truststore is almost always required (to trust the QM/server cert CA) -->
+  <keyStore id="mqTrustStore"
+            location="${server.config.dir}/resources/security/mqtrust.p12"
+            password="******" type="PKCS12"/>
+
+  <ssl id="mqSSL" trustStoreRef="mqTrustStore" keyStoreRef="mqKeyStore"/>
+
+  <authData id="mqCreds" user="appuser" password="******"/>
+
+  <jmsConnectionFactory
+      id="MQCF"
+      jndiName="jms/MQCF"
+      provider="wmqJmsClient"
+      type="queue"
+      hostName="mq01.example.net"
+      port="1414"
+      channel="APP.TLS.SVRCONN"
+      queueManager="QM1"
+      transportType="client"
+      sslRef="mqSSL"
+      sslCipherSuite="TLS_AES_128_GCM_SHA256"   <!-- must match the channel -->
+      sslPeerName="CN=qm1.company.com, OU=MQ, O=Company, C=US"  <!-- optional but recommended -->
+      authDataRef="mqCreds"
+      reconnect="true"
+      reconnectTimeout="300"/>
+
+  <jmsQueue id="IN"  jndiName="jms/IN"  baseQueueName="APP.INPUT.Q"/>
+  <jmsQueue id="OUT" jndiName="jms/OUT" baseQueueName="APP.OUTPUT.Q"/>
+</server>
+
+
+Notes
+
+sslCipherSuite must match what’s set on the MQ SVRCONN channel. Ask your MQ admin for the exact cipher spec (TLS 1.2 or 1.3).
+
+sslPeerName (Distinguished Name or wildcard like CN=*.company.com) pins the peer cert—good defense-in-depth.
+
+If the channel doesn’t require a client certificate, you can omit mqKeyStore and keep only the trust store.
+
+B) HA / Multi-instance QM with TLS
+<jmsConnectionFactory
+    id="MQCF"
+    jndiName="jms/MQCF"
+    provider="wmqJmsClient"
+    type="queue"
+    connectionNameList="mq01.example.net(1414),mq02.example.net(1414)"
+    channel="APP.TLS.SVRCONN"
+    queueManager="QM1"
+    transportType="client"
+    sslRef="mqSSL"
+    sslCipherSuite="TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+    authDataRef="mqCreds"
+    reconnect="true"
+    reconnectTimeout="300"/>
+
+C) CCDT file (TLS defined by MQ team in the table)
+<jmsConnectionFactory
+    id="MQCF"
+    jndiName="jms/MQCF"
+    provider="wmqJmsClient"
+    type="queue"
+    ccdtUrl="file:///opt/mq/ccdt/AMQCLCHL.TAB"
+    transportType="client"
+    authDataRef="mqCreds"/>
+
+
+Notes
+
+If the CCDT includes TLS setup (channel, cipher, endpoint), you typically omit sslRef/sslCipherSuite/host/port/channel.
+
+You may still supply a truststore/keystore via <ssl> if your Java trust needs aren’t encoded in CCDT (e.g., corporate CA not in default cacerts).
+
+Keystore & truststore quick build (PKCS12)
+
+Trust only (server-auth):
+
+# Import your MQ server/CA into a trust P12
+keytool -importcert -keystore mqtrust.p12 -storetype PKCS12 -storepass changeit \
+        -alias qm1-ca -file corp_root_ca.crt
+
+
+Mutual TLS (client-auth as well):
+
+# Create client keypair + CSR, get it signed, then import full chain
+keytool -genkeypair -alias mqclient -keyalg RSA -keysize 2048 \
+       -keystore mqclient.p12 -storetype PKCS12 -storepass changeit \
+       -dname "CN=liberty-client, OU=APP, O=Company, C=US"
+
+# After CA returns client cert chain:
+keytool -importcert -alias mqclient -keystore mqclient.p12 -storetype PKCS12 \
+       -storepass changeit -file mqclient_chain.pem
+
+
+Place the .p12 files under ${server.config.dir}/resources/security/ and reference them as in the XML.
+
+Binding to your application (if it uses java:comp/env)
+<application id="App" location="App.ear" type="ear">
+  <application-bnd>
+    <resource-ref     name="jms/MQCF" binding-name="jms/MQCF"/>
+    <resource-env-ref name="jms/IN"   binding-name="jms/IN"/>
+    <resource-env-ref name="jms/OUT"  binding-name="jms/OUT"/>
+  </application-bnd>
+</application>
+
+
+If your code looks up global names directly (e.g., jms/MQCF), you can skip the binding.
+
+Troubleshooting cheatsheet
+
+Handshake failures / javax.net.ssl.SSLHandshakeException
+– Cipher mismatch → use the exact cipher spec set on the MQ channel.
+– Untrusted peer → add the issuing CA (or the server cert) to your truststore.
+– Hostname/peer check fails → align sslPeerName with the server cert Subject/SubjectAltName.
+
+MQRC 2397 / 2398 / 2400-type errors
+– Often TLS/channel policy related (CHLAUTH, missing client cert when required, or MCAUSER restrictions). Confirm with MQ admin.
+
+Mixing RA & client jars
+– If you use the Liberty MQ RA / wmqJmsClient-2.0, don’t also drop standalone MQ client jars into the server classpath—can cause class conflicts.
+
+CCDT path
+– Use a file:/// URL and ensure Liberty’s process user can read the file.
+
+If you share your exact channel cipher, whether the channel requires a client certificate, and whether you’re using CCDT or host/port, I’ll tailor the XML (and keystore/truststore steps) precisely for your environment.
+
+Ch
+
+
+
+
 Why the RA is usually enough
 
 The JCA Resource Adapter (wmq.jmsra.rar) is the supported way to integrate MQ with Liberty. The RA includes the MQ client libraries it needs. If you also drop com.ibm.mq.allclient.jar into Liberty’s lib/ (or a shared lib) and use the RA, you can create classpath conflicts. Stick to one model.
