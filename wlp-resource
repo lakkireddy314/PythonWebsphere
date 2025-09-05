@@ -1,0 +1,244 @@
+Gotcha—this is the ND “Resource Environment Provider (REP) + referenceables” story. In Liberty, you model these with jndi-1.0 using:
+
+simple values → <jndiEntry>
+
+complex/custom Referenceables (i.e., built by an ObjectFactory) → <jndiReferenceEntry> (optionally using a reusable <jndiObjectFactory>)
+
+then bind them to what your app looks up (usually java:comp/env/...) via <application-bnd><resource-env-ref .../></application-bnd>
+
+Below are ready-to-use patterns.
+
+1) Enable JNDI feature
+<featureManager>
+  <feature>jndi-1.0</feature>
+</featureManager>
+
+2) Simple ND “REP” key/value → Liberty jndiEntry
+
+ND admin console “Resource environment entries” that were just strings/ints/URLs map cleanly:
+
+<!-- Global JNDI object -->
+<jndiEntry jndiName="eis/EndpointUrl" value="https://api.internal/svc"/>
+<jndiEntry jndiName="eis/RetryCount" value="3"/>
+
+
+Bind those to the app’s component-namespace names used in code (e.g., java:comp/env/eis/EndpointUrl) with application-bnd:
+
+<application id="MyApp" location="MyApp.ear" type="ear">
+  <application-bnd>
+    <resource-env-ref name="eis/EndpointUrl" binding-name="eis/EndpointUrl"/>
+    <resource-env-ref name="eis/RetryCount"  binding-name="eis/RetryCount"/>
+  </application-bnd>
+</application>
+
+
+Your code can still do ctx.lookup("java:comp/env/eis/EndpointUrl"); Liberty maps that to the global eis/EndpointUrl.
+
+3) ND “Referenceable” objects → Liberty jndiReferenceEntry
+
+If your ND REP used a Referenceable class and an ObjectFactory (typical for custom config objects), use one of these two shapes.
+
+A) Inline factory (fastest)
+<jndiReferenceEntry
+    jndiName="eis/MyConfig"
+    factoryClass="com.example.jndi.MyConfigObjectFactory"
+    objectClass="com.example.config.MyConfig">
+
+  <!-- Properties passed to your factory -->
+  <property name="endpoint" value="https://api.internal/svc"/>
+  <property name="timeoutMs" value="5000"/>
+  <property name="featureFlag" value="true"/>
+</jndiReferenceEntry>
+
+<application id="MyApp" location="MyApp.ear" type="ear">
+  <application-bnd>
+    <resource-env-ref name="eis/MyConfig" binding-name="eis/MyConfig"/>
+  </application-bnd>
+</application>
+
+B) Reusable factory (nice when many entries use the same factory)
+<!-- Define the factory once -->
+<jndiObjectFactory id="myConfigFactory"
+    factoryClass="com.example.jndi.MyConfigObjectFactory"
+    objectClass="com.example.config.MyConfig">
+  <!-- default props for all entries using this factory -->
+  <property name="timeoutMs" value="5000"/>
+</jndiObjectFactory>
+
+<!-- Create multiple reference entries with their own props -->
+<jndiReferenceEntry jndiName="eis/MyConfigA" factoryRef="myConfigFactory">
+  <property name="endpoint" value="https://svc-A.internal"/>
+</jndiReferenceEntry>
+
+<jndiReferenceEntry jndiName="eis/MyConfigB" factoryRef="myConfigFactory">
+  <property name="endpoint" value="https://svc-B.internal"/>
+  <property name="featureFlag" value="true"/>
+</jndiReferenceEntry>
+
+<application id="MyApp" location="MyApp.ear" type="ear">
+  <application-bnd>
+    <resource-env-ref name="eis/MyConfigA" binding-name="eis/MyConfigA"/>
+    <resource-env-ref name="eis/MyConfigB" binding-name="eis/MyConfigB"/>
+  </application-bnd>
+</application>
+
+
+Put the factory/object classes on the server classpath (e.g., as a shared library):
+
+<library id="custom-lib">
+  <fileset dir="/opt/app/custom-lib" includes="**/*.jar"/>
+</library>
+<classloader commonLibraryRef="custom-lib"/>
+
+4) URL & Mail “resource env entries” from ND
+
+These ND types also map cleanly:
+
+URL resource
+
+<url id="DocsURL" jndiName="url/Docs" spec="https://docs.company.com/guide.pdf"/>
+<application id="MyApp" ...>
+  <application-bnd>
+    <resource-env-ref name="url/Docs" binding-name="url/Docs"/>
+  </application-bnd>
+</application>
+
+
+Mail session
+
+<featureManager><feature>mail-1.6</feature></featureManager>
+
+<mailSession id="Mail" jndiName="mail/AppMail"
+  host="smtp.company.com" user="mailer" password="***" from="no-reply@company.com"/>
+
+<application id="MyApp" ...>
+  <application-bnd>
+    <resource-env-ref name="mail/AppMail" binding-name="mail/AppMail"/>
+  </application-bnd>
+</application>
+
+5) JMS administered objects (queues/topics) as resource-env-refs
+
+When apps declare resource-env-ref for JMS destinations, bind to Liberty JMS objects:
+
+<featureManager>
+  <feature>jms-2.0</feature>
+  <feature>wmqJmsClient-2.0</feature> <!-- if MQ client -->
+</featureManager>
+
+<jmsConnectionFactory id="MyCF" jndiName="jms/MyCF" provider="wmqJmsClient"
+                      type="queue" hostName="mqhost" port="1414"
+                      queueManager="QM1" channel="APP.SVRCONN"/>
+
+<jmsQueue id="InQ"  jndiName="jms/InQ"  baseQueueName="APP.INPUT.Q"/>
+<jmsQueue id="OutQ" jndiName="jms/OutQ" baseQueueName="APP.OUTPUT.Q"/>
+
+<application id="MyApp" ...>
+  <application-bnd>
+    <resource-ref     name="jms/MyCF" binding-name="jms/MyCF"/>         <!-- connection factory -->
+    <resource-env-ref name="jms/InQ"  binding-name="jms/InQ"/>          <!-- destination -->
+    <resource-env-ref name="jms/OutQ" binding-name="jms/OutQ"/>
+  </application-bnd>
+</application>
+
+6) Notes & gotchas
+
+Name parity wins: keep the same JNDI names as ND when possible; then your application-bnd is just a 1:1 mapping.
+
+Component namespace: your code usually does java:comp/env/.... In Liberty, you bind that name to a global JNDI name (like eis/..., jms/..., url/...) using <application-bnd>.
+
+Types: jndiEntry is for simple types (String/Integer/Boolean/URL). Use jndiReferenceEntry when you had an ND Referenceable with properties and a factory.
+
+Where to put config: keep these in usr/servers/<svr>/configDropins/overrides/20-rep.xml (JNDI objects) and 30-app-bnd.xml (bindings). It mimics ND “scope” layering and makes reuse easy.
+
+Class availability: if you use jndiReferenceEntry, the factory/object classes must be on the Liberty classpath (shared lib or app). If they lived in ND’s system libs, move them to a shared lib in Liberty.
+
+Minimal Ansible drop-in (optional)
+- name: Add REP-like entries and bindings
+  copy:
+    dest: "/opt/ibm/wlp/usr/servers/{{ server_name }}/configDropins/overrides/20-rep.xml"
+    mode: '0644'
+    content: |
+      <server>
+        <featureManager><feature>jndi-1.0</feature></featureManager>
+        <jndiEntry jndiName="eis/EndpointUrl" value="{{ endpoint_url }}"/>
+        <jndiReferenceEntry jndiName="eis/MyConfig"
+                            factoryClass="com.example.jndi.MyConfigObjectFactory"
+                            objectClass="com.example.config.MyConfig">
+          <property name="timeoutMs" value="{{ timeout_ms | default('5000') }}"/>
+        </jndiReferenceEntry>
+      </server>
+
+- name: Bind to app names
+  copy:
+    dest: "/opt/ibm/wlp/usr/servers/{{ server_name }}/configDropins/overrides/30-app-bnd.xml"
+    mode: '0644'
+    content: |
+      <server>
+        <application id="{{ app_id }}" location="{{ app_ear }}" type="ear">
+          <application-bnd>
+            <resource-env-ref name="eis/EndpointUrl" binding-name="eis/EndpointUrl"/>
+            <resource-env-ref name="eis/MyConfig"    binding-name="eis/MyConfig"/>
+          </application-bnd>
+        </application>
+      </server>
+
+
+If you paste one of your ND REP definitions (referenceable class, properties, and the app’s resource-env-ref name), I’ll convert it verbatim to the exact Liberty jndiReferenceEntry + application-bnd you need.
+
+You said:
+Default data source id or can use custom for db2 in liberty
+ChatGPT said:
+Thought for 27s
+
+Short answer: there’s no special “default” data source ID in Liberty, and you can use any custom id you like for DB2. The id is just a local label inside server.xml. What your app actually uses is the jndiName. Keep the JNDI name consistent with what your app (or persistence.xml) expects; the id can be whatever you want as long as it’s unique.
+
+Practical patterns
+Non-XA DB2 datasource (custom id)
+<featureManager>
+  <feature>jdbc-4.3</feature>
+</featureManager>
+
+<library id="db2-lib">
+  <fileset dir="/opt/libs/db2" includes="*.jar"/>
+</library>
+
+<authData id="db2Creds" user="dbuser" password="***"/>
+
+<dataSource id="db2_prod" jndiName="jdbc/MyDS" authDataRef="db2Creds">
+  <jdbcDriver libraryRef="db2-lib"/>
+  <properties.db2 serverName="db2-host" portNumber="50000" databaseName="MYDB"/>
+  <connectionManager minPoolSize="5" maxPoolSize="50"/>
+</dataSource>
+
+XA DB2 datasource (if you use global/JTA transactions)
+<dataSource id="db2_xa" jndiName="jdbc/MyDS_XA" type="javax.sql.XADataSource" authDataRef="db2Creds">
+  <jdbcDriver libraryRef="db2-lib"/>
+  <properties.db2 serverName="db2-host" portNumber="50000" databaseName="MYDB" driverType="4"/>
+</dataSource>
+
+Binding to the app’s names (optional)
+
+If your app looks up java:comp/env/jdbc/MyDS, bind it 1:1:
+
+<application id="App" location="App.ear" type="ear">
+  <application-bnd>
+    <resource-ref name="jdbc/MyDS" binding-name="jdbc/MyDS"/>
+  </application-bnd>
+</application>
+
+“Default” usage scenarios (how Liberty decides which DS to use)
+
+Your code/JPA should reference the JNDI name (e.g., jdbc/MyDS). Liberty doesn’t auto-pick a data source by id.
+
+EJB timers (if used) need an explicit DS in Liberty:
+
+<featureManager><feature>ejbLite-3.2</feature></featureManager>
+<ejbTimer dataSourceJndiName="jdbc/MyDS"/>
+
+
+If your persistence.xml declares jta-data-source/non-jta-data-source, set those to the JNDI name you configured. (Again: id doesn’t matter to the app.)
+
+Bottom line: choose any readable id (e.g., db2_prod, db2_reporting), but make sure your jndiName matches what the application expects.
+
+ChatGPT can make mistake
