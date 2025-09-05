@@ -10,3 +10,29 @@
     </security-role>
   </application-bnd>
 </application>
+
+
+
+<application id="MyApp" location="MyApp.ear" type="ear">
+  <application-bnd>
+
+    <!-- Admin role: specific users -->
+    <security-role name="Admin">
+      <user name="ajay"/>
+      <user name="john.doe"/>
+      <user name="jane.smith"/>
+    </security-role>
+
+    <!-- Editor role: entire LDAP groups -->
+    <security-role name="Editor">
+      <group name="editors"/>
+      <group name="content-team"/>
+    </security-role>
+
+    <!-- Viewer role: all authenticated users -->
+    <security-role name="Viewer">
+      <special-subject type="ALL_AUTHENTICATED_USERS"/>
+    </security-role>
+
+  </application-bnd>
+</application>
