@@ -1,0 +1,56 @@
+Why the RA is usually enough
+
+The JCA Resource Adapter (wmq.jmsra.rar) is the supported way to integrate MQ with Liberty. The RA includes the MQ client libraries it needs. If you also drop com.ibm.mq.allclient.jar into Liberty’s lib/ (or a shared lib) and use the RA, you can create classpath conflicts. Stick to one model.
+
+Minimal configs
+A) Feature + RA (preferred)
+<featureManager>
+  <feature>jms-2.0</feature>
+  <feature>wmqJmsClient-2.0</feature>
+</featureManager>
+
+<!-- If your Liberty build needs a pointer to the RA -->
+<variable name="wmqJmsClient.rar.location" value="/opt/mq/java/lib/wmq.jmsra.rar"/>
+
+<authData id="mqCreds" user="appuser" password="***"/>
+
+<jmsConnectionFactory
+    jndiName="jms/MQCF" provider="wmqJmsClient" type="queue"
+    hostName="mq01" port="1414" channel="APP.SVRCONN" queueManager="QM1"
+    transportType="client" authDataRef="mqCreds"/>
+<jmsQueue jndiName="jms/InQ"  baseQueueName="APP.INPUT.Q"/>
+
+B) Manual RA (no feature)
+<resourceAdapter id="wmqRA" location="/opt/mq/java/lib/wmq.jmsra.rar"/>
+
+<jmsConnectionFactory
+    jndiName="jms/MQCF" resourceAdapterRef="wmqRA" type="queue"
+    hostName="mq01" port="1414" channel="APP.SVRCONN" queueManager="QM1"
+    transportType="client"/>
+
+C) Plain client (no RA)
+<featureManager>
+  <feature>jms-2.0</feature> <!-- JMS API only -->
+</featureManager>
+
+<library id="mq-client-lib">
+  <fileset dir="/opt/mq/client" includes="com.ibm.mq.allclient.jar"/>
+</library>
+
+<classloader commonLibraryRef="mq-client-lib"/>
+
+<!-- Your app (or Spring) creates MQ connections using the client jars directly -->
+
+Quick sanity checks
+
+Does the RA already include allclient?
+unzip -l /opt/mq/java/lib/wmq.jmsra.rar | grep allclient
+You should see lib/com.ibm.mq.allclient.jar inside the RAR.
+
+Avoid mixing models: If you use the RA, don’t also add the standalone client jars globally.
+
+Bottom line:
+
+Using Liberty with the MQ Resource Adapter (JCA) → RAR is sufficient; don’t add com.ibm.mq.allclient.jar separately.
+
+Skipping the RA and using the plain MQ client in your code → add com.ibm.mq.allclient.jar (and friends) yourself.
