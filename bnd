@@ -1,0 +1,12 @@
+<application id="MyApp" location="MyApp.ear" type="ear">
+  <application-bnd>
+    <security-role name="Admin">
+      <group name="was-admins"/>
+    </security-role>
+
+    <security-role name="User">
+      <group name="app-users"/>
+      <group name="partners"/>
+    </security-role>
+  </application-bnd>
+</application>
