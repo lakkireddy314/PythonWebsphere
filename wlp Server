@@ -1,0 +1,239 @@
+Folder layout
+$WLP_USER_DIR/servers/myServer/
+├─ server.xml
+├─ server.env
+├─ jvm.options
+└─ configDropins/
+   ├─ defaults/
+   │  ├─ 10-features.xml
+   │  ├─ 15-http.xml
+   │  └─ 30-logging.xml
+   └─ overrides/
+      ├─ 20-ssl.xml
+      ├─ 30-datasource-db2.xml
+      ├─ 40-mq.xml
+      ├─ 50-namespace-bindings.xml
+      └─ 60-application-bnd.xml
+
+
+naming tip: the files are applied alphabetically; use 10–, 20–, … to control order.
+defaults/ loads before server.xml; overrides/ loads after (so they win).
+
+1) server.xml (keep it tiny)
+<server description="myServer with configDropins">
+
+    <!-- Keep server.xml minimal; real config lives in configDropins -->
+    <!-- Drop applications into: usr/servers/myServer/dropins/ OR define under overrides if you need fine control -->
+
+    <!-- Optional: if you want a specific app wired explicitly
+    <application id="MyApp" location="MyApp.ear" type="ear"/>
+    -->
+
+</server>
+
+2) server.env (paths & secrets via variables)
+# --- Keystores (JKS or PKCS12, your choice) ---
+APP_KEYSTORE_PATH=/opt/ibm/wlp/usr/servers/myServer/resources/security/app.jks
+APP_KEYSTORE_PASS={xor}ENCODED_KEYSTORE_PASS
+APP_TRUSTSTORE_PATH=/opt/ibm/wlp/usr/servers/myServer/resources/security/trust.jks
+APP_TRUSTSTORE_PASS={xor}ENCODED_TRUST_PASS
+# To encode: $WLP_HOME/bin/securityUtility encode 'plainText'
+
+# --- DB2 JDBC driver location ---
+DB2_JDBC_DIR=/opt/db2-jdbc
+
+# --- DB credentials (authData is preferable, but variables shown for completeness) ---
+DB_USER=dbuser
+DB_PASS={xor}ENCODED_DB_PASS
+
+# --- MQ CCDT optional (use either host/port or CCDT) ---
+MQ_CCDT_URL=file:///opt/mq/ccdt/AMQCLCHL.TAB
+MQ_USER=appuser
+MQ_PASS={xor}ENCODED_MQ_PASS
+
+3) jvm.options (common JVM/system props)
+# Memory & GC (example—tune to your needs)
+-Xms1024m
+-Xmx2048m
+-XX:+UseG1GC
+
+# System properties (example)
+-Duser.timezone=America/New_York
+-Dfile.encoding=UTF-8
+
+4) configDropins/defaults/10-features.xml (core features)
+<server>
+  <featureManager>
+    <!-- Web stack (add/remove as needed) -->
+    <feature>servlet-5.0</feature>
+    <feature>jsp-3.0</feature>
+
+    <!-- Infra -->
+    <feature>jndi-1.0</feature>
+    <feature>jdbc-4.3</feature>
+    <feature>ssl-2.0</feature>
+    <feature>appSecurity-3.0</feature>
+
+    <!-- JMS + IBM MQ client -->
+    <feature>jms-2.0</feature>
+    <feature>wmqJmsClient-2.0</feature>
+  </featureManager>
+</server>
+
+5) configDropins/defaults/15-http.xml (ports; HTTPS auto-uses default SSL)
+<server>
+  <httpEndpoint id="defaultHttpEndpoint"
+                host="*"
+                httpPort="9080"
+                httpsPort="9443"/>
+  <!-- No sslRef here; overrides/20-ssl.xml will set <sslDefault> -->
+</server>
+
+6) configDropins/defaults/30-logging.xml (basic logging)
+<server>
+  <logging consoleLogLevel="INFO"
+           traceSpecification="com.yourpkg.*=info"/>
+</server>
+
+7) configDropins/overrides/20-ssl.xml (keystores + default SSL)
+<server>
+  <!-- JKS shown; change type to PKCS12 if you use .p12 -->
+  <keyStore id="appKeyStore"
+            location="${APP_KEYSTORE_PATH}"
+            password="${APP_KEYSTORE_PASS}"
+            type="JKS"/>
+
+  <keyStore id="appTrustStore"
+            location="${APP_TRUSTSTORE_PATH}"
+            password="${APP_TRUSTSTORE_PASS}"
+            type="JKS"/>
+
+  <!-- Inbound HTTPS cert selection -->
+  <ssl id="inboundSSL"
+       keyStoreRef="appKeyStore"
+       trustStoreRef="appTrustStore"
+       serverKeyAlias="my-server-cert"/>
+
+  <!-- Make it the default SSL for the server -->
+  <sslDefault sslRef="inboundSSL"/>
+</server>
+
+
+If you also need outbound/mTLS with a specific client cert, add a second SSL:
+
+<ssl id="outboundSSL"
+     keyStoreRef="appKeyStore"
+     trustStoreRef="appTrustStore"
+     clientKeyAlias="my-client-cert"/>
+
+8) configDropins/overrides/30-datasource-db2.xml (DB2 datasource w/ authData)
+<server>
+  <!-- JDBC driver -->
+  <library id="db2-lib">
+    <fileset dir="${DB2_JDBC_DIR}" includes="db2jcc*.jar"/>
+  </library>
+
+  <!-- Credentials -->
+  <authData id="dbCreds" user="${DB_USER}" password="${DB_PASS}"/>
+
+  <!-- DataSource -->
+  <dataSource id="DB2_Main" jndiName="jdbc/DB2_Main" authDataRef="dbCreds">
+    <jdbcDriver libraryRef="db2-lib"/>
+    <properties.db2 serverName="db2-host"
+                    portNumber="50000"
+                    databaseName="MYDB"/>
+    <connectionManager minPoolSize="5" maxPoolSize="50"/>
+  </dataSource>
+</server>
+
+
+For XA, set type="javax.sql.XADataSource" on the dataSource.
+
+9) configDropins/overrides/40-mq.xml (MQ CF + queues, TLS optional)
+<server>
+  <!-- MQ credentials (optional if MCAUSER handles auth) -->
+  <authData id="mqCreds" user="${MQ_USER}" password="${MQ_PASS}"/>
+
+  <!-- Choose ONE style: host/port or CCDT -->
+
+  <!-- A) Direct host/port + TLS via outboundSSL (if you created it) -->
+  <jmsConnectionFactory id="MQCF"
+      jndiName="jms/MQCF"
+      provider="wmqJmsClient"
+      type="queue"
+      hostName="mq01.example.net"
+      port="1414"
+      channel="APP.TLS.SVRCONN"
+      queueManager="QM1"
+      transportType="client"
+      authDataRef="mqCreds"
+      sslRef="outboundSSL"
+      reconnect="true"
+      reconnectTimeout="300"/>
+
+  <!-- B) CCDT (uncomment and remove A if you use CCDT)
+  <jmsConnectionFactory id="MQCF"
+      jndiName="jms/MQCF"
+      provider="wmqJmsClient"
+      type="queue"
+      ccdtUrl="${MQ_CCDT_URL}"
+      transportType="client"
+      authDataRef="mqCreds"/>
+  -->
+
+  <!-- Destinations -->
+  <jmsQueue id="IN"  jndiName="jms/IN"  baseQueueName="APP.INPUT.Q"/>
+  <jmsQueue id="OUT" jndiName="jms/OUT" baseQueueName="APP.OUTPUT.Q"/>
+</server>
+
+10) configDropins/overrides/50-namespace-bindings.xml (name-space bindings)
+<server>
+  <stringName  name="app/EndpointUrl"
+               value="https://api.internal/service"
+               description="Backend API endpoint"/>
+  <booleanName name="app/FeatureFlag"
+               value="true"
+               description="Toggle for beta features"/>
+  <intName     name="app/MaxThreads"
+               value="20"
+               description="Thread cap for worker pool"/>
+</server>
+
+11) configDropins/overrides/60-application-bnd.xml (bind app names)
+
+Only needed if your app looks up java:comp/env/... and the names differ from global ones. If they match, you can omit this file.
+
+<server>
+  <application id="MyApp" location="MyApp.ear" type="ear">
+    <application-bnd>
+      <!-- JDBC -->
+      <resource-ref     name="jdbc/DB2_Main" binding-name="jdbc/DB2_Main"/>
+
+      <!-- JMS -->
+      <resource-ref     name="jms/MQCF"      binding-name="jms/MQCF"/>
+      <resource-env-ref name="jms/IN"        binding-name="jms/IN"/>
+      <resource-env-ref name="jms/OUT"       binding-name="jms/OUT"/>
+
+      <!-- Namespace bindings -->
+      <resource-env-ref name="app/EndpointUrl" binding-name="app/EndpointUrl"/>
+      <resource-env-ref name="app/FeatureFlag" binding-name="app/FeatureFlag"/>
+      <resource-env-ref name="app/MaxThreads"  binding-name="app/MaxThreads"/>
+    </application-bnd>
+  </application>
+</server>
+
+Notes / gotchas
+
+sslDefault: with sslDefault set in 20-ssl.xml, the HTTPS port in 15-http.xml automatically uses that SSL unless you specify another sslRef on the endpoint.
+
+Don’t mix MQ models: If you use wmqJmsClient-2.0/RA, avoid also dropping raw MQ client jars globally (class conflicts).
+
+Credentials: Prefer authData for JDBC/MQ; for keystores use variables + securityUtility encode (no authDataRef on <keyStore>).
+
+EAR context roots: Liberty honors context roots inside the EAR; you don’t set them in server.xml for EARs.
+
+Hot reload: Most drop-in changes apply without full restart; keystore changes typically require a restart.
+
+If you share your actual hostnames, ports, JNDI names, keystore aliases, I’ll plug them into these files so you can copy-paste exactly for your myServer.
+
+ChatGPT can m
