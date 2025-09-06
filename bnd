@@ -1,3 +1,4 @@
+-Xtrace:methods={com.example.ws.MyServiceImpl.*},print=mt
 <logging traceSpecification="
   *=info:
   com.ibm.ws.webcontainer.*=all:
