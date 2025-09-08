@@ -1,3 +1,17 @@
+<dataSource id="Db2DS" jndiName="jdbc/test">
+    <jdbcDriver libraryRef="db2-jdbc-lib"/>
+    <properties.db2
+        serverName="db2-host"
+        portNumber="50001"
+        databaseName="DBNAME"
+        sslConnection="true"
+        sslVersion="TLSv1.2"
+        sslTrustStoreLocation="${server.config.dir}/security/db2trust.p12"
+        sslTrustStorePassword="changeit"
+        sslTrustStoreType="PKCS12"/>
+</dataSource>
+
+
 <iiopEndpoint id="defaultIiopEndpoint" host="*" iiopPort="2809">
   <iiopsOptions iiopsPort="9402" sslRef="defaultSSLConfig"/>
 </iiopEndpoint>
