@@ -1,3 +1,53 @@
+2) Java program (if you have Liberty running)
+
+Create a tiny Java snippet to load the class and print the version:
+
+import com.ibm.db2.jcc.DB2Driver;
+public class CheckDB2DriverVersion {
+    public static void main(String[] args) {
+        System.out.println("DB2 JDBC Driver Version: " + DB2Driver.getVersion());
+    }
+}
+
+
+Compile and run:
+
+javac -cp db2jcc4.jar:. CheckDB2DriverVersion.java
+java -cp db2jcc4.jar:. CheckDB2DriverVersion
+
+3) Liberty startup logs
+
+If the driver jar is in your <library> and Liberty loads it, the messages.log may show the version at startup:
+
+CWWKC0001I: JDBC driver db2jcc4.jar version 4.27.42 loaded
+
+
+If you don’t see it, temporarily enable JDBC trace:
+
+<logging traceSpecification="com.ibm.ws.jdbc.*=all"/>
+
+
+Then restart Liberty and check messages.log.
+
+4) File name or path
+
+Sometimes the version is embedded in the jar name:
+
+db2jcc4-11.5.8.0.jar → DB2 driver v11.5.8.0 (Type 4)
+
+db2jcc4.jar → must check manifest or logs, name alone doesn’t guarantee version.
+
+Recommended versions for TLS 1.2 + sslTrustStoreType
+
+DB2 11.1 / 11.5 → db2jcc4.jar version 4.21+ supports sslTrustStoreType.
+
+For older DB2 LUW (10.5 or earlier), TLS 1.2 support starts in 3.71+.
+
+If you share the Liberty folder path where your db2jcc*.jar lives, I can give you the exact command for your OS to print the version quickly.
+
+Do you want me to give you a one-liner to check on Linux or Windows?
+
+
 <dataSource id="Db2DS" jndiName="jdbc/test">
     <jdbcDriver libraryRef="db2-jdbc-lib"/>
     <properties.db2
