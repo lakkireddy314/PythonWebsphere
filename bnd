@@ -1,3 +1,80 @@
+Save as /opt/liberty/sec/java.security.tls12 (any readable path is fine):
+
+# --- Force TLS 1.2 only by disabling others ---
+# Disables TLSv1, TLSv1.1, and TLSv1.3 so only TLSv1.2 remains enabled.
+jdk.tls.disabledAlgorithms=SSLv2Hello, SSLv3, TLSv1, TLSv1.1, TLSv1.3, \
+  RC4, DES, 3DES, DESede, MD5withRSA, \
+  NULL, anon, EXPORT, \
+  DH keySize < 2048, RSA keySize < 2048, DSA keySize < 2048, EC keySize < 224, \
+  CBC
+
+# Harden certificate path validation (optional but recommended)
+jdk.certpath.disabledAlgorithms=MD2, MD5, \
+  SHA1 jdkCA & usage TLSServer, \
+  RSA keySize < 2048, DSA keySize < 2048, EC keySize < 224
+
+# (Optional) default keystore type
+# keystore.type=PKCS12
+
+
+Notes:
+
+Adding CBC disables CBC-mode cipher suites, nudging the JVM to prefer AES-GCM suites (e.g., TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256).
+
+If your environment still needs CBC suites, remove CBC from the list.
+
+2) Tell Liberty to use it
+
+Add ONE of these lines to <server.config.dir>/jvm.options (absolute path; no ${…} expansion here):
+
+Append / override (recommended):
+
+-Djava.security.properties=/opt/liberty/sec/java.security.tls12
+
+
+Replace the default file entirely (advanced):
+
+-Djava.security.properties==/opt/liberty/sec/java.security.tls12
+
+
+(Use the single = form unless you’ve copied all defaults into your custom file.)
+
+3) (Optional) Pin client side explicitly
+
+Some apps/libraries choose TLS protocol programmatically. To be extra explicit for outbound TLS:
+
+-Djdk.tls.client.protocols=TLSv1.2
+
+4) Restart and verify
+
+Restart Liberty.
+
+Verify an HTTPS port only negotiates TLS 1.2:
+
+openssl s_client -connect host:9443 -tls1_2 -brief
+# should succeed
+openssl s_client -connect host:9443 -tls1_3 -brief
+# should FAIL (protocol disabled)
+
+
+For JDBC/DB2 handshakes, you can temporarily add:
+
+-Djavax.net.debug=ssl,handshake
+
+
+and check messages.log for TLSv1.2 and GCM suites.
+
+5) Heads-up / rollback
+
+Disabling TLS 1.3 affects all SSL in this JVM (Liberty endpoints, clients, drivers). Ensure all peers support TLS 1.2.
+
+To roll back, remove the -Djava.security.properties… line and restart.
+
+If you also want Liberty’s own endpoints to be explicitly pinned (in addition to JVM hardening), set sslProtocol="TLSv1.2" on your <ssl> and reference it via sslRef on each endpoint. I can show that snippet too if you’d like.
+
+
+
+
 2) Java program (if you have Liberty running)
 
 Create a tiny Java snippet to load the class and print the version:
