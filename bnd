@@ -1,3 +1,88 @@
+1) Enable Liberty trace for Hibernate + JDBC + Tx
+
+Add this to server.xml inside <server>:
+
+<logging traceSpecification="
+  org.hibernate.*=all:
+  org.jboss.logging.*=all:
+  com.ibm.ws.jpa.*=all:
+  com.ibm.ws.rsadapter.*=all:
+  com.ibm.ws.jdbc.*=all:
+  com.ibm.db2.jcc.*=finest:
+  com.ibm.ws.jndi.*=all:
+  com.ibm.ws.transaction.*=all
+" consoleLogLevel="INFO" maxFileSize="20" maxFiles="5" traceFormat="BASIC"/>
+
+
+org.hibernate.*=all → Hibernate internals
+
+com.ibm.ws.transaction.*=all → Liberty transaction manager details
+
+com.ibm.ws.jpa.*=all → JPA/Hibernate container integration
+
+com.ibm.ws.jdbc.*=all, com.ibm.db2.jcc.*=finest → JDBC + Db2 driver layer
+
+com.ibm.ws.jndi.*=all → JNDI lookups (for DataSource binding issues)
+
+Trace output goes to logs/trace.log under your server directory.
+
+2) Turn on Hibernate SQL + bind logging
+
+If you use JPA/Hibernate with Log4j/SLF4J inside the app, add to persistence.xml or hibernate.properties:
+
+hibernate.show_sql=true
+hibernate.format_sql=true
+hibernate.type.descriptor.sql.BasicBinder=TRACE
+hibernate.generate_statistics=true
+
+
+And in your logger config (e.g., log4j2.xml or logback.xml):
+
+org.hibernate.SQL=DEBUG
+org.hibernate.type.descriptor.sql=TRACE
+org.hibernate.engine.transaction=DEBUG
+org.hibernate.resource.transaction=DEBUG
+org.hibernate.engine.jdbc.spi.SqlExceptionHelper=DEBUG
+
+
+This shows:
+
+The SQL text
+
+The parameter values being bound
+
+Transaction boundaries (begin/commit/rollback)
+
+3) Restart the server
+
+After you save server.xml, restart Liberty.
+Look for trace.log under wlp/usr/servers/<servername>/logs/.
+
+Search for org.hibernate to see SQL/binds
+
+Search for com.ibm.ws.transaction to see transaction enlistment
+
+Search for com.ibm.db2.jcc to see DB2 driver calls
+
+4) Typical trace flow you should see
+
+JNDI lookup of jdbc/cla via com.ibm.ws.jndi.*
+
+Connection acquisition via com.ibm.ws.rsadapter.*
+
+Hibernate transaction begin (org.hibernate.engine.transaction)
+
+SQL prepare + bind (org.hibernate.SQL + BasicBinder)
+
+Commit/Rollback (com.ibm.ws.transaction.*)
+
+If something fails, the trace line right before the exception usually shows the root cause.
+
+I can give you a copy-paste traceSpecification that includes only Hibernate + JDBC + Tx (no noisy subsystems) so you don’t drown in logs.
+
+Do you want me to prepare that minimal trace config?
+
+
 1) JVM-level SSL handshake (most detailed)
 
 Add SSL debug to Liberty’s JVM options (affects all SSL, including Db2):
