@@ -1,3 +1,126 @@
+1) JVM-level SSL handshake (most detailed)
+
+Add SSL debug to Liberty’s JVM options (affects all SSL, including Db2):
+
+<jvmOptions>
+  -Djavax.net.debug=ssl:handshake:keymanager:trustmanager
+  <!-- Optional extras when you’re stuck:
+       -Djavax.net.debug=ssl:handshake:verbose
+       -Djavax.net.debug=all  (very noisy) -->
+</jvmOptions>
+
+
+Where to look / what to grep:
+
+ClientHello → check TLSv1.2 and the offered cipher suites
+
+ServerHello → which protocol/cipher was selected
+
+certificate chain details, trust decisions, and any alert: handshake_failure
+
+2) Liberty component trace (channels, SSL, JDBC/JCA)
+
+Turn on focused Liberty tracing so you see the connection lifecycle around the handshake and JDBC resource use:
+
+<logging
+  traceSpecification="
+    com.ibm.ws.ssl.*=all:
+    com.ibm.ws.channel.ssl.*=all:
+    com.ibm.ws.tcpchannel.*=all:
+    com.ibm.ws.jca.*=all:
+    com.ibm.ws.rsadapter.*=all:
+    com.ibm.ws.jdbc.*=all"
+/>
+
+
+Tip: you can temporarily add com.ibm.ws.logging.*=all to confirm file roll-over and sizes.
+
+3) Db2 JCC driver trace (driver-internal view)
+
+Enable the JCC trace on the datasource so you capture the driver’s own SSL/TLS settings and connect flow.
+
+A. Put trace to a specific file:
+
+<dataSource jndiName="jdbc/DB2TLS" jdbcDriverRef="db2Lib">
+  <properties.db2.jcc
+      databaseName="${env.DBNAME}"
+      serverName="${env.DBHOST}"
+      portNumber="${env.DBPORT_SECURE}"
+      sslConnection="true"
+      <!-- pin version if needed -->
+      sslVersion="TLSv1.2"
+      <!-- JCC trace controls -->
+      traceFile="${server.output.dir}/logs/jcc-db2-trace.log"
+      traceFileAppend="true"
+      traceLevel="TRACE_ALL"/>
+</dataSource>
+
+
+B. Or use a directory + rotating files:
+
+<properties.db2.jcc
+    ...
+    traceDirectory="${server.output.dir}/logs/jcc"
+    traceFile="db2jcc"
+    traceFileAppend="true"
+    traceLevel="TRACE_ALL"/>
+
+
+Notes:
+
+If Liberty warns about an unknown vendor property in the properties.db2.jcc block, move it to a generic block:
+
+<properties traceDirectory="..." traceFile="db2jcc" traceLevel="TRACE_ALL"/>
+
+
+Common values for traceLevel include TRACE_ALL (max) and TRACE_NONE.
+
+4) Narrowing scope to just this datasource (optional)
+
+If logs are too noisy, isolate by running a tiny servlet/REST endpoint that does a single lookup + getConnection() and then disable global SSL traffic during the test window.
+
+5) What “good” looks like
+
+From JVM SSL debug:
+
+You should see ClientHello, TLSv1.2 and then ServerHello, TLSv1.2.
+
+Selected cipher should be one both sides support (e.g., TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384).
+
+Chain validation: look for *** Certificate chain and ... trustmanager ... checking ... OK.
+
+From JCC trace:
+
+sslConnection=true, optional sslVersion=TLSv1.2
+
+Any explicit trust or keystore paths you set (e.g., sslTrustStoreLocation) echoed back
+
+If client-cert auth is in play, you’ll see the client keystore load and securityMechanism=18.
+
+6) Quick triage patterns
+
+handshake alert: handshake_failure → protocol/cipher mismatch or trust issue.
+
+Client offers TLS1.2 but server replies TLS1.1 → fix server AT-TLS/DDF policy or pin sslVersion="TLSv1.2" and ensure JVM disables TLS1.1.
+
+unable to find valid certification path → truststore missing server CA (use Liberty keystore or JCC sslTrustStoreLocation).
+
+7) Clean up
+
+Once you’ve captured what you need, remove or relax:
+
+-Djavax.net.debug (it’s very verbose)
+
+High-volume Liberty trace specs
+
+JCC trace* properties
+
+If you paste your current <dataSource> and <logging>/<jvmOptions> snippets, I’ll mark exactly where to add these and suggest the minimal set to reproduce the handshake.
+
+ChatGPT can make mistakes. Ch
+
+#####################################################################
+
 Save as /opt/liberty/sec/java.security.tls12 (any readable path is fine):
 
 # --- Force TLS 1.2 only by disabling others ---
