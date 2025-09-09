@@ -1,3 +1,28 @@
+<persistence xmlns="http://java.sun.com/xml/ns/persistence" version="2.0">
+  <persistence-unit name="MyPU" transaction-type="JTA">
+    <!-- Let the container supply the DataSource -->
+    <jta-data-source>jdbc/DB2XA</jta-data-source>
+    <!-- If you bundle Hibernate, it will be the provider; you can be explicit: -->
+    <!-- <provider>org.hibernate.ejb.HibernatePersistence</provider> -->
+    <properties>
+      <!-- Hibernate/JPA options you need -->
+      <property name="hibernate.dialect" value="org.hibernate.dialect.DB2Dialect"/>
+      <property name="hibernate.show_sql" value="false"/>
+      <property name="hibernate.format_sql" value="true"/>
+      <!-- Ensure JTA integration -->
+      <property name="hibernate.transaction.factory_class"
+                value="org.hibernate.transaction.JTATransactionFactory"/>
+      <property name="hibernate.transaction.jta.platform"
+                value="org.hibernate.service.jta.platform.internal.SunOneJtaPlatform"/>
+      <!-- Adjust the jta.platform if you have a specific Liberty adapter; many apps work with default -->
+    </properties>
+  </persistence-unit>
+</persistence>
+
+
+
+
+
 <!-- WEB-INF/classes/log4j2.xml -->
 <Configuration status="WARN">
   <Appenders>
