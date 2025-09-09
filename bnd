@@ -1,3 +1,58 @@
+<!-- WEB-INF/classes/log4j2.xml -->
+<Configuration status="WARN">
+  <Appenders>
+    <Console name="CONSOLE" target="SYSTEM_OUT">
+      <PatternLayout pattern="%d{HH:mm:ss.SSS} %-5p [%t] %c - %m%n"/>
+    </Console>
+    <!-- optional rolling file -->
+    <RollingFile name="FILE" fileName="${sys:catalina.base:-.}/logs/app.log"
+                 filePattern="${sys:catalina.base:-.}/logs/app-%d{yyyy-MM-dd}-%i.log.gz">
+      <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5p [%t] %c - %m%n"/>
+      <Policies>
+        <TimeBasedTriggeringPolicy/>
+        <SizeBasedTriggeringPolicy size="20 MB"/>
+      </Policies>
+      <DefaultRolloverStrategy max="10"/>
+    </RollingFile>
+  </Appenders>
+
+  <Loggers>
+    <!-- SQL text -->
+    <Logger name="org.hibernate.SQL" level="debug" additivity="false">
+      <AppenderRef ref="CONSOLE"/>
+      <AppenderRef ref="FILE"/>
+    </Logger>
+
+    <!-- Bind values: pick ONE depending on Hibernate version -->
+    <!-- Hibernate 5.x -->
+    <Logger name="org.hibernate.type.descriptor.sql" level="trace" additivity="false">
+      <AppenderRef ref="CONSOLE"/>
+      <AppenderRef ref="FILE"/>
+    </Logger>
+    <!-- Hibernate 6.x (uncomment and use instead of the 5.x line)
+    <Logger name="org.hibernate.orm.jdbc.bind" level="trace" additivity="false">
+      <AppenderRef ref="CONSOLE"/>
+      <AppenderRef ref="FILE"/>
+    </Logger>
+    -->
+
+    <!-- Tx lifecycle & exception details -->
+    <Logger name="org.hibernate.engine.transaction" level="debug"/>
+    <Logger name="org.hibernate.resource.transaction" level="debug"/>
+    <Logger name="org.hibernate.engine.jdbc.spi.SqlExceptionHelper" level="debug"/>
+
+    <!-- Optional: JPA container glue (useful on Liberty) -->
+    <Logger name="org.hibernate.jpa" level="debug"/>
+
+    <Root level="info">
+      <AppenderRef ref="CONSOLE"/>
+      <AppenderRef ref="FILE"/>
+    </Root>
+  </Loggers>
+</Configuration>
+
+
+
 1) Enable Liberty trace for Hibernate + JDBC + Tx
 
 Add this to server.xml inside <server>:
