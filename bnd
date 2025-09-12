@@ -1,4 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<beans
+  xmlns="http://xmlns.jcp.org/xml/ns/javaee"
+  xmlns:weld="http://jboss.org/schema/weld/beans"
+  version="2.0"
+  bean-discovery-mode="annotated">
+
+  <weld:scan>
+    <!-- Exclude exactly the classes that throw InstantiationException -->
+    <weld:exclude name="com.yourco.pkg.ClassOne"/>
+    <weld:exclude name="com.yourco.pkg.ClassTwo"/>
+    <weld:exclude name="com.yourco.pkg.ClassThree"/>
+    <weld:exclude name="com.yourco.pkg.ClassFour"/>
+    <!-- or a package pattern: <weld:exclude name="com.yourco.badpkg.**"/> -->
+  </weld:scan>
+</beans>
+
+
+<?xml version="1.0" encoding="UTF-8"?>
 <beans xmlns="http://xmlns.jcp.org/xml/ns/javaee"
    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
    xsi:schemaLocation="http://xmlns.jcp.org/xml/ns/javaee http://www.oracle.com/webfolder/technetwork/jsc/xml/ns/javaee/beans_1_1.xsd"
