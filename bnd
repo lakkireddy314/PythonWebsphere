@@ -1,3 +1,14 @@
+<logging traceFileName="trace.log"
+         traceSpecification="*=info:
+                             com.ibm.ws.webcontainer.*=all:
+                             com.ibm.ws.jsp.*=all:
+                             com.ibm.ws.classloader.*=all:
+                             com.ibm.ws.injection.*=all:
+                             com.ibm.ws.cdi.*=all:
+                             org.jboss.weld.*=all:
+                             com.ibm.ws.jaxws.*=all"/>
+
+
 4) Eliminate JAX-WS impl conflicts
 
 Don’t bundle Metro/CXF or javax.xml.ws impl jars if you’re using Liberty’s JAX-WS. They can clash with Liberty’s injection/creation. If you must use a 3rd-party stack, follow IBM’s guidance to disable Liberty’s feature and load your impl locally. 
