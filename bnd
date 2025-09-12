@@ -1,3 +1,136 @@
+4) Eliminate JAX-WS impl conflicts
+
+Don’t bundle Metro/CXF or javax.xml.ws impl jars if you’re using Liberty’s JAX-WS. They can clash with Liberty’s injection/creation. If you must use a 3rd-party stack, follow IBM’s guidance to disable Liberty’s feature and load your impl locally. 
+IBM
+
+5) Turn on targeted trace to see the real cause
+
+In server.xml:
+
+<logging traceSpecification="
+  com.ibm.ws.support.*=all:
+  com.ibm.ws.jaxws.*=all:
+  com.ibm.ws.webservices.*=all:
+  com.ibm.wsspi.webcontainer.annotation.*=all:
+  com.ibm.ws.injection.*=all:
+  com.ibm.ws.ffdc=all"/>
+
+
+Reproduce once, then check logs/ffdc/* and logs/trace.log for the first throwable—often a missing JNDI target, bad constructor, or an exception in @PostConstruct. 
+IBM
+
+Quick checklist to run now
+
+Confirm jaxws-2.2 (+ servlet, + jaxb-2.2) are enabled. 
+openliberty.io
+
+Ensure the endpoint class is public, concrete, public no-arg ctor. 
+Rollbar
+
+Map every @Resource/@WebServiceRef/@EJB to real JNDI entries via server.xml + ibm-web-bnd.xml. 
+IBM
+
+Remove Metro/CXF jars unless you intentionally use them (or disable Liberty’s JAX-WS per IBM note). 
+IBM
+
+If you paste one endpoint class name and a sample of its annotations (@WebService, any @Resource fields), I’ll give you the exact server.xml/binding snippets to satisfy its injections and stop the InstantiationException.
+
+You said:
+Eliminate JAX-WS impl conflicts?
+ChatGPT said:
+Thought for 35s
+
+Yep—this is a classic “app-bundled JAX-WS stack vs Liberty’s JAX-WS” clash. Here’s how to eliminate conflicts cleanly on Liberty.
+
+1) Use Liberty’s JAX-WS/JAXB features (and nothing else)
+
+In server.xml:
+
+<featureManager>
+  <feature>servlet-4.0</feature>     <!-- or servlet-3.1 on older levels -->
+  <feature>jaxws-2.2</feature>
+  <feature>jaxb-2.2</feature>
+  <!-- add <feature>ejbLite-3.1</feature> if your endpoint is an EJB -->
+</featureManager>
+
+
+Liberty provides the JAX-WS implementation via jaxws-2.2 (and JAXB via jaxb-2.2). Don’t ship your own JAX-WS/JAXB impl when using these features. 
+openliberty.io
++2
+openliberty.io
++2
+
+2) Prefer server classes over app copies
+
+Make sure the app classloader prefers the parent (server) so ServiceLoader picks Liberty’s provider first:
+
+<webApplication id="YourApp" location="YourApp.war" contextRoot="/yourapp">
+  <classloader delegation="parentFirst"/>
+</webApplication>
+
+
+(Parent-first is the default in Liberty, but setting it explicitly helps if you experimented with alternatives.) 
+openliberty.io
++1
+
+3) Remove (or quarantine) conflicting jars from the app
+
+Unpack your EAR/WAR and delete any of these from WEB-INF/lib/ or lib/:
+
+Metro/Sun: jaxws-rt*.jar, jaxws-impl*.jar, com.sun.xml.ws*, policy*.jar
+
+CXF: cxf-*.jar, wsdl4j*.jar, neethi*.jar, xmlschema*.jar
+
+JAXB impls/APIs: jaxb-impl*.jar, jaxb-api*.jar
+
+APIs duplicated under javax.xml.ws*, jakarta.xml.ws*
+
+If you truly can’t delete them, move them to a privateLibrary and still keep delegation="parentFirst" so Liberty wins. (But best practice is not to bundle an alternate JAX-WS when using Liberty’s feature.) 
+IBM
+
+4) Kill provider overrides
+
+Some third-party stacks include META-INF/services/javax.xml.ws.spi.Provider. If that file lives in your app libs, it can force the app’s provider. Removing those impl jars (step 3) plus parent-first classloading prevents the override; Liberty’s own provider will be used. (You can confirm by turning on JAX-WS trace; see step 6.) 
+openliberty.io
+
+5) If you intentionally want Metro/CXF instead (not typical)
+
+Then do not enable <feature>jaxws-2.2</feature>, keep the app’s stack complete, and expect to support it yourself. Liberty docs show how to flip classloader delegation if you must override provided APIs, but IBM support guidance is to use Liberty features whenever possible. 
+IBM
+
+6) Verify which provider is active (trace)
+
+Add temporary tracing:
+
+<logging traceSpecification="
+  com.ibm.ws.jaxws.*=all:
+  com.ibm.ws.webservices.*=all:
+  com.ibm.ws.support.*=all:
+  com.ibm.ws.ffdc=all"/>
+
+
+Reproduce once and inspect logs/trace.log / logs/ffdc/* for the chosen javax.xml.ws.spi.Provider and endpoint creation details. 
+IBM
+
+Quick checklist to run now
+
+✅ jaxws-2.2 + jaxb-2.2 enabled. 
+openliberty.io
++1
+
+✅ delegation="parentFirst" (or just ensure you haven’t set parent-last). 
+openliberty.io
+
+✅ Remove cxf-*, jaxws-rt/impl, jaxb-*, or any javax.xml.ws/jakarta.xml.ws API jars from the app. 
+IBM
+
+✅ (If EJB endpoint) add ejbLite-3.1. 
+IBM
+
+Do these, and the JaxWsInstanceManager.createInstance(...) + AnnotationHelper.inject(...) failures caused by impl conflicts typically disappear. If an InstantiationException persists after cleanup, the root cause is usually in the endpoint itself (no public no-arg ctor, abstract class, or a failure inside @PostConstruct). Turn on the trace from step 6 and share the first FFDC stack if you want me to pinpoint that next.
+
+
+
 <?xml version="1.0" encoding="UTF-8"?>
 <beans
   xmlns="http://xmlns.jcp.org/xml/ns/javaee"
