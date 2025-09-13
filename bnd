@@ -1,4 +1,28 @@
 <logging traceFileName="trace.log"
+         maxFiles="20"
+         maxFileSize="100"
+         traceSpecification="
+           *=info:
+           com.ibm.ws.app.manager.*=all:
+           com.ibm.ws.app.install.*=all:
+           com.ibm.ws.classloader.*=all:
+           com.ibm.ws.archive.*=all:
+           com.ibm.ws.javaee.metadata.*=all:
+           com.ibm.ws.webcontainer.*=all:
+           com.ibm.ws.jsp.*=all:
+           com.ibm.ws.injection.*=all:
+           com.ibm.ws.cdi.*=all:
+           org.jboss.weld.*=all:
+           com.ibm.ws.jaxws.*=all:
+           com.ibm.ws.jaxrs.*=all:
+           com.ibm.ws.jndi.*=all:
+           com.ibm.ws.anno.*=all:
+           com.ibm.ws.jpa.*=all:
+           com.ibm.ws.tx.*=all:
+           com.ibm.tx.*=all"/>
+
+
+<logging traceFileName="trace.log"
          traceSpecification="*=info:
                              com.ibm.ws.webcontainer.*=all:
                              com.ibm.ws.jsp.*=all:
