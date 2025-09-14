@@ -1,3 +1,55 @@
+<!DOCTYPE hibernate-configuration PUBLIC
+        "-//Hibernate/Hibernate Configuration DTD 3.0//EN"
+        "http://www.hibernate.org/dtd/hibernate-configuration-3.0.dtd">
+<hibernate-configuration>
+  <session-factory>
+    <!-- Use Liberty JNDI DataSource -->
+    <property name="hibernate.connection.datasource">jdbc/MyDS</property>
+
+    <!-- JTA wiring for old Hibernate -->
+    <property name="hibernate.transaction.factory_class">
+      org.hibernate.transaction.JTATransactionFactory
+    </property>
+    <!-- Bind Session to JTA transactions -->
+    <property name="hibernate.current_session_context_class">jta</property>
+
+    <!-- IMPORTANT: Do NOT use WebSphere classic manager_lookup_class on Liberty -->
+    <!-- e.g., org.hibernate.transaction.WebSphereExtendedJTATransactionLookup will fail on Liberty -->
+
+    <property name="hibernate.dialect">org.hibernate.dialect.DB2Dialect</property>
+    <property name="hibernate.show_sql">false</property>
+    <property name="hibernate.format_sql">true</property>
+  </session-factory>
+</hibernate-configuration>
+
+
+Don’t forget these gotchas
+
+No pooling in Hibernate when using a JNDI DataSource — remove Hibernate pool props; Liberty’s pool is used. 
+forum.hibernate.org
+
+If you see “No CurrentSessionContext configured”, set hibernate.current_session_context_class=jta (or leave it unset on 5.x+ when you already configured a JTA platform). 
+docs.jboss.org
+
+Keep your Hibernate jars consistent with the API you use (5.x/6.x vs 3.x). If you can, prefer 5.2.13+ to get WebSphereLibertyJtaPlatform. 
+Stack Overflow
+
+To reference Hibernate APIs directly on Liberty (without JPA), make the jars visible via a shared library / app classloader as shown above. 
+openliberty.io
+
+Quick verification on Liberty
+
+Turn on focused tracing and run a simple transaction:
+
+<logging traceSpecification="com.ibm.ws.tx.*=all:com.ibm.tx.*=all:com.ibm.ws.jdbc.*=info"/>
+
+
+You should see the connection enlisted with the global transaction when your code begins/commits the JTA txn. 
+docs.jboss.org
+
+If you paste your exact Hibernate version and your current hibernate.cfg.xml, I’ll tailor the minimal diff you need (and we can add DB2 TLS bits if required).
+
+
 <logging traceFileName="trace.log"
          maxFiles="20"
          maxFileSize="100"
