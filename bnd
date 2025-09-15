@@ -1,3 +1,185 @@
+<!-- App: make your jars win -->
+  <enterpriseApplication id="MyEAR" location="MyApp.ear" name="MyApp">
+    <classloader delegation="parentLast"/>
+  </enterpriseApplication>
+  <!-- or, for a WAR:
+  <webApplication id="MyWAR" location="my.war" name="MyWAR">
+    <classloader delegation="parentLast"/>
+  </webApplication>
+  -->
+
+
+1) hibernate.cfg.xml (RESOURCE_LOCAL via JDBC transactions)
+
+Put this in your EAR lib / WAR WEB-INF/classes:
+
+<!DOCTYPE hibernate-configuration PUBLIC
+ "-//Hibernate/Hibernate Configuration DTD 3.0//EN"
+ "http://hibernate.sourceforge.net/hibernate-configuration-3.0.dtd">
+<hibernate-configuration>
+  <session-factory>
+
+    <!-- Use Liberty DataSource via JNDI -->
+    <property name="hibernate.connection.datasource">java:comp/env/jdbc/MyDS</property>
+
+    <!-- Local (RESOURCE_LOCAL) txs, not JTA -->
+    <property name="hibernate.transaction.factory_class">
+      org.hibernate.transaction.JDBCTransactionFactory
+    </property>
+    <property name="hibernate.current_session_context_class">thread</property>
+
+    <!-- DB & Hibernate basics -->
+    <property name="hibernate.dialect">org.hibernate.dialect.DB2Dialect</property>
+    <!-- optional if you have one -->
+    <!-- <property name="hibernate.default_schema">YOURSCHEMA</property> -->
+
+    <!-- Bytecode provider (keep it consistent with your jars) -->
+    <property name="hibernate.bytecode.provider">javassist</property>
+
+    <!-- Logging/SQL visibility (let Log4j/SLF4J print SQL) -->
+    <property name="hibernate.show_sql">false</property>
+    <property name="hibernate.format_sql">true</property>
+    <property name="hibernate.use_sql_comments">true</property>
+    <property name="hibernate.generate_statistics">true</property>
+
+    <!-- Mappings -->
+    <!-- If you use annotations only, you can omit these HBM lines and addAnnotatedClass in code -->
+    <!--
+    <mapping resource="com/example/model/Order.hbm.xml"/>
+    <mapping resource="com/example/model/OrderLine.hbm.xml"/>
+    -->
+
+  </session-factory>
+</hibernate-configuration>
+
+If you reference the DS as java:comp/env/jdbc/MyDS
+
+Add this to web.xml (WAR) so the ENC link resolves:
+
+<resource-ref>
+  <res-ref-name>jdbc/MyDS</res-ref-name>
+  <res-type>javax.sql.DataSource</res-type>
+  <res-auth>Container</res-auth>
+</resource-ref>
+
+2) Liberty server.xml
+
+Make Liberty provide only the pieces you need; do not add jpa-* or transaction-* features.
+
+<server>
+  <featureManager>
+    <feature>servlet-3.1</feature>
+    <feature>jsp-2.3</feature>
+    <feature>jndi-1.0</feature>
+    <feature>jdbc-4.2</feature>
+    <!-- add others you actually need (ssl-1.0, appSecurity-2.0, etc.) -->
+  </featureManager>
+
+  <!-- DB driver jars -->
+  <library id="db2-driver">
+    <fileset dir="${server.config.dir}/lib/db2" includes="*.jar"/>
+  </library>
+
+  <dataSource id="MyDS" jndiName="jdbc/MyDS">
+    <jdbcDriver libraryRef="db2-driver"/>
+    <!-- URL / properties as needed for your DB2 -->
+    <!-- <properties.db2.jcc databaseName="..." serverName="..." portNumber="..." user="..." password="..."/> -->
+  </dataSource>
+
+  <!-- Make app-bundled Hibernate win -->
+  <enterpriseApplication location="MyApp.ear" name="MyApp">
+    <classloader delegation="parentLast"/>
+  </enterpriseApplication>
+</server>
+
+3) Bootstrap code (classic 3.5 style)
+
+Create the SessionFactory once (e.g., in a ServletContextListener), then open/close a Session per unit of work.
+
+// Startup
+private static final org.hibernate.SessionFactory SESSION_FACTORY;
+static {
+  try {
+    org.hibernate.cfg.Configuration cfg = new org.hibernate.cfg.Configuration();
+    cfg.configure("hibernate.cfg.xml"); // finds it on classpath
+    // If you use annotations and NOT HBM XML, you can add:
+    // cfg.addAnnotatedClass(com.example.model.Order.class);
+    SESSION_FACTORY = cfg.buildSessionFactory();
+  } catch (Throwable t) {
+    throw new ExceptionInInitializerError(t);
+  }
+}
+public static org.hibernate.SessionFactory getSessionFactory() { return SESSION_FACTORY; }
+
+
+Usage (RESOURCE_LOCAL):
+
+Session session = getSessionFactory().openSession();
+org.hibernate.Transaction tx = session.beginTransaction();
+try {
+  // ... your DAO code ...
+  tx.commit();
+} catch (RuntimeException e) {
+  if (tx.isActive()) tx.rollback();
+  throw e;
+} finally {
+  session.close();
+}
+
+4) Jars you should ship (Java 8–safe)
+
+hibernate-core-3.5.6-Final.jar
+
+hibernate-annotations-3.5.6-Final.jar (if using annotations)
+
+hibernate-commons-annotations-3.2.0.Final.jar (if using annotations)
+
+dom4j-1.6.1.jar, antlr-2.7.6.jar
+
+javassist-3.9.0.GA.jar (choose either javassist or cglib; prefer javassist)
+
+Logging: slf4j-api-1.7.x + one binding (e.g., slf4j-log4j12-1.7.x) or pure log4j-1.2
+
+(Only if your code references JPA types) hibernate-jpa-2.0-api-1.0.0.Final.jar
+
+(Only if you use Bean Validation annotations) validation-api-1.0.0.GA.jar
+
+Avoid mixing both cglib and javassist. Don’t include Liberty’s JPA/CDI features; your app provides Hibernate.
+
+5) Make logs useful (so “Exception … : null” becomes actionable)
+
+Ensure your catch blocks pass the throwable:
+
+logger.error("Exception in ServiceImpl retrieving summaries", e);
+
+
+For SQL/params:
+
+Log4j categories:
+
+log4j.logger.org.hibernate.SQL=DEBUG
+log4j.logger.org.hibernate.type=TRACE
+
+
+Liberty trace (optional while debugging):
+
+com.ibm.ws.classloader.*=all
+
+6) Common pitfalls (and quick fixes)
+
+“No transaction manager”: you accidentally used JTA config. Keep JDBCTransactionFactory; don’t set any JTA properties.
+
+NameNotFoundException: java:comp/env/jdbc/MyDS: ENC not mapped — add the resource-ref in web.xml and ensure jndiName="jdbc/MyDS" in server.xml.
+
+InstantiationException on entities: missing public/protected no-arg constructor, or entity class/methods are final, or mapping points to the wrong class/package.
+
+Composite keys: your ID class must be Serializable with proper equals()/hashCode() (you asked earlier — still required in native Hibernate).
+
+If you share your current hibernate.cfg.xml and (if any) one HBM or entity class that’s involved, I’ll spot-check it and tailor the exact properties (including DB2 TLS and schema defaults) to your setup.
+
+ChatGPT can make mistakes. Ch
+
+
 <!DOCTYPE hibernate-configuration PUBLIC
         "-//Hibernate/Hibernate Configuration DTD 3.0//EN"
         "http://www.hibernate.org/dtd/hibernate-configuration-3.0.dtd">
