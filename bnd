@@ -1,3 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE log4j:configuration SYSTEM "log4j.dtd">
+<log4j:configuration xmlns:log4j="http://jakarta.apache.org/log4j/"
+                     debug="false" threshold="ALL">
+
+  <!-- ===== Appenders ===== -->
+  <!-- Console (shows up in Liberty's messages.log if using stdout capture) -->
+  <appender name="CONSOLE" class="org.apache.log4j.ConsoleAppender">
+    <param name="Target" value="System.out"/>
+    <layout class="org.apache.log4j.PatternLayout">
+      <param name="ConversionPattern" value="%d{ISO8601} %-5p [%t] %c - %m%n"/>
+    </layout>
+  </appender>
+
+  <!-- File (ensure Liberty user can write this path) -->
+  <appender name="FILE" class="org.apache.log4j.RollingFileAppender">
+    <param name="File" value="${catalina.base:-.}/logs/hibernate-e2e.log"/>
+    <param name="MaxFileSize" value="20MB"/>
+    <param name="MaxBackupIndex" value="5"/>
+    <layout class="org.apache.log4j.PatternLayout">
+      <param name="ConversionPattern" value="%d{ISO8601} %-5p [%t] %c - %m%n"/>
+    </layout>
+  </appender>
+
+  <!-- ===== Hibernate 3.5 era: sessions, tx, JDBC, SQL, types ===== -->
+  <!-- Core Hibernate lifecycle -->
+  <logger name="org.hibernate" additivity="false">
+    <level value="DEBUG"/>
+    <appender-ref ref="CONSOLE"/>
+    <appender-ref ref="FILE"/>
+  </logger>
+
+  <!-- Session creation/close, flush/clear (3.x) -->
+  <logger name="org.hibernate.impl.SessionImpl" additivity="false">
+    <level value="DEBUG"/>
+    <appender-ref ref="CONSOLE"/>
+    <appender-ref ref="FILE"/>
+  </logger>
+
+  <!-- Transaction boundaries (3.x) -->
+  <logger name="org.hibernate.transaction" additivity="false">
+    <level value="DEBUG"/>
+    <appender-ref ref="CONSOLE"/>
+    <appender-ref ref="FILE"/>
+  </logger>
+
+  <!-- JDBC exceptions reporter (3.x) – shows real SQL/DB errors -->
+  <logger name="org.hibernate.util.JDBCExceptionReporter" additivity="false">
+    <level value="DEBUG"/>
+    <appender-ref ref="CONSOLE"/>
+    <appender-ref ref="FILE"/>
+  </logger>
+
+  <!-- Executed SQL and bound parameter values -->
+  <logger name="org.hibernate.SQL" additivity="false">
+    <level value="DEBUG"/>
+    <appender-ref ref="FILE"/>
+  </logger>
+  <logger name="org.hibernate.type" additivity="false">
+    <level value="TRACE"/>
+    <appender-ref ref="FILE"/>
+  </logger>
+
+  <!-- Loaders & entity actions (helpful for seeing session work) -->
+  <logger name="org.hibernate.loader" additivity="false">
+    <level value="DEBUG"/>
+    <appender-ref ref="FILE"/>
+  </logger>
+  <logger name="org.hibernate.event" additivity="false">
+    <level value="DEBUG"/>
+    <appender-ref ref="FILE"/>
+  </logger>
+
+  <!-- ===== Second-level cache (Hibernate + Ehcache 2.x) ===== -->
+  <logger name="org.hibernate.cache" additivity="false">
+    <level value="DEBUG"/>
+    <appender-ref ref="FILE"/>
+  </logger>
+  <logger name="net.sf.ehcache" additivity="false">
+    <level value="DEBUG"/>
+    <appender-ref ref="FILE"/>
+  </logger>
+
+  <!-- Root logger (keep INFO to avoid chatty third-party noise) -->
+  <root>
+    <priority value="INFO"/>
+    <appender-ref ref="CONSOLE"/>
+  </root>
+</log4j:configuration>
+
+
+
 <!-- App: make your jars win -->
   <enterpriseApplication id="MyEAR" location="MyApp.ear" name="MyApp">
     <classloader delegation="parentLast"/>
