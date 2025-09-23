@@ -1,3 +1,17 @@
+- name: Build unique host list from node_map_simple
+  set_fact:
+    unique_hosts: >-
+      {{
+        node_map_simple
+        | dict2items                | map(attribute='value')   # -> each value is [hostname, cellname]
+        | map('first')                                         # pick hostname (index 0)
+        | select('string')         | map('trim')               # normalize
+        | reject('equalto','')                                 # drop empties
+        | list | unique
+      }}
+
+
+
 Example A — multiple lines (result.stdout_lines)
 
 Input
