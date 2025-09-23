@@ -1,0 +1,62 @@
+# Usage:
+# wsadmin.sh -lang jython -f delete_plugin_certlabel.py -node <IHS_node> -webserver <webserver_name> [-cell <cell>] [-prop certLabel]
+#
+# Example:
+# wsadmin.sh -lang jython -f delete_plugin_certlabel.py -node ihsNode01 -webserver webserver1
+
+import sys
+
+def get_arg(flag, default=None):
+    if flag in sys.argv:
+        i = sys.argv.index(flag)
+        if i + 1 < len(sys.argv):
+            return sys.argv[i+1]
+    return default
+
+prop_name  = get_arg('-prop', 'certLabel')
+cell_name  = get_arg('-cell',  None)
+node_name  = get_arg('-node',  None)
+server_name= get_arg('-webserver', None)
+
+if not node_name or not server_name:
+    print("ERROR: -node and -webserver are required")
+    sys.exit(1)
+
+# Try to infer cell if not provided
+if not cell_name:
+    try:
+        cell_name = AdminControl.getCell()
+    except:
+        print("WARN: Could not infer cell (no AdminControl). Provide -cell if this fails.")
+        cell_name = ''
+
+# Locate the Web server object
+ws_path = '/Cell:%s/Node:%s/Server:%s/' % (cell_name, node_name, server_name)
+ws_id = AdminConfig.getid(ws_path)
+if not ws_id:
+    print("ERROR: Web server not found at %s" % ws_path)
+    sys.exit(2)
+
+# Find its PluginProperties object
+plugin_props_id = AdminConfig.list('PluginProperties', ws_id)
+if not plugin_props_id:
+    print("ERROR: PluginProperties not found for %s" % ws_path)
+    sys.exit(3)
+
+# Find the custom property with name == prop_name (case-insensitive)
+to_remove = None
+props = AdminConfig.showAttribute(plugin_props_id, 'properties')
+if props and len(props) > 2:
+    for pid in props[1:-1].split():
+        name = AdminConfig.showAttribute(pid, 'name')
+        if name and name.lower() == prop_name.lower():
+            to_remove = pid
+            break
+
+if to_remove:
+    AdminConfig.remove(to_remove)
+    AdminConfig.save()
+    print("SUCCESS: Deleted custom property '%s' from Web server %s/%s" % (prop_name, node_name, server_name))
+else:
+    print("INFO: No custom property named '%s' on Web server %s/%s; nothing to delete." %
+          (prop_name, node_name, server_name))
