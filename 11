@@ -1,0 +1,116 @@
+Example A — multiple lines (result.stdout_lines)
+
+Input
+
+result:
+  stdout_lines:
+    - "Node01: app1.acme.com,CellA"
+    - "Node02: app2.acme.com,CellB"
+    - "Node03: app3.dev.local,DevCell"
+
+
+Task
+
+- name: Build dict: node -> {hostname, cellname}
+  set_fact:
+    node_map: >-
+      {{ node_map | default({}) |
+         combine({
+           (item.split(':')[0] | trim):
+             {
+               'hostname': (item.split(':')[1].split(',')[0] | trim),
+               'cellname': (item.split(':')[1].split(',')[1] | trim)
+             }
+         })
+      }}
+  loop: "{{ result.stdout_lines }}"
+
+
+Output (node_map)
+
+node_map:
+  Node01:
+    hostname: app1.acme.com
+    cellname: CellA
+  Node02:
+    hostname: app2.acme.com
+    cellname: CellB
+  Node03:
+    hostname: app3.dev.local
+    cellname: DevCell
+
+Example B — single string (result.stdout)
+
+Input
+
+result:
+  stdout: "NodeX: hostX.internal,ProdCell"
+
+
+Task
+
+- set_fact:
+    line: "{{ result.stdout | trim }}"
+    node_map: >-
+      {{
+        {
+          (line.split(':')[0] | trim): {
+            'hostname': (line.split(':')[1].split(',')[0] | trim),
+            'cellname': (line.split(':')[1].split(',')[1] | trim)
+          }
+        }
+      }}
+
+
+Output (node_map)
+
+node_map:
+  NodeX:
+    hostname: hostX.internal
+    cellname: ProdCell
+
+Example C — output with extra spaces
+
+Input
+
+result:
+  stdout_lines:
+    - " NodeA :   web01.acme.com ,  Cell01 "
+    - "NodeB:db01.acme.com,Cell02  "
+
+
+Output (node_map)
+
+node_map:
+  NodeA:
+    hostname: web01.acme.com
+    cellname: Cell01
+  NodeB:
+    hostname: db01.acme.com
+    cellname: Cell02
+
+Example D — list-value variant (values as a list)
+
+Task
+
+- name: Build dict: node -> [hostname, cellname]
+  set_fact:
+    node_map_simple: >-
+      {{ node_map_simple | default({}) |
+         combine({
+           (item.split(':')[0] | trim):
+             [ item.split(':')[1].split(',')[0] | trim,
+               item.split(':')[1].split(',')[1] | trim ]
+         })
+      }}
+  loop: "{{ result.stdout_lines }}"
+
+
+Output (node_map_simple)
+
+node_map_simple:
+  Node01: [app1.acme.com, CellA]
+  Node02: [app2.acme.com, CellB]
+
+
+If you want a quick guard for malformed lines, I can show an example with a when: filter too.
