@@ -1,6 +1,46 @@
 - hosts: localhost
   gather_facts: false
   vars:
+    cert_path: "/tmp/cert.pem"     # put your cert file here
+    renew_threshold_days: 90
+  tasks:
+    - name: Parse certificate
+      community.crypto.x509_certificate_info:
+        path: "{{ cert_path }}"
+      register: certinfo
+
+    - name: Compute fields
+      set_fact:
+        cert_cn: "{{ certinfo.subject.common_name | default(certinfo.subject.CN) }}"
+        cert_serial_hex: "{{ '%X' % certinfo.serial_number }}"          # UPPER-HEX
+        cert_not_after: "{{ certinfo.not_after }}"
+        cert_days_left: >-
+          {{
+            ((certinfo.not_after | to_datetime) - (ansible_date_time.iso8601 | to_datetime)).days
+          }}
+
+    - debug:
+        msg:
+          CN: "{{ cert_cn }}"
+          Serial: "{{ cert_serial_hex }}"
+          DaysLeft: "{{ cert_days_left }}"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+- hosts: localhost
+  gather_facts: false
+  vars:
     tpp_url: "https://tpp.example.com"
     tpp_user: "svc_ansible"
     tpp_pass: "{{ vault_tpp_password }}"
