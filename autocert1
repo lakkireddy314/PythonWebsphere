@@ -1,4 +1,66 @@
-  - name: Parse each PEM block for {{ item.item }}
+- hosts: localhost
+  gather_facts: false
+  vars:
+    tpp_url: "https://tpp.example.com"
+    tpp_user: "svc_ansible"
+    tpp_pass: "{{ vault_tpp_password }}"
+    pickup_id: "{{ venafi_request_id }}"
+    tmp_cert: "/tmp/venafi_{{ pickup_id }}.pem"
+    renew_threshold_days: 90
+
+  tasks:
+    - name: Pickup certificate with vcert
+      command: >
+        vcert pickup
+        -tpp-url {{ tpp_url }}
+        -username {{ tpp_user }}
+        -password {{ tpp_pass }}
+        -pickup-id {{ pickup_id }}
+        -no-prompt
+        -cert-file {{ tmp_cert }}
+      changed_when: false
+
+    - name: Parse cert info (expiry, subject, etc.)
+      community.crypto.x509_certificate_info:
+        path: "{{ tmp_cert }}"
+      register: certinfo
+
+    - name: Compute days remaining
+      set_fact:
+        not_after: "{{ certinfo.not_after }}"
+        days_left: >-
+          {{
+            ((certinfo.not_after | to_datetime) - (ansible_date_time.iso8601 | to_datetime)).days
+          }}
+
+    - debug:
+        msg:
+          - "Valid To  : {{ not_after }}"
+          - "Days left : {{ days_left }}"
+          - "Expiring (<={{ renew_threshold_days }}d)? {{ days_left | int <= renew_threshold_days }}"
+
+
+#####################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+- name: Parse each PEM block for {{ item.item }}
       community.crypto.x509_certificate_info:
         content: "{{ cert_pem }}"
       loop: "{{ pem_blocks }}"
