@@ -1,3 +1,74 @@
+  - name: Parse each PEM block for {{ item.item }}
+      community.crypto.x509_certificate_info:
+        content: "{{ cert_pem }}"
+      loop: "{{ pem_blocks }}"
+      loop_control:
+        loop_var: cert_pem
+      register: parsed_each
+
+    - name: Choose the leaf (non-CA) cert for {{ item.item }}
+      vars:
+        # Find first block where basic_constraints does NOT contain "CA:TRUE"
+        leaf_obj: >-
+          {{ (parsed_each.results | selectattr('basic_constraints', 'defined')
+                                  | selectattr('basic_constraints', 'search', 'CA:TRUE', invert=true)
+                                  | list | first)
+             | default(parsed_each.results | first) }}
+      ansible.builtin.set_fact:
+        __leaf_for_current__: "{{ leaf_obj }}"
+        __leaf_pem_for_current__: "{{ leaf_obj.item }}"
+        __leaf_days_left__: >-
+          {{
+            (
+              (__leaf_for_current__.not_after | to_datetime('%Y%m%d%H%M%SZ'))
+              - (ansible_date_time.iso8601 | to_datetime)
+            ).days
+          }}
+        __leaf_serial_hex__: >-
+          {{ '%X' % (__leaf_for_current__.serial_number | int) }}
+
+    - name: Add {{ item.item }} to aggregated maps
+      ansible.builtin.set_fact:
+        cert_info_by_alias: >-
+          {{ cert_info_by_alias | combine({
+            item.item: {
+              alias: item.item,
+              subject: __leaf_for_current__.subject,
+              issuer: __leaf_for_current__.issuer,
+              serial_number_int: __leaf_for_current__.serial_number,
+              serial_number_hex: __leaf_serial_hex__,
+              not_before: __leaf_for_current__.not_before,
+              not_after: __leaf_for_current__.not_after,
+              expired: __leaf_for_current__.expired,
+              days_left: __leaf_days_left__,
+              sha256_fp: __leaf_for_current__.fingerprints.sha256
+            }
+          }) }}
+        cert_pem_by_alias: >-
+          {{ cert_pem_by_alias | combine({ item.item: __leaf_pem_for_current__ }) }}
+  loop: "{{ vcert_runs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: (Optional) Assert everything has >= 90 days left
+  ansible.builtin.assert:
+    that: "item.value.days_left | int >= 90"
+    fail_msg: "Alias {{ item.key }} expires in {{ item.value.days_left }} days (not_after={{ item.value.not_after }})"
+  loop: "{{ cert_info_by_alias | dict2items }}"
+  when: (check_threshold | default(true)) | bool
+
+- name: Show final facts (alias → cert fields)
+  ansible.builtin.debug:
+    var: cert_info_by_alias
+
+- name: Show leaf PEMs (alias → PEM)
+  ansible.builtin.debug:
+    var: cert_pem_by_alias
+  no_log: true  # hide PEMs in logs unless you really want them visible
+
+
+
+
 # vars example
 aliases:
   - alias1
