@@ -21,9 +21,9 @@
   set_fact:
     _pipeline_pickups: []
 
-- name: build pickup list with double backslashes
+- name: build pickup list with single backslashes
   set_fact:
-    _pipeline_pickups: "{{ _pipeline_pickups + [ venafi_policy_prefix ~ '\\\\' ~ cert_name ] }}"
+    _pipeline_pickups: "{{ _pipeline_pickups + [ venafi_policy_prefix ~ '\' ~ cert_name ] }}"
   loop: "{{ cert_names }}"
   loop_control:
     loop_var: cert_name
