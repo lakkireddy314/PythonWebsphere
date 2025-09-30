@@ -13,14 +13,17 @@
 
 
 
+- name: strip any trailing backslashes from prefix
+  set_fact:
+    venafi_policy_prefix: "{{ venafi_policy_prefix | regex_replace('\\\\+$','') }}"
+
+- name: init pickup list
+  set_fact:
+    _pipeline_pickups: []
+
 - name: build pickup list with double backslashes
   set_fact:
-    _pipeline_pickups: >-
-      {{
-        _pipeline_pickups + [
-          (venafi_policy_prefix | regex_replace('\\\\+$','')) ~ '\\\\\\\\' ~ (cert_name | regex_replace('^\\\\+',''))
-        ]
-      }}
+    _pipeline_pickups: "{{ _pipeline_pickups + [ venafi_policy_prefix ~ '\\\\' ~ cert_name ] }}"
   loop: "{{ cert_names }}"
   loop_control:
     loop_var: cert_name
