@@ -1,0 +1,100 @@
+roles/venafi_cert_renew_pipeline/tasks/_helpers.yml
+---
+# Early sanity: make sure pipeline_stats_var is a non-empty string
+- name: helpers | assert pipeline_stats_var is set
+  assert:
+    that:
+      - pipeline_stats_var is defined
+      - pipeline_stats_var | string | length > 0
+    fail_msg: "pipeline_stats_var must be a non-empty string (e.g. 'venafi_pipeline_stats')"
+  run_once: true
+  delegate_to: localhost
+
+# If someone passed it blank by mistake, force a safe fallback
+- name: helpers | fallback default for blank pipeline_stats_var
+  set_fact:
+    pipeline_stats_var: "{{ (pipeline_stats_var | default('') | string | length > 0)
+                            | ternary(pipeline_stats_var, 'venafi_pipeline_stats') }}"
+  run_once: true
+  delegate_to: localhost
+
+# Init centralized stats on localhost so all stages can merge into it.
+- name: helpers | ensure stats dict exists
+  set_fact:
+    _pipeline_stats_work: "{{ (hostvars['localhost'][pipeline_stats_var] | default({})) | combine({}, recursive=True) }}"
+  run_once: true
+  delegate_to: localhost
+
+# Publish using a dict expression to guarantee a valid key
+- name: helpers | publish stats (idempotent)
+  set_stats:
+    data: "{{ { (pipeline_stats_var): _pipeline_stats_work } }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: helpers | build pickup list from cert_names
+  set_fact:
+    _pipeline_pickups: >-
+      {{ cert_names | map('regex_replace', '^(.*)$', venafi_policy_prefix ~ '/\\1') | list }}
+  when: cert_names | length > 0
+  run_once: true
+  delegate_to: localhost
+
+roles/venafi_cert_renew_pipeline/tasks/merge_into_stats.yml
+---
+# Wrapper to deep-merge a payload into the shared stats variable.
+# Inputs (required): section (str), cert_key (str), payload (dict)
+
+- name: merge_into_stats | assert inputs
+  assert:
+    that:
+      - pipeline_stats_var is defined
+      - pipeline_stats_var | string | length > 0
+      - section is string
+      - (cert_key is defined) and (cert_key | string | length > 0)
+      - payload is mapping
+    fail_msg: "merge_into_stats: missing/invalid vars: pipeline_stats_var, section, cert_key, payload"
+  run_once: true
+  delegate_to: localhost
+
+- name: merge_into_stats | read current stats
+  set_fact:
+    __mis_base: "{{ hostvars['localhost'][pipeline_stats_var] | default({}) }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: merge_into_stats | build merged map
+  set_fact:
+    __mis_merged: >-
+      {{
+        __mis_base
+        | combine(
+            {
+              (section|string): {
+                (cert_key|string):
+                  (__mis_base.get(section, {}).get(cert_key|string, {}) | combine(payload, recursive=True))
+              }
+            },
+            recursive=True
+          )
+      }}
+  run_once: true
+  delegate_to: localhost
+
+- name: merge_into_stats | publish
+  set_stats:
+    data: "{{ { (pipeline_stats_var): __mis_merged } }}"   # ← dict expression avoids empty-key bug
+  run_once: true
+  delegate_to: localhost
+
+🧠 Why this fixes your error
+
+With --tags precheck (or renew/deploy), tasks without tags are skipped. By tagging helpers as always, we guarantee the initialization + assertions run every time.
+
+If someone accidentally sets pipeline_stats_var: "", the assert catches it; the fallback then forces a safe default (venafi_pipeline_stats), so set_stats always receives a valid mapping key.
+
+Using data: "{{ { (pipeline_stats_var): value } }}" constructs the data dict atomically in Jinja, preventing YAML from seeing a blank key.
+
+📌 Tip for your playbooks
+
+If you override pipeline_stats_var, make sure it’s a simple non-empty string:
