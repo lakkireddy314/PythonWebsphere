@@ -1,3 +1,20 @@
+set_fact:
+    _pipeline_pickups: >-
+      {{
+        cert_names
+        | map('string')
+        | map('trim')
+        | reject('equalto','')
+        | map('regex_replace', '^/+', '')     # drop leading slashes from cert
+        | map('regex_replace', '/+$', '')     # drop trailing slashes from cert
+        | map('regex_replace', '^(.*)$', _prefix_norm ~ '/\\1')
+        | list
+      }}
+  when: cert_names | length > 0
+  run_once: true
+  delegate_to: localhost
+
+
 Absolutely—here’s a complete, Ansible 2.9–compatible roles/venafi_cert_renew/tasks/main.yml that adds the restore path directly into the play’s control flow. If any deploy/validate step fails, it will: (1) run restore.yml to roll back to the last backups, (2) mark the host for AWX retry, and (3) fail that host so your AWX Workflow “Deploy Only” node can re-run on just the failures.
 
 ---
