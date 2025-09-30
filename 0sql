@@ -13,9 +13,14 @@
 
 
 
-- name: build pickup list as prefix\cert_name
+- name: build pickup list with double backslashes
   set_fact:
-    _pipeline_pickups: "{{ _pipeline_pickups + [ (venafi_policy_prefix | regex_replace('\\\\+$','')) ~ '\\\\' ~ (cert_name | regex_replace('^\\\\+','')) ] }}"
+    _pipeline_pickups: >-
+      {{
+        _pipeline_pickups + [
+          (venafi_policy_prefix | regex_replace('\\\\+$','')) ~ '\\\\\\\\' ~ (cert_name | regex_replace('^\\\\+',''))
+        ]
+      }}
   loop: "{{ cert_names }}"
   loop_control:
     loop_var: cert_name
