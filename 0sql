@@ -1,3 +1,13 @@
+- name: helpers | coerce thresholds to ints
+  set_fact:
+    threshold_need_renew_days: "{{ threshold_need_renew_days | int }}"
+    threshold_expiring_low:    "{{ threshold_expiring_low | int }}"
+    threshold_expiring_high:   "{{ threshold_expiring_high | int }}"
+    threshold_no_renew_needed: "{{ threshold_no_renew_needed | int }}"
+  run_once: true
+  delegate_to: localhost
+
+
 - name: init pickup pairs
   set_fact:
     _pipeline_pickups: []
