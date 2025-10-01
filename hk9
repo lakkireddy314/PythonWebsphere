@@ -1,0 +1,42 @@
+# 1) Coerce everything to integers once
+- name: precheck | normalize day thresholds to ints
+  set_fact:
+    pc_days_int: "{{ (pc_expiry_days | default(999999)) | int }}"
+    th_need:     "{{ threshold_need_renew_days | int }}"
+    th_exp_low:  "{{ threshold_expiring_low | int }}"
+    th_exp_high: "{{ threshold_expiring_high | int }}"
+    th_no_need:  "{{ threshold_no_renew_needed | int }}"
+
+# 2) Decide status with simple, ordered set_fact tasks
+#    Need to renew:        d <= th_need
+- name: precheck | status := need to renew (≤need)
+  set_fact:
+    pc_status: "need to renew"
+  when:
+    - renew_check | bool
+    - pc_days_int <= th_need
+
+#    Expiring:             th_exp_low ≤ d ≤ th_exp_high   (e.g., 100–110 inclusive)
+- name: precheck | status := expiring (between low..high)
+  set_fact:
+    pc_status: "expiring"
+  when:
+    - renew_check | bool
+    - pc_status is not defined
+    - pc_days_int >= th_exp_low
+    - pc_days_int <= th_exp_high
+
+#    No renewal needed:    d > th_no_need                 (e.g., >120)
+- name: precheck | status := no renewal needed (>no_need)
+  set_fact:
+    pc_status: "no renewal needed"
+  when:
+    - renew_check | bool
+    - pc_status is not defined
+    - pc_days_int > th_no_need
+
+#    Fallback (covers 91–99, 111–120 or if renew_check is false)
+- name: precheck | status := unknown (fallback)
+  set_fact:
+    pc_status: "unknown"
+  when: pc_status is not defined
