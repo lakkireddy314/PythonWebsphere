@@ -1,3 +1,27 @@
+# Robust defaults so indexing never crashes
+- name: report_only | choose stats var name safely
+  set_fact:
+    __psvar: "{{ pipeline_stats_var | default('venafi_pipeline_stats') }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: report_only | read precheck data (safe)
+  set_fact:
+    precheck_data: >-
+      {{
+        (
+          (hostvars | default({})).get('localhost', {})           # guard hostvars['localhost']
+          | default({})
+        ).get(__psvar, {})                                        # guard hostvars['localhost'][__psvar]
+        .get('precheck', {})                                       # pick the section
+      }}
+  run_once: true
+  delegate_to: localhost
+
+
+
+
+
 - name: helpers | coerce thresholds to ints
   set_fact:
     threshold_need_renew_days: "{{ threshold_need_renew_days | int }}"
