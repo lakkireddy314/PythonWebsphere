@@ -1,3 +1,53 @@
+- name: merged | prepare base vars
+  set_fact:
+    __psvar: "{{ pipeline_stats_var | string }}"
+    __base: "{{ hostvars['localhost'][pipeline_stats_var] | default({}) }}"
+  run_once: true
+  delegate_to: localhost
+
+# Build the merged structure WITHOUT clobbering other sections/certs
+- name: merged | build merged tree
+  set_fact:
+    __merged: >-
+      {{
+        __base
+        | combine(
+            {
+              (section | string): {
+                (cert_key | string):
+                  (__base.get(section | string, {}).get(cert_key | string, {}) | combine(payload, recursive=True))
+              }
+            },
+            recursive=True
+          )
+      }}
+  run_once: true
+  delegate_to: localhost
+
+# 1) set_fact: keep it available on localhost for the remainder of this play run
+- name: merged | write back as set_fact on localhost
+  set_fact:
+    "{{ __psvar }}": "{{ __merged }}"
+  run_once: true
+  delegate_to: localhost
+
+# 2) set_stats: publish for downstream workflow nodes in the same job
+- name: merged | publish via set_stats (AWX workflow visibility)
+  set_stats:
+    data:
+      "{{ __psvar }}": "{{ __merged }}"
+  run_once: true
+  delegate_to: localhost
+
+
+
+
+
+
+
+
+
+
 # Robust defaults so indexing never crashes
 - name: report_only | choose stats var name safely
   set_fact:
