@@ -1,0 +1,1023 @@
+Awesome — here’s the complete, Ansible-2.9-compatible venafi_cert_renew_pipeline role with your two changes baked in:
+
+Logo is referenced directly as files/logo.png in the dry-run report (no base64, no MIME juggling).
+
+Certificate details table uses lighter grid lines (subtle 1px borders) instead of heavy ones.
+
+I’ve kept all the other improvements we built together (gap-free status bands, robust PEM cleaning, unique cert_names, safe stats usage, etc.). Short explanations accompany each file.
+
+📁 Role tree
+roles/venafi_cert_renew_pipeline/
+├─ README.md
+├─ defaults/
+│  └─ main.yml
+├─ vars/
+│  └─ main.yml
+├─ meta/
+│  └─ main.yml
+├─ files/
+│  └─ logo.png               # <-- your PNG logo lives here
+├─ templates/
+│  ├─ report_dry.html.j2     # <-- updated: direct logo + lighter grid
+│  └─ report_renew.html.j2   # (unchanged style; optional)
+├─ tasks/
+   ├─ main.yml
+   ├─ _helpers.yml
+   ├─ _assert_precheck.yml
+   ├─ _assert_renew.yml
+   ├─ _assert_deploy.yml
+   ├─ merge_into_stats.yml
+   ├─ precheck.yml
+   ├─ precheck_per_cert.yml
+   ├─ report_only.yml
+   ├─ renew.yml
+   ├─ renew_per_cert.yml
+   ├─ deploy.yml
+   ├─ deploy_per_cert.yml
+   └─ deploy_to_host.yml
+
+README.md (what this role does)
+# venafi_cert_renew_pipeline (Ansible 2.9)
+
+Stages (use tags):
+- `precheck`    – fetch current cert info from Venafi, compute `expiry_days`, classify status.
+- `report_only` – email an Outlook-friendly summary + details (now with a direct PNG logo).
+- `renew`       – renew eligible certs, re-validate lifetime (~2 years), optionally build PFX/JKS.
+- `deploy`      – push requested artifacts (PEM/JKS/PFX) to hosts/paths you specify.
+
+## Gap-free status logic
+Using two cutoffs:
+- **need to renew**           if `days ≤ threshold_need_renew_days`
+- **expiring**                if `threshold_need_renew_days < days ≤ threshold_no_renew_needed`
+- **no renewal needed**       if `days > threshold_no_renew_needed`
+
+No gaps, no "unknown".
+
+## Highlights
+- Cleans noisy `vcert` output and feeds **only PEM blocks** to OpenSSL via **stdin**.
+- `cert_names` normalized & **deduplicated**.
+- Pickup IDs via `community.general.path_join`.
+- Stats published with `set_stats` for downstream stages.
+- Renew prefers **precheck stats**; falls back to `cert_names`; **fails fast** if neither present.
+- Dry-run report: **full-width**, Outlook-friendly blue header, **light grid** table, **logo from files/logo.png**.
+
+## Quickstart
+```bash
+ansible-galaxy collection install community.general
+
+ansible-playbook site.yml -t precheck,report_only \
+  -e cert_names='["www.example.com","api.example.com"]' \
+  -e renew_check=true
+
+
+---
+
+## defaults/main.yml
+
+```yaml
+# ===== Universal inputs =====
+cert_names: []                                  # list of names to process
+venafi_policy_prefix: "/ved/policy/Automated/certs"
+venafi_tpp_url: "https://tpp.example.com"
+venafi_zone: ""
+vcert_bin: "vcert"
+vcert_additional_args: ""
+
+# ===== Precheck behavior =====
+renew_check: false
+renew_period_days: 980
+
+# Gap-free cutoffs
+threshold_need_renew_days: 90          # d ≤ this => "need to renew"
+threshold_no_renew_needed: 120         # need_cutoff < d ≤ ok_cutoff => "expiring"; else "no renewal needed"
+
+# Historical vars kept for reference (unused in decisions)
+threshold_expiring_low: 100
+threshold_expiring_high: 110
+
+precheck_download_serial: true
+report_only: false
+
+# ===== Renew behavior =====
+renew_on_missing_precheck: false
+renew_report: true
+expected_validity_days: 730            # ~2 years
+
+# ===== Deploy inputs =====
+deploy_hosts: []
+deploy_keystore_type: []               # any of [pem, pfx, jks]
+deploy_user: root
+deploy_group: root
+deploy_dir: "/opt/certs"
+deploy_file_mode: "0640"
+
+# JKS/PFX conversions
+pfx_password: "changeit"
+jks_password: "changeit"
+keytool_bin: "keytool"
+openssl_bin: "openssl"
+
+# ===== Email/reporting =====
+user_email: "cert-reports@example.com"
+smtp_host: "localhost"
+smtp_port: 25
+
+# ===== Stats =====
+pipeline_stats_var: "venafi_pipeline_stats"
+
+vars/main.yml
+pipeline_now: "{{ ansible_date_time.iso8601 }}"
+
+meta/main.yml
+galaxy_info:
+  author: your-team
+  description: "Venafi precheck → renew → deploy pipeline (Ansible 2.9 compatible)"
+  license: MIT
+dependencies: []
+
+tasks/main.yml
+---
+# Ensure helpers always run
+- import_tasks: _helpers.yml
+  tags: [always]
+
+- import_tasks: precheck.yml
+  tags: [precheck]
+
+- import_tasks: report_only.yml
+  tags: [report_only]
+
+- import_tasks: renew.yml
+  tags: [renew]
+
+- import_tasks: deploy.yml
+  tags: [deploy]
+
+
+Why: helpers normalize inputs, init stats, and build pickup IDs—even if you run a single tagged stage.
+
+tasks/_helpers.yml
+---
+- name: helpers | assert pipeline_stats_var is set
+  assert:
+    that:
+      - pipeline_stats_var is defined
+      - pipeline_stats_var | string | length > 0
+    fail_msg: "pipeline_stats_var must be a non-empty string (e.g. 'venafi_pipeline_stats')"
+  run_once: true
+  delegate_to: localhost
+
+- name: helpers | fallback default for blank pipeline_stats_var
+  set_fact:
+    pipeline_stats_var: "{{ (pipeline_stats_var | default('') | string | length > 0)
+                            | ternary(pipeline_stats_var, 'venafi_pipeline_stats') }}"
+  run_once: true
+  delegate_to: localhost
+
+# Normalize & dedupe cert_names
+- name: helpers | normalize & dedupe cert_names
+  set_fact:
+    cert_names: >-
+      {{
+        (cert_names | default([]))
+        | flatten
+        | map('string')
+        | map('trim')
+        | reject('equalto','')
+        | unique
+        | list
+      }}
+  run_once: true
+  delegate_to: localhost
+
+# Initialize stats map
+- name: helpers | ensure stats dict exists
+  set_fact:
+    _pipeline_stats_work: "{{ (hostvars['localhost'][pipeline_stats_var] | default({})) | combine({}, recursive=True) }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: helpers | publish stats (idempotent)
+  set_stats:
+    data: "{{ { (pipeline_stats_var): _pipeline_stats_work } }}"
+  run_once: true
+  delegate_to: localhost
+
+# Build pickup list from cert_names
+- name: helpers | build pickup list from cert_names
+  set_fact:
+    _pipeline_pickups: >-
+      {{
+        cert_names
+        | map('community.general.path_join', venafi_policy_prefix)
+        | list
+      }}
+  when: cert_names | length > 0
+  run_once: true
+  delegate_to: localhost
+
+tasks/merge_into_stats.yml
+---
+- name: merge_into_stats | assert inputs
+  assert:
+    that:
+      - pipeline_stats_var is defined
+      - pipeline_stats_var | string | length > 0
+      - section is string
+      - (cert_key is defined) and (cert_key | string | length > 0)
+      - payload is mapping
+    fail_msg: "merge_into_stats: missing vars: pipeline_stats_var, section, cert_key, payload"
+  run_once: true
+  delegate_to: localhost
+
+- name: merge_into_stats | read current stats
+  set_fact:
+    __mis_base: "{{ hostvars['localhost'][pipeline_stats_var] | default({}) }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: merge_into_stats | build merged map
+  set_fact:
+    __mis_merged: >-
+      {{
+        __mis_base
+        | combine(
+            {
+              (section|string): {
+                (cert_key|string):
+                  (__mis_base.get(section, {}).get(cert_key|string, {}) | combine(payload, recursive=True))
+              }
+            },
+            recursive=True
+          )
+      }}
+  run_once: true
+  delegate_to: localhost
+
+- name: merge_into_stats | publish
+  set_stats:
+    data: "{{ { (pipeline_stats_var): __mis_merged } }}"
+  run_once: true
+  delegate_to: localhost
+
+tasks/_assert_precheck.yml
+---
+- name: assert | precheck inputs
+  assert:
+    that:
+      - cert_names is iterable
+      - venafi_policy_prefix is string
+      - vcert_bin is string
+      - user_email is string
+    fail_msg: "Missing required vars for precheck/report_only stage"
+
+tasks/_assert_renew.yml
+---
+- name: assert | renew inputs
+  assert:
+    that:
+      - vcert_bin is string
+      - (expected_validity_days | int) > 0
+    fail_msg: "Missing required vars for renew stage"
+
+tasks/_assert_deploy.yml
+---
+- name: assert | deploy inputs
+  assert:
+    that:
+      - (deploy_hosts | length) > 0
+      - (deploy_keystore_type | length) > 0
+      - deploy_dir is string
+      - deploy_user is string
+      - deploy_group is string
+    fail_msg: "Missing required vars for deploy stage"
+
+tasks/precheck.yml
+---
+- import_tasks: _assert_precheck.yml
+
+- name: precheck | build cert/pickup pairs
+  set_fact:
+    precheck_pairs: "{{ cert_names | zip(_pipeline_pickups | default([])) | list }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: precheck | ensure pair count matches cert_names
+  assert:
+    that:
+      - precheck_pairs | length == cert_names | length
+    fail_msg: "Pickup list mismatch—check cert_names content"
+  run_once: true
+  delegate_to: localhost
+
+- name: precheck | process each cert
+  include_tasks: precheck_per_cert.yml
+  loop: "{{ precheck_pairs }}"
+  loop_control:
+    loop_var: cert_pair
+    label: "{{ cert_pair.0 }}"
+  vars:
+    pc_cert: "{{ cert_pair.0 }}"
+    pc_pickup_id: "{{ cert_pair.1 | default(community.general.path_join(venafi_policy_prefix, cert_pair.0)) }}"
+  run_once: true
+  delegate_to: localhost
+
+tasks/precheck_per_cert.yml (PEM cleaning + gap-free status)
+---
+- block:
+    - name: precheck | pickup PEM (raw) for {{ pc_cert }}
+      when: precheck_download_serial | bool
+      shell: >
+        {{ vcert_bin }} pickup -u "{{ venafi_tpp_url }}"
+        -id "{{ pc_pickup_id }}" -format pem {{ vcert_additional_args }} --out stdout
+      args: { executable: /bin/bash }
+      register: precheck_pem_raw
+      changed_when: false
+      failed_when: false
+
+    - name: precheck | extract PEM cert blocks for {{ pc_cert }}
+      when: precheck_download_serial | bool
+      set_fact:
+        pc_pem_clean: >-
+          {{
+            (
+              (precheck_pem_raw.stdout | default(''))
+              | regex_replace('\r', '')
+              | regex_findall('-----BEGIN CERTIFICATE-----[\\s\\S]*?-----END CERTIFICATE-----')
+            ) | join('\n')
+          }}
+
+    - name: precheck | parse serial and notAfter (stdin) for {{ pc_cert }}
+      when: precheck_download_serial | bool
+      command: "{{ openssl_bin }} x509 -noout -serial -enddate"
+      args:
+        stdin: "{{ pc_pem_clean }}"
+      register: precheck_pickup
+      changed_when: false
+      failed_when: false
+
+    - name: precheck | extract serial/notAfter
+      when: precheck_download_serial | bool
+      set_fact:
+        pc_serial: "{{ (precheck_pickup.stdout | default('')) | regex_search('serial=([0-9A-F]+)','\\1') | default('') }}"
+        pc_notAfter_raw: "{{ (precheck_pickup.stdout | default('')) | regex_search('notAfter=(.*)','\\1') | default('') }}"
+        pc_notAfter: "{{ pc_notAfter_raw | regex_replace('\r','') | trim }}"
+
+    - name: precheck | compute days until expiry
+      when: precheck_download_serial | bool
+      set_fact:
+        pc_expiry_days: >-
+          {{
+            (
+              ( pc_notAfter | to_datetime('%b %d %H:%M:%S %Y %Z', default=(ansible_date_time.iso8601 | to_datetime)) )
+              - (ansible_date_time.iso8601 | to_datetime)
+            ).days
+          }}
+      failed_when: false
+
+    # ===== Gap-free status: need / expiring / no-need =====
+    - name: precheck | normalize & assert thresholds
+      set_fact:
+        pc_days_int: "{{ (pc_expiry_days | default(999999)) | int }}"
+        need_cutoff: "{{ threshold_need_renew_days | int }}"
+        ok_cutoff:   "{{ threshold_no_renew_needed | int }}"
+
+    - name: precheck | assert ok_cutoff >= need_cutoff
+      assert:
+        that: [ "ok_cutoff >= need_cutoff" ]
+        fail_msg: "threshold_no_renew_needed ({{ ok_cutoff }}) must be >= threshold_need_renew_days ({{ need_cutoff }})"
+
+    - name: precheck | status := no renewal needed (default)
+      set_fact: { pc_status: "no renewal needed" }
+      when: renew_check | bool
+
+    - name: precheck | status := expiring (need_cutoff < d ≤ ok_cutoff)
+      set_fact: { pc_status: "expiring" }
+      when:
+        - renew_check | bool
+        - pc_days_int > need_cutoff
+        - pc_days_int <= ok_cutoff
+
+    - name: precheck | status := need to renew (d ≤ need_cutoff)
+      set_fact: { pc_status: "need to renew" }
+      when:
+        - renew_check | bool
+        - pc_days_int <= need_cutoff
+
+    - name: precheck | merge stats
+      include_tasks: merge_into_stats.yml
+      vars:
+        section: "precheck"
+        cert_key: "{{ pc_cert }}"
+        payload:
+          pickup_id: "{{ pc_pickup_id }}"
+          status: "{{ pc_status }}"
+          serial: "{{ pc_serial | default('') }}"
+          expiry_days: "{{ pc_expiry_days | default(omit) }}"
+          when: "{{ pipeline_now }}"
+          notes: ""
+  rescue:
+    - name: precheck | mark error
+      include_tasks: merge_into_stats.yml
+      vars:
+        section: "precheck"
+        cert_key: "{{ pc_cert }}"
+        payload:
+          pickup_id: "{{ pc_pickup_id }}"
+          status: "need to renew"
+          notes: "precheck encountered an error"
+          when: "{{ pipeline_now }}"
+
+tasks/report_only.yml (uses files/logo.png in template; no base64 work)
+---
+- import_tasks: _assert_precheck.yml
+
+# Stats var name (safe default)
+- name: report_only | choose stats var name safely
+  set_fact:
+    __psvar: "{{ pipeline_stats_var | default('venafi_pipeline_stats') }}"
+  run_once: true
+  delegate_to: localhost
+
+# Read precheck data from current run
+- name: report_only | read precheck data (safe)
+  set_fact:
+    precheck_data: >-
+      {{
+        ((hostvars | default({})).get('localhost', {})).get(__psvar, {}).get('precheck', {})
+      }}
+  run_once: true
+  delegate_to: localhost
+
+# Guard (optional)
+- name: report_only | ensure precheck data exists
+  assert:
+    that: [ "precheck_data | length > 0" ]
+    fail_msg: "No precheck data found under '{{ __psvar }}'. Run with --tags precheck first."
+  run_once: true
+  delegate_to: localhost
+
+# Summary metrics
+- name: report_only | compute summary counts
+  set_fact:
+    dr_total_scanned: "{{ precheck_data | length }}"
+    dr_need_count: >-
+      {{ (precheck_data | dict2items
+          | selectattr('value.status','equalto','need to renew')
+          | list | length) }}
+    dr_expiring_count: >-
+      {{ (precheck_data | dict2items
+          | selectattr('value.status','equalto','expiring')
+          | list | length) }}
+    dr_noneed_count: >-
+      {{ (precheck_data | dict2items
+          | selectattr('value.status','equalto','no renewal needed')
+          | list | length) }}
+  run_once: true
+  delegate_to: localhost
+
+# Build render context
+- name: report_only | build render context
+  set_fact:
+    __report_pre: "{{ precheck_data }}"
+    __report_total: "{{ dr_total_scanned }}"
+    __report_need: "{{ dr_need_count }}"
+    __report_expiring: "{{ dr_expiring_count }}"
+    __report_noneed: "{{ dr_noneed_count }}"
+  run_once: true
+  delegate_to: localhost
+
+# Render HTML
+- name: report_only | build html
+  template:
+    src: report_dry.html.j2
+    dest: "/tmp/venafi_report_dry.html"
+  run_once: true
+  delegate_to: localhost
+
+# Send email
+- name: report_only | mail html
+  mail:
+    host: "{{ smtp_host }}"
+    port: "{{ smtp_port }}"
+    to: "{{ user_email }}"
+    subject: "[Dry-Run] Venafi Precheck Report"
+    subtype: html
+    body: "{{ lookup('file', '/tmp/venafi_report_dry.html') }}"
+  run_once: true
+  delegate_to: localhost
+
+templates/report_dry.html.j2 (direct PNG + lighter grid)
+<!doctype html>
+<html>
+  <head>
+    <meta http-equiv="x-ua-compatible" content="IE=edge">
+    <meta charset="utf-8">
+    <title>Venafi Precheck Dry-Run</title>
+    <!--[if !mso]><!--><meta name="viewport" content="width=device-width, initial-scale=1"><!--<![endif]-->
+  </head>
+  <body style="margin:0; padding:0; background:#f2f6fb;">
+    <!-- Full-width wrapper -->
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f2f6fb; margin:0; padding:0;">
+      <!-- Header bar -->
+      <tr>
+        <td style="background:#0b63c4; background-image:linear-gradient(90deg,#0b63c4,#1985e2); padding:16px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+            <tr>
+              <!-- Logo (direct PNG from role files/) -->
+              <td valign="middle" style="padding-right:12px; white-space:nowrap; width:44px;">
+                <img src="files/logo.png" alt="Logo" width="36" height="36"
+                     style="display:inline-block; border:0; outline:none; text-decoration:none; width:36px; height:36px; vertical-align:middle; border-radius:4px;">
+              </td>
+              <!-- Title -->
+              <td valign="middle" style="padding:0;">
+                <div style="font-family:Segoe UI, Arial, sans-serif; font-size:20px; line-height:24px; color:#ffffff; font-weight:700;">
+                  Venafi Precheck <span style="opacity:.9; font-weight:600;">Dry-Run Report</span>
+                </div>
+                <div style="margin-top:4px; font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#eaf3ff; opacity:.95;">
+                  Generated: {{ ansible_date_time.date }} {{ ansible_date_time.time }} &nbsp;|&nbsp; Pipeline: {{ pipeline_stats_var }}
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+
+      <!-- Summary cards -->
+      <tr>
+        <td style="padding:12px 16px 4px 16px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+            <tr>
+              {% set cards = [
+                ['Total Scanned', __report_total, '#0b63c4'],
+                ['Needs Renewal', __report_need, '#c62828'],
+                ['Expiring', __report_expiring, '#f9a825'],
+                ['No Renewal Needed', __report_noneed, '#2e7d32']
+              ] %}
+              {% for label, value, color in cards %}
+              <td valign="top" style="padding:8px;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+                       style="border:1px solid #e3eaf5; border-radius:6px; background:#ffffff;">
+                  <tr><td style="padding:12px;">
+                    <div style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#3a5a8f; text-transform:uppercase; letter-spacing:.02em;">{{ label }}</div>
+                    <div style="font-family:Segoe UI, Arial, sans-serif; font-size:24px; color:{{ color }}; font-weight:700; margin-top:2px;">{{ value }}</div>
+                  </td></tr>
+                </table>
+              </td>
+              {% endfor %}
+            </tr>
+          </table>
+          <div style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#5275a5; margin:4px 8px 0 8px;">
+            Thresholds: need ≤ {{ threshold_need_renew_days | int }}, expiring ≤ {{ threshold_no_renew_needed | int }} (gap-free bands)
+          </div>
+        </td>
+      </tr>
+
+      <!-- Details (single grid with lighter lines) -->
+      <tr>
+        <td style="padding:8px 16px 20px 16px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+                 style="background:#ffffff; border:1px solid #d6e3f7; border-radius:6px;">
+            <!-- Section header strip -->
+            <tr>
+              <td colspan="5" style="background:#e8f1fd; padding:10px 12px; border-bottom:1px solid #d6e3f7; border-radius:6px 6px 0 0;">
+                <div style="font-family:Segoe UI, Arial, sans-serif; font-size:13px; font-weight:700; color:#234d86;">
+                  Certificate Details
+                </div>
+              </td>
+            </tr>
+            <!-- Column headers (light borders) -->
+            <tr>
+              {% set thstyle = "font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#234d86; background:#f4f8ff; padding:10px; border-bottom:1px solid #d6e3f7; border-right:1px solid #e6eefb;" %}
+              <th align="left" style="{{ thstyle }}">Cert</th>
+              <th align="left" style="{{ thstyle }}">Pickup ID</th>
+              <th align="left" style="{{ thstyle }}">Status</th>
+              <th align="left" style="{{ thstyle }}">Serial</th>
+              <th align="left" style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#234d86; background:#f4f8ff; padding:10px; border-bottom:1px solid #d6e3f7;">Expiry (days)</th>
+            </tr>
+
+            {% for cert_name, data in __report_pre.items() %}
+            {% set status = data.status | default('') %}
+            {% set status_color = '#2e7d32' if status == 'no renewal needed' else ('#f9a825' if status == 'expiring' else '#c62828') %}
+            <tr>
+              {% set tdstyle_r = "font-family:Segoe UI, Arial, sans-serif; font-size:13px; color:#1c2a3a; padding:10px; border-right:1px solid #e6eefb; border-bottom:1px solid #eef3fb;" %}
+              <td style="{{ tdstyle_r }}">{{ cert_name }}</td>
+              <td style="{{ tdstyle_r }}">{{ data.pickup_id }}</td>
+              <td style="{{ tdstyle_r }} color:{{ status_color }}; font-weight:600;">{{ status }}</td>
+              <td style="{{ tdstyle_r }}">{{ data.serial }}</td>
+              <td style="font-family:Segoe UI, Arial, sans-serif; font-size:13px; color:#1c2a3a; padding:10px; border-bottom:1px solid #eef3fb;">{{ data.expiry_days | default('N/A') }}</td>
+            </tr>
+            {% endfor %}
+
+            {% if __report_pre|length == 0 %}
+            <tr>
+              <td colspan="5" style="font-family:Segoe UI, Arial, sans-serif; font-size:13px; color:#5a6c86; padding:14px; text-align:center;">
+                No certificates were found to report.
+              </td>
+            </tr>
+            {% endif %}
+          </table>
+
+          <!-- Footer note -->
+          <div style="font-family:Segoe UI, Arial, sans-serif; font-size:11px; color:#6f86ad; margin-top:10px;">
+            Run at {{ pipeline_now }}
+          </div>
+        </td>
+      </tr>
+
+      <tr><td style="height:16px; line-height:16px; font-size:0;">&nbsp;</td></tr>
+    </table>
+  </body>
+</html>
+
+
+What changed:
+
+The logo is now a direct <img src="files/logo.png"> reference (pulls from the role’s files/ dir).
+
+The details table uses 1px light borders (#d6e3f7, #e6eefb, #eef3fb) for a cleaner, less “heavy” look.
+
+⚠️ Important: When you use the template module, Ansible does not auto-attach files/ assets. Most mail clients won’t fetch local paths. If this email is viewed outside AWX’s rendered pane, Outlook will not find files/logo.png unless you host it or embed base64. You requested a direct file reference, so I did exactly that, but in real email delivery you typically:
+
+embed as base64 (CID/data URI), or
+
+host the image at an internal HTTP(S) URL.
+
+If you later decide you want true inline delivery, say the word and I’ll flip it back to a self-contained base64 image.
+
+tasks/renew.yml (prefers stats; fallback cert_names; fail if neither)
+---
+- import_tasks: _assert_renew.yml
+
+- name: renew | detect pipeline stats presence
+  set_fact:
+    _renew_stats_available: >-
+      {{
+        (hostvars['localhost'][pipeline_stats_var] is defined) and
+        (hostvars['localhost'][pipeline_stats_var] | length > 0)
+      }}
+  run_once: true
+  delegate_to: localhost
+
+- name: renew | derive candidate cert list from stats (precheck keys)
+  when: _renew_stats_available and
+        (hostvars['localhost'][pipeline_stats_var].precheck | default({}) | length) > 0
+  set_fact:
+    _renew_cert_list: "{{ hostvars['localhost'][pipeline_stats_var].precheck.keys() | list }}"
+    precheck_stats: "{{ hostvars['localhost'][pipeline_stats_var].precheck | default({}) }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: renew | derive candidate cert list from stats (renew keys)
+  when: _renew_stats_available and
+        (_renew_cert_list is not defined) and
+        (hostvars['localhost'][pipeline_stats_var].renew | default({}) | length) > 0
+  set_fact:
+    _renew_cert_list: "{{ hostvars['localhost'][pipeline_stats_var].renew.keys() | list }}"
+    precheck_stats: "{{ hostvars['localhost'][pipeline_stats_var].precheck | default({}) }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: renew | fall back to cert_names
+  when: _renew_cert_list is not defined and (cert_names | default([]) | length) > 0
+  set_fact:
+    _renew_cert_list: "{{ cert_names }}"
+    precheck_stats: "{{ hostvars['localhost'][pipeline_stats_var].precheck | default({}) if _renew_stats_available else {} }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: renew | require candidate certs (stats or cert_names)
+  assert:
+    that:
+      - _renew_cert_list is defined
+      - (_renew_cert_list | length) > 0
+    fail_msg: >
+      Renew needs input from shared stats ({{ pipeline_stats_var }}) or cert_names.
+      Run 'precheck' first or pass -e cert_names='["name1","name2"]'.
+  run_once: true
+  delegate_to: localhost
+
+- name: renew | build cert/pickup pairs
+  set_fact:
+    renew_pairs: >-
+      {{
+        _renew_cert_list
+        | zip(_renew_cert_list | map('community.general.path_join', venafi_policy_prefix) | list)
+        | list
+      }}
+  run_once: true
+  delegate_to: localhost
+
+- name: renew | process each cert
+  include_tasks: renew_per_cert.yml
+  loop: "{{ renew_pairs }}"
+  loop_control:
+    loop_var: renew_pair
+    label: "{{ renew_pair.0 }}"
+  vars:
+    rn_cert: "{{ renew_pair.0 }}"
+    rn_pickup_id: "{{ renew_pair.1 }}"
+    rn_prior_status: "{{ precheck_stats.get(renew_pair.0, {}).get('status', 'no renewal needed') }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: renew | publish stats downstream
+  set_stats:
+    data:
+      "{{ pipeline_stats_var }}": "{{ hostvars['localhost'][pipeline_stats_var] | default({}) }}"
+  run_once: true
+  delegate_to: localhost
+
+tasks/renew_per_cert.yml
+---
+- block:
+    - name: renew | decide should-renew for {{ rn_cert }}
+      set_fact:
+        rn_should: >-
+          {{
+            (rn_prior_status == 'need to renew') or
+            ((not renew_check | bool) and (renew_on_missing_precheck | bool))
+          }}
+
+    - name: renew | fetch current serial/expiry if missing
+      when: precheck_stats.get(rn_cert, {}).get('serial','') == '' or (precheck_stats.get(rn_cert, {}).get('expiry_days', None) is not number)
+      shell: |
+        set -e
+        {{ vcert_bin }} pickup -u "{{ venafi_tpp_url }}" -id "{{ rn_pickup_id }}" -format pem {{ vcert_additional_args }} --out stdout 2>/dev/null \
+        | {{ openssl_bin }} x509 -noout -serial -enddate
+      args: { executable: /bin/bash }
+      register: renew_pickup
+      changed_when: false
+      failed_when: false
+
+    - name: renew | perform renewal (vcert)
+      when: rn_should
+      shell: >
+        {{ vcert_bin }} renew -u "{{ venafi_tpp_url }}" -id "{{ rn_pickup_id }}"
+        {{ vcert_additional_args }} --no-prompt
+      args: { executable: /bin/bash }
+      register: renew_cmd
+      changed_when: renew_cmd.rc == 0
+      retries: 2
+      delay: 5
+      until: renew_cmd is succeeded
+
+    - name: renew | pickup PEM (raw)
+      when: rn_should
+      shell: >
+        {{ vcert_bin }} pickup -u "{{ venafi_tpp_url }}"
+        -id "{{ rn_pickup_id }}" -format pem {{ vcert_additional_args }} --out stdout
+      args: { executable: /bin/bash }
+      register: renew_pem_raw
+      changed_when: false
+
+    - name: renew | extract PEM cert blocks
+      when: rn_should
+      set_fact:
+        rn_pem_clean: >-
+          {{
+            (
+              (renew_pem_raw.stdout | default(''))
+              | regex_replace('\r', '')
+              | regex_findall('-----BEGIN CERTIFICATE-----[\\s\\S]*?-----END CERTIFICATE-----')
+            ) | join('\n')
+          }}
+
+    - name: renew | write cleaned PEM to disk
+      when: rn_should
+      copy:
+        dest: "/tmp/cert.pem"
+        content: "{{ rn_pem_clean }}"
+        mode: "0640"
+
+    - name: renew | parse serial and notAfter (stdin)
+      when: rn_should
+      command: "{{ openssl_bin }} x509 -noout -serial -enddate"
+      args:
+        stdin: "{{ rn_pem_clean }}"
+      register: renew_post
+      changed_when: "'serial=' in renew_post.stdout"
+
+    - name: renew | extract new serial/expiry
+      when: rn_should
+      set_fact:
+        rn_new_serial: "{{ (renew_post.stdout | regex_search('serial=([0-9A-F]+)','\\1')) | default('') }}"
+        rn_new_notAfter_raw: "{{ (renew_post.stdout | regex_search('notAfter=(.*)','\\1')) | default('') }}"
+        rn_new_notAfter: "{{ rn_new_notAfter_raw | regex_replace('\r','') | trim }}"
+        rn_new_expiry_days: >-
+          {{
+            (
+              (rn_new_notAfter | to_datetime('%b %d %H:%M:%S %Y %Z', default=(ansible_date_time.iso8601 | to_datetime)))
+              - (ansible_date_time.iso8601 | to_datetime)
+            ).days
+          }}
+
+    - name: renew | validate ~2 years validity
+      when: rn_should
+      assert:
+        that:
+          - (rn_new_expiry_days | int) >= (expected_validity_days - 30)
+          - (rn_new_expiry_days | int) <= (expected_validity_days + 60)
+        fail_msg: "Expiry {{ rn_new_expiry_days }}d deviates from expected ~{{ expected_validity_days }}d"
+
+    - name: renew | optionally create PFX
+      when: rn_should and ('pfx' in deploy_keystore_type)
+      shell: |
+        set -e
+        {{ openssl_bin }} pkcs12 -export -in /tmp/cert.pem -inkey /tmp/cert.pem \
+          -out /tmp/{{ rn_cert }}.pfx -passout pass:{{ pfx_password }}
+      args: { executable: /bin/bash }
+      register: pfx_build
+      changed_when: pfx_build.rc == 0
+      failed_when: false
+
+    - name: renew | optionally create JKS
+      when: rn_should and ('jks' in deploy_keystore_type)
+      shell: |
+        set -e
+        {{ keytool_bin }} -importkeystore \
+          -srckeystore /tmp/{{ rn_cert }}.pfx -srcstoretype pkcs12 -srcstorepass {{ pfx_password }} \
+          -destkeystore /tmp/{{ rn_cert }}.jks -deststoretype JKS -deststorepass {{ jks_password }} -noprompt
+      args: { executable: /bin/bash }
+      register: jks_build
+      changed_when: jks_build.rc == 0
+      failed_when: false
+
+    - name: renew | publish renew stats + artifacts
+      when: rn_should
+      include_tasks: merge_into_stats.yml
+      vars:
+        section: "renew"
+        cert_key: "{{ rn_cert }}"
+        payload:
+          pickup_id: "{{ rn_pickup_id }}"
+          prev_serial: "{{ renew_pickup.stdout | default('') | regex_search('serial=([0-9A-F]+)','\\1') | default(precheck_stats.get(rn_cert, {}).get('serial','')) }}"
+          new_serial: "{{ rn_new_serial | default('') }}"
+          new_expiry_days: "{{ rn_new_expiry_days | default(omit) }}"
+          success: true
+          notes: ""
+          pem: "{{ rn_pem_clean }}"
+          pfx_path: "{{ '/tmp/%s.pfx' % rn_cert if 'pfx' in deploy_keystore_type else '' }}"
+          jks_path: "{{ '/tmp/%s.jks' % rn_cert if 'jks' in deploy_keystore_type else '' }}"
+
+    - name: renew | optional email report
+      when: renew_report | bool
+      block:
+        - name: renew | build email (once)
+          template:
+            src: report_renew.html.j2
+            dest: "/tmp/venafi_report_renew.html"
+          run_once: true
+          delegate_to: localhost
+
+        - name: renew | send email (once)
+          mail:
+            host: "{{ smtp_host }}"
+            port: "{{ smtp_port }}"
+            to: "{{ user_email }}"
+            subject: "[Renew] Venafi Renewal Report"
+            subtype: html
+            body: "{{ lookup('file', '/tmp/venafi_report_renew.html') }}"
+          run_once: true
+          delegate_to: localhost
+  rescue:
+    - name: renew | record failure for {{ rn_cert }}
+      include_tasks: merge_into_stats.yml
+      vars:
+        section: "renew"
+        cert_key: "{{ rn_cert }}"
+        payload:
+          pickup_id: "{{ rn_pickup_id }}"
+          success: false
+          notes: "renew encountered an error"
+          when: "{{ pipeline_now }}"
+
+tasks/deploy.yml
+---
+- import_tasks: _assert_deploy.yml
+
+- name: deploy | collect renew outputs
+  set_fact:
+    renew_outputs: "{{ hostvars['localhost'][pipeline_stats_var].renew | default({}) }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: deploy | ensure artifacts exist
+  when: (renew_outputs | length) == 0
+  fail:
+    msg: "No renewed artifacts found in stats. Run 'renew' first or inject stats."
+
+- name: deploy | process each cert
+  include_tasks: deploy_per_cert.yml
+  loop: "{{ renew_outputs.keys() | list }}"
+  loop_control:
+    loop_var: deploy_cert
+    label: "{{ deploy_cert }}"
+  vars:
+    deploy_cert: "{{ deploy_cert }}"
+  run_once: true
+  delegate_to: localhost
+
+tasks/deploy_per_cert.yml
+---
+- block:
+    - name: deploy | prep temp dir for {{ deploy_cert }}
+      file:
+        path: "/tmp/pipeline_{{ deploy_cert }}"
+        state: directory
+        mode: "0755"
+
+    - name: deploy | write PEM if requested
+      when: "'pem' in deploy_keystore_type"
+      copy:
+        dest: "/tmp/pipeline_{{ deploy_cert }}/{{ deploy_cert }}.pem"
+        content: "{{ hostvars['localhost'][pipeline_stats_var].renew[deploy_cert].pem }}"
+        mode: "0640"
+
+    - name: deploy | copy to each target host
+      include_tasks: deploy_to_host.yml
+      loop: "{{ deploy_hosts }}"
+      loop_control:
+        loop_var: target_host
+        label: "{{ target_host }}"
+      vars:
+        target_host: "{{ target_host }}"
+        src_dir: "/tmp/pipeline_{{ deploy_cert }}"
+        pfx_src: "{{ hostvars['localhost'][pipeline_stats_var].renew[deploy_cert].pfx_path | default('') }}"
+        jks_src: "{{ hostvars['localhost'][pipeline_stats_var].renew[deploy_cert].jks_path | default('') }}"
+        deploy_cert_inner: "{{ deploy_cert }}"
+
+    - name: deploy | record deploy stats
+      include_tasks: merge_into_stats.yml
+      vars:
+        section: "deploy"
+        cert_key: "{{ deploy_cert }}"
+        payload:
+          pushed_to: "{{ deploy_hosts }}"
+          dest_dir: "{{ deploy_dir }}"
+          when: "{{ pipeline_now }}"
+  rescue:
+    - name: deploy | record failure
+      include_tasks: merge_into_stats.yml
+      vars:
+        section: "deploy"
+        cert_key: "{{ deploy_cert }}"
+        payload:
+          pushed_to: "{{ deploy_hosts }}"
+          dest_dir: "{{ deploy_dir }}"
+          when: "{{ pipeline_now }}"
+          notes: "deploy encountered an error"
+
+tasks/deploy_to_host.yml
+---
+- block:
+    - name: deploy | ensure dest dir on {{ target_host }}
+      become: true
+      file:
+        path: "{{ deploy_dir }}"
+        state: directory
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_group }}"
+        mode: "0755"
+      delegate_to: "{{ target_host }}"
+
+    - name: deploy | copy PEM to {{ target_host }}
+      when: "'pem' in deploy_keystore_type"
+      become: true
+      copy:
+        src: "{{ src_dir }}/{{ deploy_cert_inner }}.pem"
+        dest: "{{ deploy_dir }}/{{ deploy_cert_inner }}.pem"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_group }}"
+        mode: "{{ deploy_file_mode }}"
+      delegate_to: "{{ target_host }}"
+
+    - name: deploy | copy PFX to {{ target_host }}
+      when: "'pfx' in deploy_keystore_type and (pfx_src | length) > 0"
+      become: true
+      copy:
+        src: "{{ pfx_src }}"
+        dest: "{{ deploy_dir }}/{{ deploy_cert_inner }}.pfx"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_group }}"
+        mode: "{{ deploy_file_mode }}"
+      delegate_to: "{{ target_host }}"
+
+    - name: deploy | copy JKS to {{ target_host }}
+      when: "'jks' in deploy_keystore_type and (jks_src | length) > 0"
+      become: true
+      copy:
+        src: "{{ jks_src }}"
+        dest: "{{ deploy_dir }}/{{ deploy_cert_inner }}.jks"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_group }}"
+        mode: "{{ deploy_file_mode }}"
+      delegate_to: "{{ target_host }}"
+  rescue:
+    - name: deploy | log copy failure on {{ target_host }}
+      debug:
+        msg: "Failed to copy artifacts to {{ target_host }}"
+
+That’s everything you need for the pipeline role with your logo & lighter grid request.
+
+If you want, I can generate a matching, lighter-grid report_renew.html.j2 so both emails share the same aesthetic.
