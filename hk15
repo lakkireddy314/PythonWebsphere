@@ -1,0 +1,276 @@
+tasks/report_only.yml (precheck dry-run report)
+---
+- import_tasks: _assert_precheck.yml
+
+# Safely choose stats key name (fallback to default if not set)
+- name: report_only | choose stats var name safely
+  set_fact:
+    __psvar: "{{ pipeline_stats_var | default('venafi_pipeline_stats') }}"
+  run_once: true
+  delegate_to: localhost
+
+# Read precheck data from in-memory stats (same run)
+- name: report_only | read precheck data (safe)
+  set_fact:
+    precheck_data: >-
+      {{
+        (
+          (hostvars | default({})).get('localhost', {})
+        ).get(__psvar, {})
+        .get('precheck', {})
+      }}
+  run_once: true
+  delegate_to: localhost
+
+# Friendly guard (remove if you prefer silent/no-op emails)
+- name: report_only | ensure precheck data exists
+  assert:
+    that:
+      - precheck_data | length > 0
+    fail_msg: "No precheck data found under '{{ __psvar }}'. Run with --tags precheck first (or persist stats)."
+  run_once: true
+  delegate_to: localhost
+
+# Counts for the summary metrics
+- name: report_only | compute summary counts
+  set_fact:
+    dr_total_scanned: "{{ precheck_data | length }}"
+    dr_need_count: >-
+      {{ (precheck_data | dict2items
+          | selectattr('value.status','equalto','need to renew')
+          | list | length) }}
+    dr_expiring_count: >-
+      {{ (precheck_data | dict2items
+          | selectattr('value.status','equalto','expiring')
+          | list | length) }}
+    dr_noneed_count: >-
+      {{ (precheck_data | dict2items
+          | selectattr('value.status','equalto','no renewal needed')
+          | list | length) }}
+  run_once: true
+  delegate_to: localhost
+
+# ── Logo as BASE64 ONLY (no URLs) ──────────────────────────────────────────────
+# Provide exactly: -e report_logo_base64="<base64 string without data: prefix>"
+# Optional: override mime if not PNG with -e report_logo_mime=image/jpeg
+- name: report_only | choose logo MIME (default image/png)
+  set_fact:
+    report_logo_mime: "{{ report_logo_mime | default('image/png') }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: report_only | build logo data URI (from base64 var only)
+  set_fact:
+    __report_logo_data_uri: "data:{{ report_logo_mime }};base64,{{ report_logo_base64 }}"
+  when: report_logo_base64 is defined and (report_logo_base64 | length) > 0
+  run_once: true
+  delegate_to: localhost
+# ───────────────────────────────────────────────────────────────────────────────
+
+# Build render context (no {% set %} in template)
+- name: report_only | build render context
+  set_fact:
+    __report_pre: "{{ precheck_data }}"
+    __report_total: "{{ dr_total_scanned }}"
+    __report_need: "{{ dr_need_count }}"
+    __report_expiring: "{{ dr_expiring_count }}"
+    __report_noneed: "{{ dr_noneed_count }}"
+  run_once: true
+  delegate_to: localhost
+
+# Render Outlook-friendly HTML (full width, blue, heavy grid)
+- name: report_only | build html
+  template:
+    src: report_dry.html.j2
+    dest: "/tmp/venafi_report_dry.html"
+  run_once: true
+  delegate_to: localhost
+
+# Send email
+- name: report_only | mail html
+  mail:
+    host: "{{ smtp_host }}"
+    port: "{{ smtp_port }}"
+    to: "{{ user_email }}"
+    subject: "[Dry-Run] Venafi Precheck Report"
+    subtype: html
+    body: "{{ lookup('file', '/tmp/venafi_report_dry.html') }}"
+  run_once: true
+  delegate_to: localhost
+
+templates/report_dry.html.j2 (full-width, blue, heavy-grid, base64 logo)
+<!doctype html>
+<html>
+  <head>
+    <meta http-equiv="x-ua-compatible" content="IE=edge">
+    <meta charset="utf-8">
+    <title>Venafi Precheck Dry-Run</title>
+    <!--[if !mso]><!--><meta name="viewport" content="width=device-width, initial-scale=1"><!--<![endif]-->
+  </head>
+  <body style="margin:0; padding:0; background:#f2f6fb;">
+    <!-- Full-width wrapper -->
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f2f6fb; margin:0; padding:0;">
+      <!-- Header bar (full width) -->
+      <tr>
+        <td style="background:#0b63c4; background-image:linear-gradient(90deg,#0b63c4,#1985e2); padding:16px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+            <tr>
+              <!-- Logo (left, base64 only) -->
+              <td valign="middle" style="padding-right:12px; white-space:nowrap; width:44px;">
+                {% if __report_logo_data_uri is defined and __report_logo_data_uri %}
+                <img src="{{ __report_logo_data_uri }}" alt="Logo" width="36" height="36"
+                     style="display:inline-block; border:0; outline:none; text-decoration:none; width:36px; height:36px; vertical-align:middle; border-radius:4px;">
+                {% endif %}
+              </td>
+              <!-- Title -->
+              <td valign="middle" style="padding:0;">
+                <div style="font-family:Segoe UI, Arial, sans-serif; font-size:20px; line-height:24px; color:#ffffff; font-weight:700;">
+                  Venafi Precheck <span style="opacity:.9; font-weight:600;">Dry-Run Report</span>
+                </div>
+                <div style="margin-top:4px; font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#eaf3ff; opacity:.95;">
+                  Generated: {{ ansible_date_time.date }} {{ ansible_date_time.time }} &nbsp;|&nbsp; Pipeline: {{ pipeline_stats_var }}
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+
+      <!-- Summary row (full width) -->
+      <tr>
+        <td style="padding:12px 16px 4px 16px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+            <tr>
+              <!-- Total -->
+              <td valign="top" style="padding:8px;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+                       style="border:1px solid #e3eaf5; border-radius:6px; background:#ffffff;">
+                  <tr><td style="padding:12px;">
+                    <div style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#3a5a8f; text-transform:uppercase; letter-spacing:.02em;">Total Scanned</div>
+                    <div style="font-family:Segoe UI, Arial, sans-serif; font-size:24px; color:#0b63c4; font-weight:700; margin-top:2px;">{{ __report_total }}</div>
+                  </td></tr>
+                </table>
+              </td>
+              <!-- Needs Renewal -->
+              <td valign="top" style="padding:8px;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+                       style="border:1px solid #e3eaf5; border-radius:6px; background:#ffffff;">
+                  <tr><td style="padding:12px;">
+                    <div style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#3a5a8f; text-transform:uppercase; letter-spacing:.02em;">Needs Renewal</div>
+                    <div style="font-family:Segoe UI, Arial, sans-serif; font-size:24px; color:#c62828; font-weight:700; margin-top:2px;">{{ __report_need }}</div>
+                  </td></tr>
+                </table>
+              </td>
+              <!-- Expiring -->
+              <td valign="top" style="padding:8px;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+                       style="border:1px solid #e3eaf5; border-radius:6px; background:#ffffff;">
+                  <tr><td style="padding:12px;">
+                    <div style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#3a5a8f; text-transform:uppercase; letter-spacing:.02em;">Expiring</div>
+                    <div style="font-family:Segoe UI, Arial, sans-serif; font-size:24px; color:#f9a825; font-weight:700; margin-top:2px;">{{ __report_expiring }}</div>
+                  </td></tr>
+                </table>
+              </td>
+              <!-- No Renewal Needed -->
+              <td valign="top" style="padding:8px;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+                       style="border:1px solid #e3eaf5; border-radius:6px; background:#ffffff;">
+                  <tr><td style="padding:12px;">
+                    <div style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#3a5a8f; text-transform:uppercase; letter-spacing:.02em;">No Renewal Needed</div>
+                    <div style="font-family:Segoe UI, Arial, sans-serif; font-size:24px; color:#2e7d32; font-weight:700; margin-top:2px;">{{ __report_noneed }}</div>
+                  </td></tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+          <div style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#5275a5; margin:4px 8px 0 8px;">
+            Thresholds: need ≤ {{ threshold_need_renew_days | int }}, expiring ≤ {{ threshold_no_renew_needed | int }} (gap-free bands)
+          </div>
+        </td>
+      </tr>
+
+      <!-- Details (single grid with heavy lines) -->
+      <tr>
+        <td style="padding:8px 16px 20px 16px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+                 style="background:#ffffff; border:2px solid #2f5597;">
+            <!-- Section header strip -->
+            <tr>
+              <td colspan="5" style="background:#e8f1fd; padding:10px 12px; border-bottom:2px solid #2f5597;">
+                <div style="font-family:Segoe UI, Arial, sans-serif; font-size:13px; font-weight:700; color:#234d86;">
+                  Certificate Details
+                </div>
+              </td>
+            </tr>
+            <!-- Column headers -->
+            <tr>
+              <th align="left" style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#234d86; background:#f4f8ff;
+                                      padding:10px; border-right:2px solid #2f5597; border-bottom:2px solid #2f5597;">Cert</th>
+              <th align="left" style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#234d86; background:#f4f8ff;
+                                      padding:10px; border-right:2px solid #2f5597; border-bottom:2px solid #2f5597;">Pickup ID</th>
+              <th align="left" style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#234d86; background:#f4f8ff;
+                                      padding:10px; border-right:2px solid #2f5597; border-bottom:2px solid #2f5597;">Status</th>
+              <th align="left" style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#234d86; background:#f4f8ff;
+                                      padding:10px; border-right:2px solid #2f5597; border-bottom:2px solid #2f5597;">Serial</th>
+              <th align="left" style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#234d86; background:#f4f8ff;
+                                      padding:10px; border-bottom:2px solid #2f5597;">Expiry (days)</th>
+            </tr>
+
+            {% for cert_name, data in __report_pre.items() %}
+            {% set status = data.status | default('') %}
+            {% set status_color = '#2e7d32' if status == 'no renewal needed' else ('#f9a825' if status == 'expiring' else '#c62828') %}
+            <tr>
+              <td style="font-family:Segoe UI, Arial, sans-serif; font-size:13px; color:#1c2a3a; padding:10px;
+                         border-right:2px solid #2f5597; border-bottom:2px solid #2f5597;">{{ cert_name }}</td>
+              <td style="font-family:Segoe UI, Arial, sans-serif; font-size:13px; color:#1c2a3a; padding:10px;
+                         border-right:2px solid #2f5597; border-bottom:2px solid #2f5597;">{{ data.pickup_id }}</td>
+              <td style="font-family:Segoe UI, Arial, sans-serif; font-size:13px; color:{{ status_color }}; font-weight:600; padding:10px;
+                         border-right:2px solid #2f5597; border-bottom:2px solid #2f5597;">{{ status }}</td>
+              <td style="font-family:Segoe UI, Arial, sans-serif; font-size:13px; color:#1c2a3a; padding:10px;
+                         border-right:2px solid #2f5597; border-bottom:2px solid #2f5597;">{{ data.serial }}</td>
+              <td style="font-family:Segoe UI, Arial, sans-serif; font-size:13px; color:#1c2a3a; padding:10px;
+                         border-bottom:2px solid #2f5597;">{{ data.expiry_days | default('N/A') }}</td>
+            </tr>
+            {% endfor %}
+
+            {% if __report_pre|length == 0 %}
+            <tr>
+              <td colspan="5" style="font-family:Segoe UI, Arial, sans-serif; font-size:13px; color:#5a6c86; padding:14px; text-align:center;
+                                     border-top:2px solid #2f5597;">
+                No certificates were found to report.
+              </td>
+            </tr>
+            {% endif %}
+          </table>
+
+          <!-- Footer note -->
+          <div style="font-family:Segoe UI, Arial, sans-serif; font-size:11px; color:#6f86ad; margin-top:10px;">
+            Run at {{ pipeline_now }}
+          </div>
+        </td>
+      </tr>
+
+      <!-- Bottom spacer -->
+      <tr><td style="height:16px; line-height:16px; font-size:0;">&nbsp;</td></tr>
+    </table>
+  </body>
+</html>
+
+How to pass the logo
+
+PNG base64 (recommended for Outlook desktop):
+
+ansible-playbook site.yml -t precheck,report_only \
+  -e report_logo_base64="$(base64 -w0 files/company-logo.png)" \
+  -e report_logo_mime=image/png
+
+
+JPEG base64:
+
+-e report_logo_base64="$(base64 -w0 files/company-logo.jpg)" \
+-e report_logo_mime=image/jpeg
+
+
+(No URLs are used; only your base64 string is embedded.)
+
+ChatGPT can make mistakes. Check important info.
