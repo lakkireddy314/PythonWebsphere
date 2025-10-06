@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    h2 { margin-bottom: 8px; }
+    .summary { display: grid; grid-template-columns: repeat(4, minmax(140px,1fr)); gap: 8px; margin: 12px 0 20px; }
+    .card { border: 1px solid #ddd; border-radius: 6px; padding: 10px; background: #fafafa; }
+    .metric { font-size: 22px; font-weight: 700; margin: 2px 0; }
+    .label { color: #555; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 6px; }
+    th { background: #f2f2f2; text-align: left; }
+    .ok { color: #2e7d32; font-weight: 600; }
+    .warn { color: #f9a825; font-weight: 600; }
+    .bad { color: #c62828; font-weight: 600; }
+    .small { color: #666; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h2>Venafi Precheck Dry-Run</h2>
+  <div class="small">Generated: {{ ansible_date_time.date }} {{ ansible_date_time.time }}</div>
+
+  {% set pre = precheck_data | default({}) %}
+
+  <!-- Summary -->
+  <div class="summary">
+    <div class="card">
+      <div class="metric">{{ dr_total_scanned | default(pre|length) }}</div>
+      <div class="label">Total Scanned</div>
+    </div>
+    <div class="card">
+      <div class="metric">{{ dr_need_count | default(0) }}</div>
+      <div class="label">Needs Renewal</div>
+    </div>
+    <div class="card">
+      <div class="metric">{{ dr_expiring_count | default(0) }}</div>
+      <div class="label">Expiring</div>
+    </div>
+    <div class="card">
+      <div class="metric">{{ dr_noneed_count | default(0) }}</div>
+      <div class="label">No Renewal Needed</div>
+    </div>
+  </div>
+
+  <!-- Details -->
+  <table>
+    <tr>
+      <th>Cert</th>
+      <th>Pickup ID</th>
+      <th>Status</th>
+      <th>Serial</th>
+      <th>Expiry (days)</th>
+    </tr>
+    {% for cert_name, data in pre.items() %}
+    <tr>
+      <td>{{ cert_name }}</td>
+      <td>{{ data.pickup_id }}</td>
+      {% set cls = 'ok' if data.status == 'no renewal needed' else ('warn' if data.status == 'expiring' else 'bad') %}
+      <td class="{{ cls }}">{{ data.status }}</td>
+      <td>{{ data.serial }}</td>
+      <td>{{ data.expiry_days | default('N/A') }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</body>
+</html>
