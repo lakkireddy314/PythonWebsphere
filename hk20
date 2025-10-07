@@ -1,0 +1,37 @@
+---
+# Resolve the stats var name (default) and safely detect presence on localhost
+- name: assert_renew | resolve stats var name
+  set_fact:
+    __psvar: "{{ (pipeline_stats_var | default('venafi_pipeline_stats')) | string }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: assert_renew | detect stats presence on localhost (safe)
+  set_fact:
+    __psobj: "{{ ((hostvars | default({})).get('localhost', {})).get(__psvar, {}) }}"
+    __ps_available: "{{ (__psobj | length) > 0 }}"
+  run_once: true
+  delegate_to: localhost
+
+# Always-true renew assertions (independent of input source)
+- name: assert_renew | base requirements
+  assert:
+    that:
+      - vcert_bin is string
+      - (expected_validity_days | int) > 0
+    fail_msg: "Renew stage: missing/invalid vcert_bin or expected_validity_days"
+
+# When pipeline stats are NOT available, we must have cert_names AND venafi_policy_prefix
+- name: assert_renew | require inputs when stats are absent
+  when: not __ps_available
+  assert:
+    that:
+      - cert_names is defined
+      - (cert_names | length) > 0
+      - venafi_policy_prefix is defined
+      - (venafi_policy_prefix | string | length) > 0
+    fail_msg: >
+      No '{{ __psvar }}' stats found on localhost. Provide cert_names (list) and venafi_policy_prefix,
+      or run 'precheck' first to populate '{{ __psvar }}'.
+  run_once: true
+  delegate_to: localhost
