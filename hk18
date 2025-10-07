@@ -1,0 +1,85 @@
+---
+- import_tasks: _assert_renew.yml
+
+# 0) Resolve stats variable name and detect presence on localhost
+- name: renew | resolve stats var name
+  set_fact:
+    __psvar: "{{ pipeline_stats_var | default('venafi_pipeline_stats') }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: renew | detect if stats object exists
+  set_fact:
+    _ps_obj: "{{ hostvars['localhost'][__psvar] | default({}) }}"
+    _ps_available: "{{ (hostvars['localhost'][__psvar] is defined) and ((_ps_obj | length) > 0) }}"
+  run_once: true
+  delegate_to: localhost
+
+# 1) If stats exist, derive candidate certs ONLY from stats (no fallback here)
+- name: renew | derive cert list from stats (prefer precheck keys)
+  when: _ps_available and ((_ps_obj.precheck | default({})) | length) > 0
+  set_fact:
+    _renew_cert_list: "{{ _ps_obj.precheck.keys() | list }}"
+    precheck_stats: "{{ _ps_obj.precheck | default({}) }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: renew | derive cert list from stats (fallback to renew keys)
+  when: _ps_available and (_renew_cert_list is not defined) and ((_ps_obj.renew | default({})) | length) > 0
+  set_fact:
+    _renew_cert_list: "{{ _ps_obj.renew.keys() | list }}"
+    precheck_stats: "{{ _ps_obj.precheck | default({}) }}"
+  run_once: true
+  delegate_to: localhost
+
+# 2) If NO stats exist, validate cert_names and use them
+- name: renew | assert cert_names present when stats are absent
+  when: not _ps_available
+  assert:
+    that:
+      - cert_names is defined
+      - (cert_names | length) > 0
+    fail_msg: >
+      No {{ __psvar }} stats found on localhost and no cert_names were provided.
+      Either run 'precheck' first (to populate stats) or pass -e cert_names='["name1","name2"]'.
+  run_once: true
+  delegate_to: localhost
+
+- name: renew | adopt cert_names as candidate list (stats absent)
+  when: not _ps_available
+  set_fact:
+    _renew_cert_list: "{{ cert_names }}"
+    precheck_stats: "{}"
+  run_once: true
+  delegate_to: localhost
+
+# 3) Final guard: we must have a non-empty _renew_cert_list from exactly one source
+- name: renew | require non-empty candidate list
+  assert:
+    that:
+      - _renew_cert_list is defined
+      - (_renew_cert_list | length) > 0
+    fail_msg: "Renew stage has no certificates to process."
+  run_once: true
+  delegate_to: localhost
+
+# 4) Process each certificate (compute pickup_id with portable Jinja join)
+- name: renew | process each cert
+  include_tasks: renew_per_cert.yml
+  loop: "{{ _renew_cert_list }}"
+  loop_control:
+    loop_var: rn_cert
+    label: "{{ rn_cert }}"
+  vars:
+    rn_pickup_id: "{{ (venafi_policy_prefix | regex_replace('/+$','')) ~ '/' ~ (rn_cert | regex_replace('^/+','')) }}"
+    rn_prior_status: "{{ precheck_stats.get(rn_cert, {}).get('status', 'no renewal needed') }}"
+  run_once: true
+  delegate_to: localhost
+
+# 5) Publish updated stats downstream
+- name: renew | publish stats downstream
+  set_stats:
+    data:
+      "{{ __psvar }}": "{{ hostvars['localhost'][__psvar] | default({}) }}"
+  run_once: true
+  delegate_to: localhost
