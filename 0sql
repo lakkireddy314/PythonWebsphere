@@ -1,3 +1,35 @@
+
+# Normalize booleans once
+- name: renew | normalize renew flags
+  set_fact:
+    __status_need: "{{ (rn_prior_status | default('no renewal needed')) == 'need to renew' }}"
+    __renew_check: "{{ renew_check | default(false) | bool }}"
+    __allow_missing_precheck: "{{ renew_on_missing_precheck | default(false) | bool }}"
+
+# Compute rn_should with explicit parentheses (no precedence surprises)
+- name: renew | compute rn_should
+  set_fact:
+    rn_should: "{{ __status_need or ((not __renew_check) and __allow_missing_precheck) }}"
+
+# Optional: sanity debug (remove later)
+# - debug:
+#     msg:
+#       status_need: "{{ __status_need }}"
+#       renew_check: "{{ __renew_check }}"
+#       allow_missing_precheck: "{{ __allow_missing_precheck }}"
+#       rn_should: "{{ rn_should }}"
+
+
+
+
+
+
+
+
+
+
+
+
 - name: merged | prepare base vars
   set_fact:
     __psvar: "{{ pipeline_stats_var | string }}"
