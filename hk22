@@ -1,0 +1,208 @@
+---
+- block:
+    # ===== Observe "before" values (prefer precheck; else compute here) =====
+    - name: renew | gather candidate precheck values for {{ rn_cert }}
+      set_fact:
+        __pre_serial: "{{ precheck_stats.get(rn_cert, {}).get('serial', '') }}"
+        # Use None (not omit) so var is always defined after set_fact
+        __pre_expiry_days: "{{ precheck_stats.get(rn_cert, {}).get('expiry_days') | default(None) }}"
+
+    - name: renew | validate presence of precheck fields
+      set_fact:
+        __pre_serial_ok: "{{ (__pre_serial | default('') | string | length) > 0 }}"
+        __pre_expiry_ok: "{{ (__pre_expiry_days is not none) and ((__pre_expiry_days | string | trim) != '') }}"
+        __need_compute_before: "{{ (not __pre_serial_ok) or (not __pre_expiry_ok) }}"
+
+    - name: renew | compute observed-before from current cert if needed
+      when: __need_compute_before
+      shell: |
+        set -e
+        {{ vcert_bin }} pickup -u "{{ venafi_tpp_url }}" -id "{{ rn_pickup_id }}" -format pem {{ vcert_additional_args }} --out stdout 2>/dev/null \
+        | {{ openssl_bin }} x509 -noout -serial -enddate
+      args: { executable: /bin/bash }
+      register: __before_pickup
+      changed_when: false
+      failed_when: false
+
+    - name: renew | parse observed-before serial/expiry (computed)
+      when: __need_compute_before and (__before_pickup.stdout | default('') | length) > 0
+      set_fact:
+        __obs_before_serial: "{{ (__before_pickup.stdout | regex_search('serial=([0-9A-F]+)', '\\1')) | default('') }}"
+        __obs_before_notAfter_raw: "{{ (__before_pickup.stdout | regex_search('notAfter=(.*)', '\\1')) | default('') }}"
+        __obs_before_notAfter: "{{ __obs_before_notAfter_raw | regex_replace('\r','') | trim }}"
+        __obs_before_expiry_days: >-
+          {{
+            (
+              (__obs_before_notAfter | to_datetime('%b %d %H:%M:%S %Y %Z', default=(ansible_date_time.iso8601 | to_datetime)))
+              - (ansible_date_time.iso8601 | to_datetime)
+            ).days
+          }}
+
+    - name: renew | finalize observed-before values (prefer precheck)
+      set_fact:
+        rn_obs_before_serial: >-
+          {{ (__pre_serial | default('')) if __pre_serial_ok else (__obs_before_serial | default('')) }}
+        rn_obs_before_expiry_days: >-
+          {{ __pre_expiry_days if __pre_expiry_ok else (__obs_before_expiry_days | default(omit)) }}
+
+    # ===== Decide if we should renew =====
+    - name: renew | decide should-renew for {{ rn_cert }}
+      set_fact:
+        rn_should: >-
+          {{
+            (rn_prior_status == 'need to renew') or
+            ((not renew_check | bool) and (renew_on_missing_precheck | bool))
+          }}
+
+    # ===== Perform renewal if needed =====
+    - name: renew | perform renewal (vcert) for {{ rn_cert }}
+      when: rn_should
+      shell: >
+        {{ vcert_bin }} renew -u "{{ venafi_tpp_url }}" -id "{{ rn_pickup_id }}"
+        {{ vcert_additional_args }} --no-prompt
+      args: { executable: /bin/bash }
+      register: renew_cmd
+      changed_when: renew_cmd.rc == 0
+      retries: 2
+      delay: 5
+      until: renew_cmd is succeeded
+
+    - name: renew | pickup PEM (raw) after renewal
+      when: rn_should
+      shell: >
+        {{ vcert_bin }} pickup -u "{{ venafi_tpp_url }}"
+        -id "{{ rn_pickup_id }}" -format pem {{ vcert_additional_args }} --out stdout
+      args: { executable: /bin/bash }
+      register: renew_pem_raw
+      changed_when: false
+
+    - name: renew | extract PEM cert blocks
+      when: rn_should
+      set_fact:
+        rn_pem_clean: >-
+          {{
+            (
+              (renew_pem_raw.stdout | default(''))
+              | regex_replace('\r', '')
+              | regex_findall('-----BEGIN CERTIFICATE-----[\\s\\S]*?-----END CERTIFICATE-----')
+            ) | join('\n')
+          }}
+
+    - name: renew | write cleaned PEM to disk
+      when: rn_should
+      copy:
+        dest: "/tmp/cert.pem"
+        content: "{{ rn_pem_clean }}"
+        mode: "0640"
+
+    - name: renew | parse new serial and notAfter (stdin)
+      when: rn_should
+      command: "{{ openssl_bin }} x509 -noout -serial -enddate"
+      args:
+        stdin: "{{ rn_pem_clean }}"
+      register: renew_post
+      changed_when: "'serial=' in renew_post.stdout"
+
+    - name: renew | extract new serial/expiry
+      when: rn_should
+      set_fact:
+        rn_new_serial: "{{ (renew_post.stdout | regex_search('serial=([0-9A-F]+)','\\1')) | default('') }}"
+        rn_new_notAfter_raw: "{{ (renew_post.stdout | regex_search('notAfter=(.*)','\\1')) | default('') }}"
+        rn_new_notAfter: "{{ rn_new_notAfter_raw | regex_replace('\r','') | trim }}"
+        rn_new_expiry_days: >-
+          {{
+            (
+              (rn_new_notAfter | to_datetime('%b %d %H:%M:%S %Y %Z', default=(ansible_date_time.iso8601 | to_datetime)))
+              - (ansible_date_time.iso8601 | to_datetime)
+            ).days
+          }}
+
+    - name: renew | validate ~2 years validity
+      when: rn_should
+      assert:
+        that:
+          - (rn_new_expiry_days | int) >= (expected_validity_days - 30)
+          - (rn_new_expiry_days | int) <= (expected_validity_days + 60)
+        fail_msg: "Expiry {{ rn_new_expiry_days }}d deviates from expected ~{{ expected_validity_days }}d"
+
+    # ===== Optional keystore builds =====
+    - name: renew | optional PFX
+      when: rn_should and ('pfx' in deploy_keystore_type)
+      shell: |
+        set -e
+        {{ openssl_bin }} pkcs12 -export -in /tmp/cert.pem -inkey /tmp/cert.pem \
+          -out /tmp/{{ rn_cert }}.pfx -passout pass:{{ pfx_password }}
+      args: { executable: /bin/bash }
+      register: pfx_build
+      changed_when: pfx_build.rc == 0
+      failed_when: false
+
+    - name: renew | optional JKS
+      when: rn_should and ('jks' in deploy_keystore_type)
+      shell: |
+        set -e
+        {{ keytool_bin }} -importkeystore \
+          -srckeystore /tmp/{{ rn_cert }}.pfx -srcstoretype pkcs12 -srcstorepass {{ pfx_password }} \
+          -destkeystore /tmp/{{ rn_cert }}.jks -deststoretype JKS -deststorepass {{ jks_password }} -noprompt
+      args: { executable: /bin/bash }
+      register: jks_build
+      changed_when: jks_build.rc == 0
+      failed_when: false
+
+    # ===== Build payload and publish stats (single source of truth for "before") =====
+    - name: renew | base payload (observed-before only)
+      set_fact:
+        rn_payload_base:
+          pickup_id: "{{ rn_pickup_id }}"
+          observed_before_serial: "{{ rn_obs_before_serial | default('') }}"
+          observed_before_expiry_days: "{{ rn_obs_before_expiry_days | default(omit) }}"
+          when: "{{ pipeline_now }}"
+          notes: ""
+
+    - name: renew | publish renew stats + artifacts (renewed)
+      when: rn_should
+      include_tasks: merge_into_stats.yml
+      vars:
+        section: "renew"
+        cert_key: "{{ rn_cert }}"
+        payload: >-
+          {{
+            rn_payload_base
+            | combine({
+                'prev_serial': (rn_obs_before_serial | default('')),
+                'new_serial': (rn_new_serial | default('')),
+                'new_expiry_days': (rn_new_expiry_days | default(omit)),
+                'success': true,
+                'pem': (rn_pem_clean | default('')),
+                'pfx_path': ('/tmp/%s.pfx' % rn_cert) if ('pfx' in deploy_keystore_type) else '',
+                'jks_path': ('/tmp/%s.jks' % rn_cert) if ('jks' in deploy_keystore_type) else ''
+              }, recursive=True)
+          }}
+
+    - name: renew | publish renew stats (skipped)
+      when: not rn_should
+      include_tasks: merge_into_stats.yml
+      vars:
+        section: "renew"
+        cert_key: "{{ rn_cert }}"
+        payload: >-
+          {{
+            rn_payload_base
+            | combine({
+                'success': false,
+                'skipped': true,
+                'reason': 'not eligible based on status/thresholds',
+                'prev_serial': (rn_obs_before_serial | default(''))
+              }, recursive=True)
+          }}
+  rescue:
+    - name: renew | record failure for {{ rn_cert }}
+      include_tasks: merge_into_stats.yml
+      vars:
+        section: "renew"
+        cert_key: "{{ rn_cert }}"
+        payload:
+          pickup_id: "{{ rn_pickup_id }}"
+          success: false
+          notes: "renew encountered an error"
+          when: "{{ pipeline_now }}"
