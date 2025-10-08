@@ -1,0 +1,793 @@
+Awesome — here are all the renewal pieces (YAMLs + the HTML template), updated to the latest behavior:
+
+No skipped bucket (we pre-filter or force-renew).
+
+Robust boolean logic for rn_should.
+
+Single “observed-before” source (prefer precheck, else compute).
+
+Rich error notes in stats (captured from failing task output).
+
+Report lists Renewed first, then Not Renewed/Errored.
+
+Note: add renew_force: false to your defaults/main.yml if you haven’t already.
+
+roles/venafi_cert_renew_pipeline/tasks/_assert_renew.yml
+
+Purpose: Validate inputs for the renew stage. If pipeline stats aren’t present, require cert_names and venafi_policy_prefix.
+
+---
+# Resolve the stats var name (default) and safely detect presence on localhost
+- name: assert_renew | resolve stats var name
+  set_fact:
+    __psvar: "{{ (pipeline_stats_var | default('venafi_pipeline_stats')) | string }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: assert_renew | detect stats presence on localhost (safe)
+  set_fact:
+    __psobj: "{{ ((hostvars | default({})).get('localhost', {})).get(__psvar, {}) }}"
+    __ps_available: "{{ (__psobj | length) > 0 }}"
+  run_once: true
+  delegate_to: localhost
+
+# Always-true renew assertions (independent of input source)
+- name: assert_renew | base requirements
+  assert:
+    that:
+      - vcert_bin is string
+      - (expected_validity_days | int) > 0
+    fail_msg: "Renew stage: missing/invalid vcert_bin or expected_validity_days"
+
+# When pipeline stats are NOT available, require cert_names AND venafi_policy_prefix
+- name: assert_renew | require inputs when stats are absent
+  when: not __ps_available
+  assert:
+    that:
+      - cert_names is defined
+      - (cert_names | length) > 0
+      - venafi_policy_prefix is defined
+      - (venafi_policy_prefix | string | length) > 0
+    fail_msg: >
+      No '{{ __psvar }}' stats found on localhost. Provide cert_names (list) and venafi_policy_prefix,
+      or run 'precheck' first to populate '{{ __psvar }}'.
+  run_once: true
+  delegate_to: localhost
+
+roles/venafi_cert_renew_pipeline/tasks/renew.yml
+
+Purpose: Build the candidate list (prefer stats), filter to “need to renew” unless renew_force: true, then process and generate a consolidated report.
+
+---
+- import_tasks: _assert_renew.yml
+
+- name: renew | resolve stats var name and presence (safe)
+  set_fact:
+    __psvar: "{{ (pipeline_stats_var | default('venafi_pipeline_stats')) | string }}"
+    __psobj: "{{ ((hostvars | default({})).get('localhost', {})).get(__psvar, {}) }}"
+    __ps_available: "{{ (__psobj | length) > 0 }}"
+  run_once: true
+  delegate_to: localhost
+
+# Prefer stats
+- name: renew | derive cert list from stats (prefer precheck keys)
+  when: __ps_available and ((__psobj.precheck | default({})) | length) > 0
+  set_fact:
+    _renew_cert_list: "{{ __psobj.precheck.keys() | list }}"
+    precheck_stats: "{{ __psobj.precheck | default({}) }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: renew | derive cert list from stats (fallback to renew keys)
+  when: __ps_available and (_renew_cert_list is not defined) and ((__psobj.renew | default({})) | length) > 0
+  set_fact:
+    _renew_cert_list: "{{ __psobj.renew.keys() | list }}"
+    precheck_stats: "{{ __psobj.precheck | default({}) }}"
+  run_once: true
+  delegate_to: localhost
+
+# If using stats and not forcing, restrict to status == "need to renew"
+- name: renew | restrict to need-to-renew when using stats (unless renew_force)
+  when: __ps_available and (not (renew_force | default(false) | bool)) and (_renew_cert_list | length) > 0
+  set_fact:
+    _renew_cert_list: >-
+      {{
+        _renew_cert_list
+        | select('in',
+                 (__psobj.precheck | default({})
+                   | dict2items
+                   | selectattr('value.status','equalto','need to renew')
+                   | map(attribute='key') | list)
+                 )
+        | list
+      }}
+  run_once: true
+  delegate_to: localhost
+
+# If NO stats exist, use cert_names (already validated in _assert_renew.yml)
+- name: renew | adopt cert_names as candidate list (stats absent)
+  when: not __ps_available
+  set_fact:
+    _renew_cert_list: "{{ cert_names }}"
+    precheck_stats: "{}"
+  run_once: true
+  delegate_to: localhost
+
+# Final guard: non-empty candidate list
+- name: renew | require non-empty candidate list
+  assert:
+    that:
+      - _renew_cert_list is defined
+      - (_renew_cert_list | length) > 0
+    fail_msg: "Renew stage has no certificates to process."
+  run_once: true
+  delegate_to: localhost
+
+# Process each certificate (portable join for pickup_id)
+# rn_force is true if: renew_force OR we’re in explicit (cert_names) mode
+- name: renew | process each cert
+  include_tasks: renew_per_cert.yml
+  loop: "{{ _renew_cert_list }}"
+  loop_control:
+    loop_var: rn_cert
+    label: "{{ rn_cert }}"
+  vars:
+    rn_pickup_id: "{{ (venafi_policy_prefix | regex_replace('/+$','')) ~ '/' ~ (rn_cert | regex_replace('^/+','')) }}"
+    rn_prior_status: "{{ precheck_stats.get(rn_cert, {}).get('status', 'no renewal needed') }}"
+    rn_force: "{{ (renew_force | default(false) | bool) or (not __ps_available) }}"
+  run_once: true
+  delegate_to: localhost
+
+# Consolidated renewal report (one email), if enabled
+- name: renew | consolidated renewal report
+  when: renew_report | default(true) | bool
+  import_tasks: renew_report.yml
+
+roles/venafi_cert_renew_pipeline/tasks/renew_per_cert.yml
+
+Purpose: For each cert: determine “observed-before” values, decide/attempt renewal, compute after values, build artifacts, and publish detailed stats. On failure, augment notes with real error context.
+
+---
+- block:
+    # ===== Observe "before" values (prefer precheck; else compute here) =====
+    - name: renew | gather candidate precheck values for {{ rn_cert }}
+      set_fact:
+        __pre_serial: "{{ precheck_stats.get(rn_cert, {}).get('serial', '') }}"
+        __pre_expiry_days: "{{ precheck_stats.get(rn_cert, {}).get('expiry_days') | default(None) }}"
+
+    - name: renew | validate presence of precheck fields
+      set_fact:
+        __pre_serial_ok: "{{ (__pre_serial | default('') | string | length) > 0 }}"
+        __pre_expiry_ok: "{{ (__pre_expiry_days is not none) and ((__pre_expiry_days | string | trim) != '') }}"
+        __need_compute_before: "{{ (not __pre_serial_ok) or (not __pre_expiry_ok) }}"
+
+    - name: renew | compute observed-before from current cert if needed
+      when: __need_compute_before
+      shell: |
+        set -e
+        {{ vcert_bin }} pickup -u "{{ venafi_tpp_url }}" -id "{{ rn_pickup_id }}" -format pem {{ vcert_additional_args }} --out stdout 2>/dev/null \
+        | {{ openssl_bin }} x509 -noout -serial -enddate
+      args: { executable: /bin/bash }
+      register: __before_pickup
+      changed_when: false
+      failed_when: false
+
+    - name: renew | parse observed-before serial/expiry (computed)
+      when: __need_compute_before and (__before_pickup.stdout | default('') | length) > 0
+      set_fact:
+        __obs_before_serial: "{{ (__before_pickup.stdout | regex_search('serial=([0-9A-F]+)', '\\1')) | default('') }}"
+        __obs_before_notAfter_raw: "{{ (__before_pickup.stdout | regex_search('notAfter=(.*)', '\\1')) | default('') }}"
+        __obs_before_notAfter: "{{ __obs_before_notAfter_raw | regex_replace('\r','') | trim }}"
+        __obs_before_expiry_days: >-
+          {{
+            (
+              (__obs_before_notAfter | to_datetime('%b %d %H:%M:%S %Y %Z', default=(ansible_date_time.iso8601 | to_datetime)))
+              - (ansible_date_time.iso8601 | to_datetime)
+            ).days
+          }}
+
+    - name: renew | finalize observed-before values (prefer precheck)
+      set_fact:
+        rn_obs_before_serial: >-
+          {{ (__pre_serial | default('')) if __pre_serial_ok else (__obs_before_serial | default('')) }}
+        rn_obs_before_expiry_days: >-
+          {{ __pre_expiry_days if __pre_expiry_ok else (__obs_before_expiry_days | default(omit)) }}
+
+    # ===== Decide if we should renew (robust, with explicit boolean coercion) =====
+    - name: renew | normalize renew flags
+      set_fact:
+        __status_need: "{{ (rn_prior_status | default('no renewal needed')) == 'need to renew' }}"
+        __renew_check: "{{ renew_check | default(false) | bool }}"
+        __allow_missing_precheck: "{{ renew_on_missing_precheck | default(false) | bool }}"
+
+    - name: renew | compute rn_should
+      set_fact:
+        rn_should: "{{ rn_force or __status_need or ((not __renew_check) and __allow_missing_precheck) }}"
+
+    # Optional internal guard if you pre-filtered in renew.yml
+    - name: renew | assert rn_should true (post-filter sanity)
+      assert:
+        that: [ rn_should | bool ]
+        fail_msg: "Internal guard: rn_should is false after pre-filtering. Check renew.yml filtering logic."
+
+    # ===== Perform renewal if needed =====
+    - name: renew | perform renewal (vcert) for {{ rn_cert }}
+      when: rn_should
+      shell: >
+        {{ vcert_bin }} renew -u "{{ venafi_tpp_url }}" -id "{{ rn_pickup_id }}"
+        {{ vcert_additional_args }} --no-prompt
+      args: { executable: /bin/bash }
+      register: renew_cmd
+      changed_when: renew_cmd.rc == 0
+      retries: 2
+      delay: 5
+      until: renew_cmd is succeeded
+
+    - name: renew | pickup PEM (raw) after renewal
+      when: rn_should
+      shell: >
+        {{ vcert_bin }} pickup -u "{{ venafi_tpp_url }}"
+        -id "{{ rn_pickup_id }}" -format pem {{ vcert_additional_args }} --out stdout
+      args: { executable: /bin/bash }
+      register: renew_pem_raw
+      changed_when: false
+
+    - name: renew | extract PEM cert blocks
+      when: rn_should
+      set_fact:
+        rn_pem_clean: >-
+          {{
+            (
+              (renew_pem_raw.stdout | default(''))
+              | regex_replace('\r', '')
+              | regex_findall('-----BEGIN CERTIFICATE-----[\\s\\S]*?-----END CERTIFICATE-----')
+            ) | join('\n')
+          }}
+
+    - name: renew | write cleaned PEM to disk
+      when: rn_should
+      copy:
+        dest: "/tmp/cert.pem"
+        content: "{{ rn_pem_clean }}"
+        mode: "0640"
+
+    - name: renew | parse new serial and notAfter (stdin)
+      when: rn_should
+      command: "{{ openssl_bin }} x509 -noout -serial -enddate"
+      args:
+        stdin: "{{ rn_pem_clean }}"
+      register: renew_post
+      changed_when: "'serial=' in renew_post.stdout"
+
+    - name: renew | extract new serial/expiry
+      when: rn_should
+      set_fact:
+        rn_new_serial: "{{ (renew_post.stdout | regex_search('serial=([0-9A-F]+)','\\1')) | default('') }}"
+        rn_new_notAfter_raw: "{{ (renew_post.stdout | regex_search('notAfter=(.*)','\\1')) | default('') }}"
+        rn_new_notAfter: "{{ rn_new_notAfter_raw | regex_replace('\r','') | trim }}"
+        rn_new_expiry_days: >-
+          {{
+            (
+              (rn_new_notAfter | to_datetime('%b %d %H:%M:%S %Y %Z', default=(ansible_date_time.iso8601 | to_datetime)))
+              - (ansible_date_time.iso8601 | to_datetime)
+            ).days
+          }}
+
+    - name: renew | validate ~2 years validity
+      when: rn_should
+      assert:
+        that:
+          - (rn_new_expiry_days | int) >= (expected_validity_days - 30)
+          - (rn_new_expiry_days | int) <= (expected_validity_days + 60)
+        fail_msg: "Expiry {{ rn_new_expiry_days }}d deviates from expected ~{{ expected_validity_days }}d"
+
+    # ===== Optional keystore builds =====
+    - name: renew | optional PFX
+      when: rn_should and ('pfx' in deploy_keystore_type)
+      shell: |
+        set -e
+        {{ openssl_bin }} pkcs12 -export -in /tmp/cert.pem -inkey /tmp/cert.pem \
+          -out /tmp/{{ rn_cert }}.pfx -passout pass:{{ pfx_password }}
+      args: { executable: /bin/bash }
+      register: pfx_build
+      changed_when: pfx_build.rc == 0
+      failed_when: false
+
+    - name: renew | optional JKS
+      when: rn_should and ('jks' in deploy_keystore_type)
+      shell: |
+        set -e
+        {{ keytool_bin }} -importkeystore \
+          -srckeystore /tmp/{{ rn_cert }}.pfx -srcstoretype pkcs12 -srcstorepass {{ pfx_password }} \
+          -destkeystore /tmp/{{ rn_cert }}.jks -deststoretype JKS -deststorepass {{ jks_password }} -noprompt
+      args: { executable: /bin/bash }
+      register: jks_build
+      changed_when: jks_build.rc == 0
+      failed_when: false
+
+    # ===== Build payload and publish stats =====
+    - name: renew | base payload (observed-before only)
+      set_fact:
+        rn_payload_base:
+          pickup_id: "{{ rn_pickup_id }}"
+          observed_before_serial: "{{ rn_obs_before_serial | default('') }}"
+          observed_before_expiry_days: "{{ rn_obs_before_expiry_days | default(omit) }}"
+          when: "{{ pipeline_now }}"
+          notes: ""
+
+    - name: renew | publish renew stats + artifacts (renewed)
+      when: rn_should
+      include_tasks: merge_into_stats.yml
+      vars:
+        section: "renew"
+        cert_key: "{{ rn_cert }}"
+        payload: >-
+          {{
+            rn_payload_base
+            | combine({
+                'prev_serial': (rn_obs_before_serial | default('')),
+                'new_serial': (rn_new_serial | default('')),
+                'new_expiry_days': (rn_new_expiry_days | default(omit)),
+                'success': true,
+                'pem': (rn_pem_clean | default('')),
+                'pfx_path': ('/tmp/%s.pfx' % rn_cert) if ('pfx' in deploy_keystore_type) else '',
+                'jks_path': ('/tmp/%s.jks' % rn_cert) if ('jks' in deploy_keystore_type) else ''
+              }, recursive=True)
+          }}
+  rescue:
+    # ===== Augment notes with concrete error context =====
+    - name: renew | synthesize failure notes
+      set_fact:
+        __fail_name: "{{ (ansible_failed_result | default({})).get('task', {}).get('name', 'unknown task') }}"
+        __fail_rc: "{{ (ansible_failed_result | default({})).get('rc', (ansible_failed_result.get('result', {}).get('rc', ''))) if (ansible_failed_result is defined) else '' }}"
+        __fail_stderr: "{{ (ansible_failed_result | default({})).get('stderr', (ansible_failed_result.get('result', {}).get('stderr', ''))) if (ansible_failed_result is defined) else '' }}"
+        __fail_stdout: "{{ (ansible_failed_result | default({})).get('stdout', (ansible_failed_result.get('result', {}).get('stdout', ''))) if (ansible_failed_result is defined) else '' }}"
+        __fail_msg: "{{ (ansible_failed_result | default({})).get('msg', (ansible_failed_result.get('result', {}).get('msg', ''))) if (ansible_failed_result is defined) else '' }}"
+        __fail_notes: >-
+          {{
+            (
+              "failure in " ~ (__fail_name | string) ~
+              ((" (rc=" ~ (__fail_rc | string) ~ ")") if (__fail_rc | string | length > 0) else "") ~
+              ": " ~ (
+                (__fail_stderr | string | trim)
+                if ((__fail_stderr | string | trim) | length > 0)
+                else (
+                  (__fail_stdout | string | trim)
+                  if ((__fail_stdout | string | trim) | length > 0)
+                  else (__fail_msg | string | trim)
+                )
+              )
+            )
+          }}
+
+    - name: renew | record failure for {{ rn_cert }}
+      include_tasks: merge_into_stats.yml
+      vars:
+        section: "renew"
+        cert_key: "{{ rn_cert }}"
+        payload:
+          pickup_id: "{{ rn_pickup_id }}"
+          success: false
+          notes: "{{ __fail_notes }}"
+          when: "{{ pipeline_now }}"
+
+roles/venafi_cert_renew_pipeline/tasks/renew_report.yml
+
+Purpose: Build a single consolidated email with totals and details, ordered: Renewed first, then Not Renewed/Errored.
+
+---
+# Build + send a single consolidated renewal report (Renewed first, then Not Renewed/Errored)
+
+# Resolve stats var and read renew stats safely
+- name: renew_report | resolve stats and read renew data
+  set_fact:
+    __psvar: "{{ (pipeline_stats_var | default('venafi_pipeline_stats')) | string }}"
+    __renew_data: "{{ ((hostvars | default({})).get('localhost', {})).get(__psvar, {}).get('renew', {}) }}"
+  run_once: true
+  delegate_to: localhost
+
+# Require some renew data
+- name: renew_report | ensure renew data exists
+  assert:
+    that:
+      - __renew_data | length > 0
+    fail_msg: "No 'renew' stats found under '{{ __psvar }}'."
+  run_once: true
+  delegate_to: localhost
+
+# Compute counts
+- name: renew_report | compute summary counts (renewed vs not-renewed/errored)
+  set_fact:
+    __total_processed: "{{ __renew_data | length }}"
+    __count_renewed: >-
+      {{ (__renew_data | dict2items
+          | selectattr('value.success', 'defined')
+          | selectattr('value.success', 'equalto', true)
+          | list | length) }}
+    __count_not_or_err: >-
+      {{ (__renew_data | dict2items
+          | rejectattr('value.success', 'defined') | list | length)
+         +
+         (__renew_data | dict2items
+          | selectattr('value.success', 'defined')
+          | rejectattr('value.success', 'equalto', true)
+          | list | length) }}
+  run_once: true
+  delegate_to: localhost
+
+# Build ordered item lists: Renewed first, then Not Renewed/Errored
+- name: renew_report | build ordered item lists
+  set_fact:
+    __items_success: >-
+      {{
+        (__renew_data | dict2items
+          | selectattr('value.success','defined')
+          | selectattr('value.success','equalto', true)
+          | sort(attribute='key')
+          | list)
+      }}
+    __items_fail: >-
+      {{
+        (
+          __renew_data | dict2items
+          | selectattr('value.success','defined')
+          | rejectattr('value.success','equalto', true)
+          | list
+        )
+        +
+        (
+          __renew_data | dict2items
+          | rejectattr('value.success','defined')
+          | list
+        )
+        | sort(attribute='key')
+      }}
+  run_once: true
+  delegate_to: localhost
+
+# Render context
+- name: renew_report | build render context
+  set_fact:
+    __rr_data: "{{ __renew_data }}"
+    __rr_total: "{{ __total_processed }}"
+    __rr_ok: "{{ __count_renewed }}"
+    __rr_not_or_err: "{{ __count_not_or_err }}"
+  run_once: true
+  delegate_to: localhost
+
+# Render & email
+- name: renew_report | build html
+  template:
+    src: report_renew.html.j2
+    dest: "/tmp/venafi_report_renew.html"
+  run_once: true
+  delegate_to: localhost
+
+- name: renew_report | mail html
+  mail:
+    host: "{{ smtp_host }}"
+    port: "{{ smtp_port }}"
+    to: "{{ user_email }}"
+    subject: "[Renew] Venafi Renewal Report"
+    subtype: html
+    body: "{{ lookup('file', '/tmp/venafi_report_renew.html') }}"
+  run_once: true
+  delegate_to: localhost
+
+roles/venafi_cert_renew_pipeline/templates/report_renew.html.j2
+
+Purpose: Outlook-friendly HTML showing totals and details (Renewed first, then Not Renewed/Errored) with “before/after” values.
+
+<!doctype html>
+<html>
+  <head>
+    <meta http-equiv="x-ua-compatible" content="IE=edge">
+    <meta charset="utf-8">
+    <title>Venafi Renewal Report</title>
+    <!--[if !mso]><!--><meta name="viewport" content="width=device-width, initial-scale=1"><!--<![endif]-->
+  </head>
+  <body style="margin:0; padding:0; background:#f2f6fb;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f2f6fb; margin:0; padding:0;">
+      <!-- Header -->
+      <tr>
+        <td style="background:#0b63c4; background-image:linear-gradient(90deg,#0b63c4,#1985e2); padding:16px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+            <tr>
+              <td valign="middle" style="padding-right:12px; white-space:nowrap; width:44px;">
+                <img src="files/logo.png" alt="Logo" width="36" height="36"
+                     style="display:inline-block; border:0; outline:none; text-decoration:none; width:36px; height:36px; vertical-align:middle; border-radius:4px;">
+              </td>
+              <td valign="middle" style="padding:0;">
+                <div style="font-family:Segoe UI, Arial, sans-serif; font-size:20px; line-height:24px; color:#ffffff; font-weight:700;">
+                  Venafi <span style="opacity:.9; font-weight:600;">Renewal Report</span>
+                </div>
+                <div style="margin-top:4px; font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#eaf3ff; opacity:.95;">
+                  Generated: {{ ansible_date_time.date }} {{ ansible_date_time.time }} &nbsp;|&nbsp; Pipeline: {{ pipeline_stats_var }}
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+
+      <!-- Summary cards -->
+      <tr>
+        <td style="padding:12px 16px 4px 16px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+            <tr>
+              {% set cards = [
+                ['Total Processed', __rr_total, '#0b63c4'],
+                ['Renewed', __rr_ok, '#2e7d32'],
+                ['Not Renewed/Errored', __rr_not_or_err, '#c62828']
+              ] %}
+              {% for label, value, color in cards %}
+              <td valign="top" style="padding:8px;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+                       style="border:1px solid #e3eaf5; border-radius:6px; background:#ffffff;">
+                  <tr><td style="padding:12px;">
+                    <div style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#3a5a8f; text-transform:uppercase; letter-spacing:.02em;">{{ label }}</div>
+                    <div style="font-family:Segoe UI, Arial, sans-serif; font-size:24px; color:{{ color }}; font-weight:700; margin-top:2px;">{{ value }}</div>
+                  </td></tr>
+                </table>
+              </td>
+              {% endfor %}
+            </tr>
+          </table>
+          <div style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#5275a5; margin:4px 8px 0 8px;">
+            Outcomes: <b>Renewed</b> (success=true) vs <b>Not Renewed/Errored</b> (success!=true).
+          </div>
+        </td>
+      </tr>
+
+      <!-- Details -->
+      <tr>
+        <td style="padding:8px 16px 20px 16px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+                 style="background:#ffffff; border:1px solid #d6e3f7; border-radius:6px;">
+            <tr>
+              <td colspan="8" style="background:#e8f1fd; padding:10px 12px; border-bottom:1px solid #d6e3f7; border-radius:6px 6px 0 0;">
+                <div style="font-family:Segoe UI, Arial, sans-serif; font-size:13px; font-weight:700; color:#234d86;">Certificate Details</div>
+              </td>
+            </tr>
+            <tr>
+              {% set th = "font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#234d86; background:#f4f8ff; padding:10px; border-bottom:1px solid #d6e3f7; border-right:1px solid #e6eefb;" %}
+              <th align="left" style="{{ th }}">Cert</th>
+              <th align="left" style="{{ th }}">Pickup ID</th>
+              <th align="left" style="{{ th }}">Outcome</th>
+              <th align="left" style="{{ th }}">Before Serial</th>
+              <th align="left" style="{{ th }}">Before Expiry (d)</th>
+              <th align="left" style="{{ th }}">After Serial</th>
+              <th align="left" style="{{ th }}">After Expiry (d)</th>
+              <th align="left" style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#234d86; background:#f4f8ff; padding:10px; border-bottom:1px solid #d6e3f7;">Notes</th>
+            </tr>
+
+            {% set dash = '—' %}
+            {% set td = "font-family:Segoe UI, Arial, sans-serif; font-size:13px; color:#1c2a3a; padding:10px; border-right:1px solid #e6eefb; border-bottom:1px solid #eef3fb;" %}
+
+            {# 1) Renewed first #}
+            {% for item in __items_success %}
+            {% set cert = item.key %}
+            {% set v = item.value %}
+            <tr>
+              <td style="{{ td }}">{{ cert }}</td>
+              <td style="{{ td }}">{{ v.pickup_id }}</td>
+              <td style="{{ td }} color:#2e7d32; font-weight:600;">Renewed</td>
+              <td style="{{ td }}">{{ v.observed_before_serial | default('') }}</td>
+              <td style="{{ td }}">{{ v.observed_before_expiry_days | default('') }}</td>
+              <td style="{{ td }}">{{ (v.new_serial is defined and v.new_serial) | ternary(v.new_serial, dash) }}</td>
+              <td style="{{ td }}">{{ (v.new_expiry_days is defined and v.new_expiry_days != '') | ternary(v.new_expiry_days, dash) }}</td>
+              <td style="{{ td }}">{{ v.reason | default(v.notes | default('')) }}</td>
+            </tr>
+            {% endfor %}
+
+            {# 2) Then Not Renewed/Errored #}
+            {% for item in __items_fail %}
+            {% set cert = item.key %}
+            {% set v = item.value %}
+            <tr>
+              <td style="{{ td }}">{{ cert }}</td>
+              <td style="{{ td }}">{{ v.pickup_id }}</td>
+              <td style="{{ td }} color:#c62828; font-weight:600;">Not Renewed/Errored</td>
+              <td style="{{ td }}">{{ v.observed_before_serial | default('') }}</td>
+              <td style="{{ td }}">{{ v.observed_before_expiry_days | default('') }}</td>
+              <td style="{{ td }}">{{ (v.new_serial is defined and v.new_serial) | ternary(v.new_serial, dash) }}</td>
+              <td style="{{ td }}">{{ (v.new_expiry_days is defined and v.new_expiry_days != '') | ternary(v.new_expiry_days, dash) }}</td>
+              <td style="{{ td }}">{{ v.reason | default(v.notes | default('')) }}</td>
+            </tr>
+            {% endfor %}
+
+            {% if (__items_success|length + __items_fail|length) == 0 %}
+            <tr>
+              <td colspan="8" style="font-family:Segoe UI, Arial, sans-serif; font-size:13px; color:#5a6c86; padding:14px; text-align:center;">
+                No certificates were processed.
+              </td>
+            </tr>
+            {% endif %}
+          </table>
+          <div style="font-family:Segoe UI, Arial, sans-serif; font-size:11px; color:#6f86ad; margin-top:10px;">
+            Run at {{ pipeline_now }}
+          </div>
+        </td>
+      </tr>
+
+      <tr><td style="height:16px; line-height:16px; font-size:0;">&nbsp;</td></tr>
+    </table>
+  </body>
+</html>
+
+Quick how-to
+
+To renew only “need to renew” from precheck stats:
+
+ansible-playbook site.yml -t renew
+
+
+To force renew everything in the candidate list (ignore statuses):
+
+ansible-playbook site.yml -t renew -e renew_force=true
+
+
+To renew specific names (no stats required):
+
+ansible-playbook site.yml -t renew \
+  -e cert_names='["api.example.com","www.example.com"]' \
+  -e venafi_policy_prefix="/ved/policy/Automated/certs"
+
+
+Shout if you want me to also add a final assert that fails the play whenever __rr_not_or_err > 0.
+
+You said:
+Go heavy on the grid lines for certificate details 
+ChatGPT said:
+
+Absolutely — here’s the heavier-grid version of the renewal report template. I kept the Outlook-friendly table layout and simply amped up the borders (thicker, darker, consistent on every cell) specifically for the Certificate Details grid.
+
+roles/venafi_cert_renew_pipeline/templates/report_renew.html.j2 (heavy grid)
+<!doctype html>
+<html>
+  <head>
+    <meta http-equiv="x-ua-compatible" content="IE=edge">
+    <meta charset="utf-8">
+    <title>Venafi Renewal Report</title>
+    <!--[if !mso]><!--><meta name="viewport" content="width=device-width, initial-scale=1"><!--<![endif]-->
+  </head>
+  <body style="margin:0; padding:0; background:#f2f6fb;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f2f6fb; margin:0; padding:0;">
+      <!-- Header -->
+      <tr>
+        <td style="background:#0b63c4; background-image:linear-gradient(90deg,#0b63c4,#1985e2); padding:16px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+            <tr>
+              <td valign="middle" style="padding-right:12px; white-space:nowrap; width:44px;">
+                <img src="files/logo.png" alt="Logo" width="36" height="36"
+                     style="display:inline-block; border:0; outline:none; text-decoration:none; width:36px; height:36px; vertical-align:middle; border-radius:4px;">
+              </td>
+              <td valign="middle" style="padding:0;">
+                <div style="font-family:Segoe UI, Arial, sans-serif; font-size:20px; line-height:24px; color:#ffffff; font-weight:700;">
+                  Venafi <span style="opacity:.9; font-weight:600;">Renewal Report</span>
+                </div>
+                <div style="margin-top:4px; font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#eaf3ff; opacity:.95;">
+                  Generated: {{ ansible_date_time.date }} {{ ansible_date_time.time }} &nbsp;|&nbsp; Pipeline: {{ pipeline_stats_var }}
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+
+      <!-- Summary cards (unchanged) -->
+      <tr>
+        <td style="padding:12px 16px 4px 16px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+            <tr>
+              {% set cards = [
+                ['Total Processed', __rr_total, '#0b63c4'],
+                ['Renewed', __rr_ok, '#2e7d32'],
+                ['Not Renewed/Errored', __rr_not_or_err, '#c62828']
+              ] %}
+              {% for label, value, color in cards %}
+              <td valign="top" style="padding:8px;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+                       style="border:1px solid #e3eaf5; border-radius:6px; background:#ffffff;">
+                  <tr><td style="padding:12px;">
+                    <div style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#3a5a8f; text-transform:uppercase; letter-spacing:.02em;">{{ label }}</div>
+                    <div style="font-family:Segoe UI, Arial, sans-serif; font-size:24px; color:{{ color }}; font-weight:700; margin-top:2px;">{{ value }}</div>
+                  </td></tr>
+                </table>
+              </td>
+              {% endfor %}
+            </tr>
+          </table>
+          <div style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#5275a5; margin:4px 8px 0 8px;">
+            Outcomes: <b>Renewed</b> (success=true) vs <b>Not Renewed/Errored</b> (success!=true).
+          </div>
+        </td>
+      </tr>
+
+      <!-- Details with HEAVY grid -->
+      <tr>
+        <td style="padding:8px 16px 20px 16px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"
+                 style="background:#ffffff; border:2px solid #2a4b7c; border-radius:6px;">
+            <tr>
+              <td colspan="8" style="background:#e0ecff; padding:10px 12px; border-bottom:2px solid #2a4b7c; border-radius:6px 6px 0 0;">
+                <div style="font-family:Segoe UI, Arial, sans-serif; font-size:13px; font-weight:700; color:#1f3f6e;">Certificate Details</div>
+              </td>
+            </tr>
+            <tr>
+              {% set th = "font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#1f3f6e; background:#f3f8ff; padding:10px; border-right:2px solid #2a4b7c; border-bottom:2px solid #2a4b7c;" %}
+              <th align="left" style="{{ th }}">Cert</th>
+              <th align="left" style="{{ th }}">Pickup ID</th>
+              <th align="left" style="{{ th }}">Outcome</th>
+              <th align="left" style="{{ th }}">Before Serial</th>
+              <th align="left" style="{{ th }}">Before Expiry (d)</th>
+              <th align="left" style="{{ th }}">After Serial</th>
+              <th align="left" style="{{ th }}">After Expiry (d)</th>
+              <th align="left" style="font-family:Segoe UI, Arial, sans-serif; font-size:12px; color:#1f3f6e; background:#f3f8ff; padding:10px; border-bottom:2px solid #2a4b7c;">Notes</th>
+            </tr>
+
+            {% set dash = '—' %}
+            {% set td = "font-family:Segoe UI, Arial, sans-serif; font-size:13px; color:#0f2038; padding:10px; border-right:2px solid #2a4b7c; border-bottom:2px solid #2a4b7c;" %}
+
+            {# 1) Renewed first #}
+            {% for item in __items_success %}
+            {% set cert = item.key %}
+            {% set v = item.value %}
+            <tr>
+              <td style="{{ td }}">{{ cert }}</td>
+              <td style="{{ td }}">{{ v.pickup_id }}</td>
+              <td style="{{ td }} color:#2e7d32; font-weight:700;">Renewed</td>
+              <td style="{{ td }}">{{ v.observed_before_serial | default('') }}</td>
+              <td style="{{ td }}">{{ v.observed_before_expiry_days | default('') }}</td>
+              <td style="{{ td }}">{{ (v.new_serial is defined and v.new_serial) | ternary(v.new_serial, dash) }}</td>
+              <td style="{{ td }}">{{ (v.new_expiry_days is defined and v.new_expiry_days != '') | ternary(v.new_expiry_days, dash) }}</td>
+              <td style="{{ td }}">{{ v.reason | default(v.notes | default('')) }}</td>
+            </tr>
+            {% endfor %}
+
+            {# 2) Then Not Renewed/Errored #}
+            {% for item in __items_fail %}
+            {% set cert = item.key %}
+            {% set v = item.value %}
+            <tr>
+              <td style="{{ td }}">{{ cert }}</td>
+              <td style="{{ td }}">{{ v.pickup_id }}</td>
+              <td style="{{ td }} color:#c62828; font-weight:700;">Not Renewed/Errored</td>
+              <td style="{{ td }}">{{ v.observed_before_serial | default('') }}</td>
+              <td style="{{ td }}">{{ v.observed_before_expiry_days | default('') }}</td>
+              <td style="{{ td }}">{{ (v.new_serial is defined and v.new_serial) | ternary(v.new_serial, dash) }}</td>
+              <td style="{{ td }}">{{ (v.new_expiry_days is defined and v.new_expiry_days != '') | ternary(v.new_expiry_days, dash) }}</td>
+              <td style="{{ td }}">{{ v.reason | default(v.notes | default('')) }}</td>
+            </tr>
+            {% endfor %}
+
+            {% if (__items_success|length + __items_fail|length) == 0 %}
+            <tr>
+              <td colspan="8" style="font-family:Segoe UI, Arial, sans-serif; font-size:13px; color:#5a6c86; padding:14px; text-align:center; border-top:2px solid #2a4b7c;">
+                No certificates were processed.
+              </td>
+            </tr>
+            {% endif %}
+          </table>
+          <div style="font-family:Segoe UI, Arial, sans-serif; font-size:11px; color:#385a8c; margin-top:10px;">
+            Run at {{ pipeline_now }}
+          </div>
+        </td>
+      </tr>
+
+      <tr><td style="height:16px; line-height:16px; font-size:0;">&nbsp;</td></tr>
+    </table>
+  </body>
+</html>
+
+What changed
+
+Outer details table: border: 2px solid #2a4b7c.
+
+Header row & all data cells: 2px borders on bottom/right; header also uses 2px bottom border.
+
+Darker grid color #2a4b7c to stand out in Outlook.
+
+Kept your ordering: Renewed first, then Not Renewed/Errored.
+
+If you want an even denser look (borders on all four sides per cell), I can switch to adding left/top borders as well (at the cost of heavier visual weight).
