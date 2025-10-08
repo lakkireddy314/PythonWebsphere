@@ -1,4 +1,30 @@
 
+# ===== EARLY EXIT: no certs with status "need to renew" in stats (and not forcing) =====
+- name: renew | no need-to-renew certs found in stats — skipping renew stage
+  when: __ps_available and (not (renew_force | default(false) | bool)) and ((_renew_cert_list | default([])) | length) == 0
+  block:
+    - name: renew | info
+      debug:
+        msg: "No certificates with status 'need to renew' under '{{ __psvar }}'. Renew stage skipped."
+      run_once: true
+    # end the play early so no further renew work (or report) runs
+    - meta: end_play
+  run_once: true
+  # NOTE: do NOT delegate 'meta: end_play'
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Normalize booleans once
 - name: renew | normalize renew flags
   set_fact:
