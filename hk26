@@ -1,1 +1,1308 @@
+Awesome — here’s a clean, Ansible 2.9–compatible bundle that folds in the latest changes:
 
+One role: venafi_cert_renew_pipeline with 3 callable stages via tags: precheck, renew, deploy
+
+Standalone modes for precheck and renew (like we already did for deploy)
+
+Optional wrapper role ihs_cert_renew to compile inventory-driven inputs (you can keep or skip)
+
+A single playbook playbooks/pipeline.yml
+
+All YAMLs + a detailed README
+
+📁 Directory layout
+playbooks/
+  pipeline.yml
+
+roles/
+  ihs_cert_renew/
+    tasks/
+      compile_inputs.yml
+      main.yml
+
+  venafi_cert_renew_pipeline/
+    defaults/
+      main.yml
+    tasks/
+      precheck.yml
+      precheck_standalone.yml
+      precheck_per_cert.yml
+      renew.yml
+      renew_standalone.yml
+      renew_per_cert.yml
+      renew_report.yml
+      deploy.yml
+      deploy_from_stats.yml
+      deploy_standalone.yml
+    templates/
+      report_renew.html.j2
+      report_dry.html.j2
+    files/
+      logo.png
+
+
+If you don’t want the ihs_cert_renew wrapper, you can call the pipeline role directly (the playbook shows both).
+
+▶️ playbooks/pipeline.yml
+---
+- hosts: localhost
+  gather_facts: false
+
+  vars:
+    # ===== Tooling =====
+    vcert_bin: "/usr/local/bin/vcert"
+    openssl_bin: "/usr/bin/openssl"
+    keytool_bin: "/usr/bin/keytool"
+    expected_validity_days: 730
+
+    # ===== Stats bucket =====
+    pipeline_stats_var: "venafi_pipeline_stats"
+
+    # ===== Pickup base (used if a cert doesn’t set pickup_id) =====
+    venafi_policy_prefix: "/ved/policy/Automated/certs"
+
+    # ===== Reporting (renew report email) =====
+    renew_report: true
+    smtp_host: "mail.yourorg.internal"
+    smtp_port: 25
+    user_email: "tls-ops@yourorg.com"
+
+    # ===== Global deploy defaults =====
+    deploy_stage_root: "/tmp/venafi_deploy"
+    deploy_user: "wasadmin"
+    deploy_group: "was"
+    deploy_dir: "/home/user/Ansible_renewedCerts"
+    deploy_keystore_type: ["pem"]
+
+    # ===== Deploy mode =====
+    # auto (default), stats, standalone
+    deploy_mode: "auto"
+
+  tasks:
+    # Inventory-driven inputs (optional wrapper). Safe to run even if empty.
+    - name: wrapper | compile inputs (optional)
+      include_role:
+        name: ihs_cert_renew
+        tasks_from: compile_inputs.yml
+
+    # ---------------- PRECHECK ----------------
+    - name: pipeline | precheck
+      include_role:
+        name: venafi_cert_renew_pipeline
+        tasks_from: precheck.yml
+      vars:
+        compiled_cert_plan: "{{ compiled_cert_plan | default({}) }}"
+        cert_names: "{{ cert_names | default([]) }}"
+      tags: [precheck]
+
+    # ---------------- RENEW -------------------
+    - name: pipeline | renew
+      include_role:
+        name: venafi_cert_renew_pipeline
+        tasks_from: renew.yml
+      vars:
+        compiled_cert_plan: "{{ compiled_cert_plan | default({}) }}"
+        cert_names: "{{ cert_names | default([]) }}"
+        # renew_force: true
+        # deploy_after_renew: true
+      tags: [renew]
+
+    # ---------------- DEPLOY ------------------
+    - name: pipeline | deploy
+      include_role:
+        name: venafi_cert_renew_pipeline
+        tasks_from: deploy.yml
+      vars:
+        compiled_cert_plan: "{{ compiled_cert_plan | default({}) }}"
+        cert_names: "{{ cert_names | default([]) }}"
+        deploy_mode: "{{ deploy_mode }}"
+      tags: [deploy]
+
+♻️ roles/ihs_cert_renew/tasks/compile_inputs.yml
+---
+# Normalize inventory-driven venafi_renew_certs → compiled_cert_plan + cert_names
+
+- name: wrapper | defaults
+  set_fact:
+    __default_keystores: "{{ (deploy_keystore_type | default(['pem'])) | list }}"
+    __default_dir: "{{ deploy_dir | default('/home/user/Ansible_renewedCerts') }}"
+    __default_user: "{{ deploy_user | default('wasadmin') }}"
+    __default_group: "{{ deploy_group | default('was') }}"
+    __default_renew_days: "{{ (renew_days | default(90)) | int }}"
+    __prefix: "{{ venafi_policy_prefix | default('/ved/policy/Automated/certs') }}"
+
+- name: wrapper | start empty plan
+  set_fact:
+    compiled_cert_plan: "{{ {} }}"
+
+- name: wrapper | accumulate normalized entries
+  vars:
+    _src: "{{ venafi_renew_certs | default({}) }}"
+  loop: "{{ _src | dict2items }}"
+  loop_control: { loop_var: c }
+  set_fact:
+    compiled_cert_plan: >-
+      {{
+        compiled_cert_plan |
+        combine({
+          (c.key): (
+            (
+              c.value[0] if (c.value is sequence) else (c.value | default({}))
+            )
+            | combine(
+                {
+                  'keystore_type': (
+                    (
+                      (c.value[0].keystore_type if (c.value is sequence and (c.value|length)>0 and (c.value[0].keystore_type is defined))
+                      else (c.value.keystore_type if (c.value.keystore_type is defined) else __default_keystores)
+                    ) | list
+                  ),
+                  'deploy_dir': (
+                    (c.value[0].deploy_dir
+                      if (c.value is sequence and (c.value|length)>0 and (c.value[0].deploy_dir is defined))
+                    else (c.value.deploy_dir if (c.value.deploy_dir is defined) else __default_dir)
+                  ),
+                  'deploy_user': (
+                    (c.value[0].deploy_user
+                      if (c.value is sequence and (c.value|length)>0 and (c.value[0].deploy_user is defined))
+                    else (c.value.deploy_user if (c.value.deploy_user is defined) else __default_user)
+                  ),
+                  'deploy_group': (
+                    (c.value[0].deploy_group
+                      if (c.value is sequence and (c.value|length)>0 and (c.value[0].deploy_group is defined))
+                    else (c.value.deploy_group if (c.value.deploy_group is defined) else __default_group)
+                  ),
+                  'cert_app_config': (
+                    (c.value[0].cert_app_config
+                      if (c.value is sequence and (c.value|length)>0 and (c.value[0].cert_app_config is defined))
+                    else (c.value.cert_app_config | default(''))
+                  ),
+                  'renew_days': (
+                    (c.value[0].renew_days
+                      if (c.value is sequence and (c.value|length)>0 and (c.value[0].renew_days is defined))
+                    else (c.value.renew_days | default(__default_renew_days))
+                  ) | int,
+                  'pickup_id': (
+                    (c.value[0].pickup_id
+                      if (c.value is sequence and (c.value|length)>0 and (c.value[0].pickup_id is defined))
+                    else (c.value.pickup_id | default(__prefix ~ '/' ~ c.key))
+                  )
+                },
+                recursive=False
+              )
+          )
+        })
+      }}
+
+- name: wrapper | set cert_names list
+  set_fact:
+    cert_names: "{{ compiled_cert_plan.keys() | list }}"
+
+♻️ roles/ihs_cert_renew/tasks/main.yml
+---
+- import_tasks: compile_inputs.yml
+
+- name: ihs | precheck
+  include_role:
+    name: venafi_cert_renew_pipeline
+    tasks_from: precheck.yml
+  vars:
+    compiled_cert_plan: "{{ compiled_cert_plan }}"
+    cert_names: "{{ cert_names }}"
+  tags: [precheck]
+
+- name: ihs | renew
+  include_role:
+    name: venafi_cert_renew_pipeline
+    tasks_from: renew.yml
+  vars:
+    compiled_cert_plan: "{{ compiled_cert_plan }}"
+    cert_names: "{{ cert_names }}"
+  tags: [renew]
+
+- name: ihs | deploy
+  include_role:
+    name: venafi_cert_renew_pipeline
+    tasks_from: deploy.yml
+  vars:
+    compiled_cert_plan: "{{ compiled_cert_plan }}"
+    cert_names: "{{ cert_names }}"
+  tags: [deploy]
+
+🧩 roles/venafi_cert_renew_pipeline/defaults/main.yml
+---
+pipeline_stats_var: "venafi_pipeline_stats"
+venafi_policy_prefix: "/ved/policy/Automated/certs"
+
+# Tools
+vcert_bin: "/usr/local/bin/vcert"
+openssl_bin: "/usr/bin/openssl"
+keytool_bin: "/usr/bin/keytool"
+
+# Validity check ~2y
+expected_validity_days: 730
+
+# Precheck defaults
+renew_days: 90
+
+# Reporting
+renew_report: true
+smtp_host: ""
+smtp_port: 25
+user_email: ""
+
+# Deploy defaults
+deploy_stage_root: "/tmp/venafi_deploy"
+deploy_user: "wasadmin"
+deploy_group: "was"
+deploy_dir: "/home/user/Ansible_renewedCerts"
+deploy_keystore_type: ["pem"]
+
+# Linkage
+deploy_after_renew: false
+
+🔎 tasks/precheck.yml (supports stats/plan + standalone)
+---
+# Modes: auto (default) | stats | standalone
+
+- name: precheck | decide mode
+  set_fact:
+    __mode_pc: "{{ (precheck_mode | default('auto')) }}"
+  run_once: true
+  delegate_to: localhost
+  tags: [precheck]
+
+- name: precheck | auto → standalone if items/legacy provided, else stats
+  set_fact:
+    __mode_pc: >-
+      {{
+        (__mode_pc == 'auto') |
+        ternary(
+          ((precheck_standalone_items | default([]) | length) > 0) or
+          ((precheck_cert | default('')) | length > 0),
+          'standalone',
+          'stats'
+        )
+      }}
+  run_once: true
+  delegate_to: localhost
+  tags: [precheck]
+
+- name: precheck | standalone
+  when: __mode_pc == 'standalone'
+  import_tasks: precheck_standalone.yml
+  tags: [precheck]
+
+- name: precheck | stats/plan
+  when: __mode_pc == 'stats'
+  block:
+    - name: precheck | assert inputs
+      assert:
+        that:
+          - (compiled_cert_plan is defined and (compiled_cert_plan | length) > 0) or
+            (cert_names is defined and (cert_names | length) > 0)
+        fail_msg: "Precheck requires compiled_cert_plan or cert_names."
+      run_once: true
+      delegate_to: localhost
+
+    - name: precheck | set working list
+      set_fact:
+        _pc_cert_list: >-
+          {{
+            (compiled_cert_plan.keys() | list)
+            if (compiled_cert_plan is defined and compiled_cert_plan | length > 0)
+            else cert_names
+          }}
+      run_once: true
+      delegate_to: localhost
+
+    - name: precheck | per cert
+      include_tasks: precheck_per_cert.yml
+      loop: "{{ _pc_cert_list }}"
+      loop_control: { loop_var: pc_cert }
+      vars:
+        pc_pickup_id: >-
+          {{
+            (compiled_cert_plan.get(pc_cert, {}).get('pickup_id'))
+            | default( (venafi_policy_prefix | default('/ved/policy/Automated/certs')) ~ '/' ~ pc_cert )
+          }}
+        th_need: "{{ compiled_cert_plan.get(pc_cert, {}).get('renew_days', renew_days | default(90)) | int }}"
+  tags: [precheck]
+
+🔎 tasks/precheck_standalone.yml
+---
+# Input (preferred):
+# precheck_standalone_items:
+#   - cert: api.example.com
+#     pickup_id: /ved/policy/Automated/certs/api.example.com  # optional
+#     renew_days: 90                                          # optional
+
+- name: precheck(standalone) | defaults
+  set_fact:
+    __pc_prefix: "{{ venafi_policy_prefix | default('/ved/policy/Automated/certs') }}"
+    __pc_default_days: "{{ (renew_days | default(90)) | int }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: precheck(standalone) | normalize from list
+  when: (precheck_standalone_items | default([])) | length > 0
+  set_fact:
+    __pc_items: "{{ precheck_standalone_items | list }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: precheck(standalone) | normalize from legacy single
+  when: __pc_items is not defined and (precheck_cert | default('')) | length > 0
+  set_fact:
+    __pc_items:
+      - cert: "{{ precheck_cert }}"
+        pickup_id: "{{ precheck_pickup_id | default('') }}"
+        renew_days: "{{ precheck_renew_days | default(__pc_default_days) }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: precheck(standalone) | assert items
+  assert:
+    that:
+      - __pc_items is defined
+      - (__pc_items | length) > 0
+    fail_msg: "precheck(standalone): provide precheck_standalone_items or precheck_cert* vars."
+  run_once: true
+  delegate_to: localhost
+
+- name: precheck(standalone) | run per cert
+  loop: "{{ __pc_items }}"
+  loop_control: { loop_var: pc }
+  include_tasks: precheck_per_cert.yml
+  vars:
+    pc_cert: "{{ pc.cert }}"
+    pc_pickup_id: "{{ (pc.pickup_id | default('')) | length > 0 | ternary(pc.pickup_id, (__pc_prefix ~ '/' ~ pc.cert)) }}"
+    th_need: "{{ (pc.renew_days | default(__pc_default_days)) | int }}"
+
+🔎 tasks/precheck_per_cert.yml (core precheck)
+---
+# Inputs:
+# - pc_cert
+# - pc_pickup_id
+# - th_need (int days threshold)
+
+- name: precheck | ensure stats bucket
+  set_stats:
+    data:
+      "{{ pipeline_stats_var }}": "{{ ((hostvars.get('localhost', {})).get(pipeline_stats_var, {})) | default({}) }}"
+  run_once: true
+
+- name: precheck | normalize store
+  set_fact:
+    __psvar: "{{ pipeline_stats_var }}"
+    __psobj: "{{ hostvars['localhost'][pipeline_stats_var] | default({}) }}"
+  run_once: true
+  delegate_to: localhost
+
+# 1) Fetch PEM with vcert (lines starting with "vcert:" may appear)
+- name: precheck | fetch PEM (raw)
+  command: >
+    {{ vcert_bin }} pickup -id "{{ pc_pickup_id }}"
+  register: __pc_pem_raw
+  changed_when: false
+
+# 2) Remove any "vcert:" log lines
+- name: precheck | clean PEM content
+  set_fact:
+    __pc_pem: "{{ __pc_pem_raw.stdout | regex_replace('(?m)^vcert:.*\\n', '') }}"
+
+# 3) Probe serial & enddate via openssl
+- name: precheck | serial
+  shell: |
+    set -o pipefail
+    printf "%s" "{{ __pc_pem | quote }}" | {{ openssl_bin }} x509 -noout -serial
+  register: __pc_serial_cmd
+  changed_when: false
+
+- name: precheck | enddate
+  shell: |
+    set -o pipefail
+    printf "%s" "{{ __pc_pem | quote }}" | {{ openssl_bin }} x509 -noout -enddate
+  register: __pc_end_cmd
+  changed_when: false
+
+- name: precheck | parse serial & days remaining
+  vars:
+    _end_line: "{{ (__pc_end_cmd.stdout | default('') ) }}"
+    _end_txt: "{{ (_end_line | regex_replace('^notAfter=','')) | trim }}"
+    # Example end date: Jun 11 14:24:54 2027 GMT
+  set_fact:
+    __pc_serial: "{{ (__pc_serial_cmd.stdout | regex_replace('^serial=','') | trim) | default('') }}"
+    __pc_endtxt: "{{ _end_txt }}"
+    __pc_end_ts: "{{ ( _end_txt | to_datetime('%b %d %H:%M:%S %Y %Z') ).timestamp() | int }}"
+    __pc_now_ts: "{{ (ansible_date_time.epoch | int) }}"
+    __pc_days: "{{ (((__pc_end_ts - __pc_now_ts)/86400) | round(0,'floor')) | int }}"
+
+# 4) Status (3 buckets, no gaps)
+# <= th_need: need to renew
+# > th_need and <= (th_need+30): expiring
+# > (th_need+30): no renewal needed
+- name: precheck | derive status
+  vars:
+    _need: "{{ th_need | int }}"
+    _exp_high: "{{ (th_need | int) + 30 }}"
+  set_fact:
+    __pc_status: >-
+      {{
+        (__pc_days | int) <= _need
+        | ternary('need to renew',
+                  (
+                    (__pc_days | int) <= _exp_high
+                    | ternary('expiring','no renewal needed')
+                  )
+        )
+      }}
+
+# 5) Persist to stats
+- name: precheck | update stats
+  set_fact:
+    __psobj_new: >-
+      {{
+        (__psobj | combine({
+          'precheck': (__psobj.get('precheck', {}) | combine({
+            (pc_cert): {
+              'pickup_id': pc_pickup_id,
+              'serial': __pc_serial,
+              'end_text': __pc_endtxt,
+              'days_remaining': __pc_days,
+              'status': __pc_status
+            }
+          }, recursive=True))
+        }, recursive=True))
+      }}
+  run_once: true
+  delegate_to: localhost
+
+- name: precheck | publish stats
+  set_stats:
+    data:
+      "{{ __psvar }}": "{{ __psobj_new }}"
+  run_once: true
+
+🔧 tasks/renew.yml (stats/plan + standalone, early-exit if nothing to renew)
+---
+- name: renew | resolve stats presence
+  set_fact:
+    __psvar: "{{ (pipeline_stats_var | default('venafi_pipeline_stats')) | string }}"
+    __psobj: "{{ ((hostvars | default({})).get('localhost', {})).get(__psvar, {}) }}"
+    __ps_available: "{{ (__psobj | length) > 0 }}"
+  run_once: true
+  delegate_to: localhost
+  tags: [renew]
+
+- name: renew | decide mode
+  set_fact:
+    __mode_rn: "{{ (renew_mode | default('auto')) }}"
+  run_once: true
+  delegate_to: localhost
+  tags: [renew]
+
+- name: renew | auto → standalone if items/legacy provided or no stats
+  set_fact:
+    __mode_rn: >-
+      {{
+        (__mode_rn == 'auto') |
+        ternary(
+          ( (renew_standalone_items | default([]) | length) > 0 ) or
+          ( (renew_cert | default('') | length) > 0 ) or
+          ( not __ps_available ),
+          'standalone',
+          'stats'
+        )
+      }}
+  run_once: true
+  delegate_to: localhost
+  tags: [renew]
+
+- name: renew | standalone
+  when: __mode_rn == 'standalone'
+  import_tasks: renew_standalone.yml
+  tags: [renew]
+
+- name: renew | stats/plan mode
+  when: __mode_rn == 'stats'
+  block:
+    - name: renew | derive working list
+      set_fact:
+        _renew_cert_list: >-
+          {{
+            (compiled_cert_plan.keys() | list)
+            if (compiled_cert_plan is defined and compiled_cert_plan | length > 0)
+            else
+              (
+                (__psobj.precheck.keys() | list)
+                if (__ps_available and (__psobj.precheck | default({}) | length) > 0)
+                else
+                  (
+                    cert_names
+                    if (not __ps_available)
+                    else (__psobj.renew.keys() | list)
+                  )
+              )
+          }}
+        precheck_stats: "{{ __psobj.precheck | default({}) }}"
+      run_once: true
+      delegate_to: localhost
+
+    - name: renew | restrict to need-to-renew unless forced
+      when: __ps_available and (not (renew_force | default(false) | bool)) and (_renew_cert_list | length) > 0
+      set_fact:
+        _renew_cert_list: >-
+          {{
+            _renew_cert_list
+            | select('in',
+                 (__psobj.precheck | default({})
+                   | dict2items
+                   | selectattr('value.status','equalto','need to renew')
+                   | map(attribute='key') | list)
+                 )
+            | list
+          }}
+      run_once: true
+      delegate_to: localhost
+
+    - name: renew | early-exit if nothing to renew (not forced)
+      when: __ps_available and (not (renew_force | default(false) | bool)) and ((_renew_cert_list | default([])) | length) == 0
+      block:
+        - debug:
+            msg: "No certificates with status 'need to renew' under '{{ __psvar }}'. Renew stage skipped."
+        - meta: end_play
+      run_once: true
+
+    - name: renew | require non-empty list
+      assert:
+        that:
+          - _renew_cert_list is defined
+          - (_renew_cert_list | length) > 0
+        fail_msg: "Renew stage has no certificates to process."
+      run_once: true
+      delegate_to: localhost
+
+    - name: renew | per cert
+      include_tasks: renew_per_cert.yml
+      loop: "{{ _renew_cert_list }}"
+      loop_control:
+        loop_var: rn_cert
+        label: "{{ rn_cert }}"
+      vars:
+        rn_pickup_id: >-
+          {{
+            (compiled_cert_plan.get(rn_cert, {}).get('pickup_id'))
+            | default( (venafi_policy_prefix | default('/ved/policy/Automated/certs')) ~ '/' ~ rn_cert )
+          }}
+        rn_prior_status: "{{ precheck_stats.get(rn_cert, {}).get('status', 'no renewal needed') }}"
+        rn_force: "{{ (renew_force | default(false) | bool) or (not __ps_available) }}"
+        deploy_keystore_type: "{{ compiled_cert_plan.get(rn_cert, {}).get('keystore_type', deploy_keystore_type | default(['pem'])) }}"
+        deploy_user: "{{ compiled_cert_plan.get(rn_cert, {}).get('deploy_user', deploy_user | default('wasadmin')) }}"
+        deploy_group: "{{ compiled_cert_plan.get(rn_cert, {}).get('deploy_group', deploy_group | default('was')) }}"
+        deploy_dir: "{{ compiled_cert_plan.get(rn_cert, {}).get('deploy_dir', deploy_dir | default('/home/user/Ansible_renewedCerts')) }}"
+  tags: [renew]
+
+- name: renew | consolidated report
+  when: renew_report | default(true) | bool
+  import_tasks: renew_report.yml
+  tags: [renew]
+
+🔧 tasks/renew_standalone.yml
+---
+# Preferred list:
+# renew_standalone_items:
+#   - cert: api.example.com
+#     pickup_id: /ved/policy/Automated/certs/api.example.com  # optional
+#     keystore_type: [pem, jks]                               # optional; default ['pem']
+#     deploy_dir: /opt/api-certs
+#     deploy_user: svc_api
+#     deploy_group: svc_api
+
+- name: renew(standalone) | defaults
+  set_fact:
+    __rn_prefix: "{{ venafi_policy_prefix | default('/ved/policy/Automated/certs') }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: renew(standalone) | normalize from list
+  when: (renew_standalone_items | default([])) | length > 0
+  set_fact:
+    __rn_items: "{{ renew_standalone_items | list }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: renew(standalone) | normalize from legacy single cert
+  when: (__rn_items is not defined) and ((renew_cert | default('') | length) > 0)
+  set_fact:
+    __rn_items:
+      - cert: "{{ renew_cert }}"
+        pickup_id: "{{ renew_pickup_id | default('') }}"
+        keystore_type: "{{ deploy_keystore_type | default(['pem']) }}"
+        deploy_dir: "{{ deploy_dir | default('/home/user/Ansible_renewedCerts') }}"
+        deploy_user: "{{ deploy_user | default('wasadmin') }}"
+        deploy_group: "{{ deploy_group | default('was') }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: renew(standalone) | assert items
+  assert:
+    that:
+      - __rn_items is defined
+      - (__rn_items | length) > 0
+    fail_msg: "renew(standalone): provide renew_standalone_items or renew_cert* vars."
+  run_once: true
+  delegate_to: localhost
+
+- name: renew(standalone) | per item
+  loop: "{{ __rn_items }}"
+  loop_control: { loop_var: rn, label: "{{ rn.cert }}" }
+  include_tasks: renew_per_cert.yml
+  vars:
+    rn_cert: "{{ rn.cert }}"
+    rn_pickup_id: "{{ (rn.pickup_id | default('')) | length > 0 | ternary(rn.pickup_id, (__rn_prefix ~ '/' ~ rn.cert)) }}"
+    rn_prior_status: "need to renew"
+    rn_force: "{{ renew_force | default(true) | bool }}"
+    deploy_keystore_type: "{{ rn.keystore_type | default(['pem']) }}"
+    deploy_user: "{{ rn.deploy_user | default('wasadmin') }}"
+    deploy_group: "{{ rn.deploy_group | default('was') }}"
+    deploy_dir: "{{ rn.deploy_dir | default('/home/user/Ansible_renewedCerts') }}"
+
+🔧 tasks/renew_per_cert.yml (excerpt – unchanged core, but ensures “vcert:” lines stripped if pulled here)
+---
+# Inputs:
+# - rn_cert, rn_pickup_id, rn_prior_status, rn_force
+# - deploy_keystore_type, deploy_user, deploy_group, deploy_dir
+
+- name: renew | ensure stats obj
+  set_stats:
+    data:
+      "{{ pipeline_stats_var }}": "{{ ((hostvars.get('localhost', {})).get(pipeline_stats_var, {})) | default({}) }}"
+  run_once: true
+
+- name: renew | get precheck serial/expiry if exists
+  set_fact:
+    __pre_serial: "{{ ((hostvars.get('localhost', {})).get(pipeline_stats_var, {})).get('precheck', {}).get(rn_cert, {}).get('serial','') }}"
+    __pre_days: "{{ ((hostvars.get('localhost', {})).get(pipeline_stats_var, {})).get('precheck', {}).get(rn_cert, {}).get('days_remaining','') }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: renew | need-before compute?
+  set_fact:
+    __need_compute_before: "{{ (__pre_serial | length) == 0 or (__pre_days | string | length) == 0 }}"
+  run_once: true
+  delegate_to: localhost
+
+# If we don't have serial/days before, fetch and compute now
+- name: renew | fetch PEM (before) if needed
+  when: __need_compute_before
+  command: >
+    {{ vcert_bin }} pickup -id "{{ rn_pickup_id }}"
+  register: __rn_pem_before_raw
+  changed_when: false
+
+- name: renew | clean PEM (before)
+  when: __need_compute_before
+  set_fact:
+    __rn_pem_before: "{{ __rn_pem_before_raw.stdout | regex_replace('(?m)^vcert:.*\\n', '') }}"
+
+- name: renew | compute serial & days (before)
+  when: __need_compute_before
+  block:
+    - name: serial(before)
+      shell: |
+        set -o pipefail
+        printf "%s" "{{ __rn_pem_before | quote }}" | {{ openssl_bin }} x509 -noout -serial
+      register: __rn_before_serial_cmd
+      changed_when: false
+    - name: enddate(before)
+      shell: |
+        set -o pipefail
+        printf "%s" "{{ __rn_pem_before | quote }}" | {{ openssl_bin }} x509 -noout -enddate
+      register: __rn_before_end_cmd
+      changed_when: false
+    - name: parse(before)
+      vars:
+        _end_txt: "{{ (__rn_before_end_cmd.stdout | regex_replace('^notAfter=','')) | trim }}"
+        _end_ts: "{{ ( _end_txt | to_datetime('%b %d %H:%M:%S %Y %Z') ).timestamp() | int }}"
+        _now: "{{ (ansible_date_time.epoch | int) }}"
+      set_fact:
+        __pre_serial: "{{ (__rn_before_serial_cmd.stdout | regex_replace('^serial=','') | trim) | default('') }}"
+        __pre_days: "{{ (((_end_ts - _now)/86400) | round(0,'floor')) | int }}"
+
+# ---- Renew (vcert) ----
+- name: renew | execute vcert renew
+  command: >
+    {{ vcert_bin }} renew -id "{{ rn_pickup_id }}"
+  register: __rn_renew
+  changed_when: true
+
+# Fetch new PEM after renew to compute post serial/expiry
+- name: renew | pickup new PEM
+  command: >
+    {{ vcert_bin }} pickup -id "{{ rn_pickup_id }}"
+  register: __rn_pem_after_raw
+  changed_when: false
+
+- name: renew | clean PEM (after)
+  set_fact:
+    __rn_pem_after: "{{ __rn_pem_after_raw.stdout | regex_replace('(?m)^vcert:.*\\n', '') }}"
+
+- name: renew | post serial/expiry
+  block:
+    - name: serial(after)
+      shell: |
+        set -o pipefail
+        printf "%s" "{{ __rn_pem_after | quote }}" | {{ openssl_bin }} x509 -noout -serial
+      register: __rn_after_serial_cmd
+      changed_when: false
+    - name: enddate(after)
+      shell: |
+        set -o pipefail
+        printf "%s" "{{ __rn_pem_after | quote }}" | {{ openssl_bin }} x509 -noout -enddate
+      register: __rn_after_end_cmd
+      changed_when: false
+    - name: parse(after)
+      vars:
+        _end_txt: "{{ (__rn_after_end_cmd.stdout | regex_replace('^notAfter=','')) | trim }}"
+        _end_ts: "{{ ( _end_txt | to_datetime('%b %d %H:%M:%S %Y %Z') ).timestamp() | int }}"
+        _now: "{{ (ansible_date_time.epoch | int) }}"
+      set_fact:
+        __post_serial: "{{ (__rn_after_serial_cmd.stdout | regex_replace('^serial=','') | trim) | default('') }}"
+        __post_days: "{{ (((_end_ts - _now)/86400) | round(0,'floor')) | int }}"
+
+# ---- Persist PEM and facts to stats for downstream (deploy/report) ----
+- name: renew | update stats
+  set_fact:
+    __psobj_new: >-
+      {{
+        ((hostvars.get('localhost', {})).get(pipeline_stats_var, {}) | default({}))
+        | combine({
+            'renew': (
+              ((hostvars.get('localhost', {})).get(pipeline_stats_var, {})).get('renew', {}) | combine({
+                (rn_cert): {
+                  'pickup_id': rn_pickup_id,
+                  'observed_before_serial': __pre_serial,
+                  'observed_before_expiry_days': __pre_days,
+                  'new_serial': __post_serial,
+                  'new_expiry_days': __post_days,
+                  'pem': __rn_pem_after,
+                  'success': true
+                }
+              }, recursive=True)
+            )
+          }, recursive=True)
+      }}
+  run_once: true
+  delegate_to: localhost
+
+- name: renew | publish stats
+  set_stats:
+    data:
+      "{{ pipeline_stats_var }}": "{{ __psobj_new }}"
+  run_once: true
+
+
+If the renew command fails, adapt this file with a block/rescue to set success: false and reason.
+
+🚚 tasks/deploy.yml (auto/stats/standalone)
+---
+- name: deploy | resolve stats
+  set_fact:
+    __psvar: "{{ (pipeline_stats_var | default('venafi_pipeline_stats')) | string }}"
+    __psobj: "{{ ((hostvars | default({})).get('localhost', {})).get(__psvar, {}) }}"
+    __stats_available: "{{ (__psobj.get('renew', {}) | length) > 0 }}"
+  run_once: true
+  delegate_to: localhost
+  tags: [deploy]
+
+- name: deploy | effective mode
+  set_fact:
+    deploy_mode_effective: >-
+      {{
+        (deploy_mode if (deploy_mode | default('auto')) in ['auto','stats','standalone'] else 'auto') |
+        ternary(
+          (deploy_mode | default('auto')) == 'auto',
+          ('stats' if __stats_available else 'standalone'),
+          (deploy_mode | default('auto'))
+        )
+      }}
+  run_once: true
+  delegate_to: localhost
+  tags: [deploy]
+
+- name: deploy | stats path
+  when: deploy_mode_effective == 'stats'
+  import_tasks: deploy_from_stats.yml
+  tags: [deploy]
+
+- name: deploy | standalone path
+  when: deploy_mode_effective == 'standalone'
+  import_tasks: deploy_standalone.yml
+  tags: [deploy]
+
+🚚 tasks/deploy_from_stats.yml
+---
+- name: deploy(stats) | renew map
+  set_fact:
+    __renew_map: "{{ __psobj.get('renew', {}) }}"
+  run_once: true
+  delegate_to: localhost
+  tags: [deploy]
+
+- name: deploy(stats) | choose certs
+  set_fact:
+    __deploy_certs: >-
+      {{
+        (deploy_cert_names | default([])) if ((deploy_cert_names | default([])) | length > 0)
+        else (
+          __renew_map | dict2items
+          | selectattr('value.success','defined')
+          | selectattr('value.success','equalto', true)
+          | map(attribute='key') | list
+        )
+      }}
+  run_once: true
+  delegate_to: localhost
+  tags: [deploy]
+
+- name: deploy(stats) | assert
+  assert:
+    that: [ "__deploy_certs | length > 0" ]
+    fail_msg: "deploy(stats): no certs to deploy."
+  run_once: true
+  delegate_to: localhost
+  tags: [deploy]
+
+- name: deploy(stats) | ensure stage root
+  file:
+    path: "{{ deploy_stage_root | default('/tmp/venafi_deploy') }}"
+    state: directory
+    mode: "0750"
+  run_once: true
+  delegate_to: localhost
+  tags: [deploy]
+
+- name: deploy(stats) | stage per cert
+  loop: "{{ __deploy_certs }}"
+  loop_control: { loop_var: cert }
+  block:
+    - file:
+        path: "{{ deploy_stage_root | default('/tmp/venafi_deploy') }}/{{ cert }}"
+        state: directory
+        mode: "0750"
+      delegate_to: localhost
+
+    - copy:
+        dest: "{{ deploy_stage_root | default('/tmp/venafi_deploy') }}/{{ cert }}/{{ cert }}.pem"
+        content: "{{ __renew_map[cert].pem | default('') }}"
+        mode: "0640"
+      delegate_to: localhost
+
+    - name: stage PFX
+      when: (__renew_map[cert].pfx_path | default('') | length) > 0
+      copy:
+        src: "{{ __renew_map[cert].pfx_path }}"
+        dest: "{{ deploy_stage_root | default('/tmp/venafi_deploy') }}/{{ cert }}/{{ cert }}.pfx"
+        mode: "0640"
+        remote_src: false
+      delegate_to: localhost
+
+    - name: stage JKS
+      when: (__renew_map[cert].jks_path | default('') | length) > 0
+      copy:
+        src: "{{ __renew_map[cert].jks_path }}"
+        dest: "{{ deploy_stage_root | default('/tmp/venafi_deploy') }}/{{ cert }}/{{ cert }}.jks"
+        mode: "0640"
+        remote_src: false
+      delegate_to: localhost
+  tags: [deploy]
+
+- name: deploy(stats) | build rows (Jinja; defaults)
+  vars:
+    _def_user: "{{ deploy_user | default('wasadmin') }}"
+    _def_group: "{{ deploy_group | default('was') }}"
+    _def_dir: "{{ deploy_dir | default('/home/user/Ansible_renewedCerts') }}"
+    _def_types: "{{ deploy_keystore_type | default(['pem']) }}"
+  set_fact:
+    __plan_rows: []
+  run_once: true
+  delegate_to: localhost
+  tags: [deploy]
+
+- name: deploy(stats) | rows accumulate
+  loop: "{{ __deploy_certs }}"
+  loop_control: { loop_var: cert }
+  set_fact:
+    __plan_rows: >-
+      {{
+        __plan_rows + [ 
+          dict(
+            cert = cert,
+            hosts = ( (cert_deploy_matrix | default({})).get(cert, {}).get('hosts', []) ),
+            dir = ( (cert_deploy_matrix | default({})).get(cert, {}).get('dir', _def_dir) ),
+            user = ( (cert_deploy_matrix | default({})).get(cert, {}).get('user', _def_user) ),
+            group = ( (cert_deploy_matrix | default({})).get(cert, {}).get('group', _def_group) ),
+            keystore_type = ( (cert_deploy_matrix | default({})).get(cert, {}).get('keystore_type', _def_types) )
+          )
+        ]
+      }}
+  run_once: true
+  delegate_to: localhost
+  tags: [deploy]
+
+- name: deploy(stats) | assert host lists
+  assert:
+    that:
+      - (__plan_rows | selectattr('hosts','defined') | selectattr('hosts','length') | list | length) == (__plan_rows | length)
+    fail_msg: "deploy(stats): missing hosts in cert_deploy_matrix."
+  run_once: true
+  delegate_to: localhost
+  tags: [deploy]
+
+- name: deploy(stats) | ship to targets
+  loop: "{{ __plan_rows }}"
+  loop_control: { loop_var: row, label: "{{ row.cert }}" }
+  block:
+    - name: ensure dir on each host
+      loop: "{{ row.hosts }}"
+      loop_control: { loop_var: h }
+      become: true
+      file:
+        path: "{{ row.dir }}"
+        state: directory
+        owner: "{{ row.user }}"
+        group: "{{ row.group }}"
+        mode: "0750"
+      delegate_to: "{{ h }}"
+
+    - name: copy selected keystores
+      vars:
+        _files:
+          - "{{ row.cert }}.pem"
+          - "{{ row.cert }}.pfx"
+          - "{{ row.cert }}.jks"
+      loop: "{{ row.hosts }}"
+      loop_control: { loop_var: h }
+      block:
+        - name: copy each file if requested + staged
+          loop: "{{ _files }}"
+          loop_control: { loop_var: f }
+          when: >
+            (('pem' in (row.keystore_type | default([]))) and (f.endswith('.pem'))) or
+            (('pfx' in (row.keystore_type | default([]))) and (f.endswith('.pfx')) and
+              (lookup('file', (deploy_stage_root | default('/tmp/venafi_deploy')) ~ '/' ~ row.cert ~ '/' ~ row.cert ~ '.pfx', errors='ignore') | length) > 0) or
+            (('jks' in (row.keystore_type | default([]))) and (f.endswith('.jks')) and
+              (lookup('file', (deploy_stage_root | default('/tmp/venafi_deploy')) ~ '/' ~ row.cert ~ '/' ~ row.cert ~ '.jks', errors='ignore') | length) > 0)
+          become: true
+          copy:
+            src: "{{ (deploy_stage_root | default('/tmp/venafi_deploy')) }}/{{ row.cert }}/{{ f }}"
+            dest: "{{ row.dir }}/{{ f }}"
+            owner: "{{ row.user }}"
+            group: "{{ row.group }}"
+            mode: "0640"
+          delegate_to: "{{ h }}"
+  tags: [deploy]
+
+🚚 tasks/deploy_standalone.yml (multi-cert capable, recommended list input)
+---
+# Use:
+# deploy_mode: standalone
+# deploy_standalone_items:
+#   - cert: api.example.com
+#     hosts: [web01, web02]
+#     dir: /opt/api-certs
+#     user: svc_api
+#     group: svc_api
+#     keystore_type: [pem, jks]
+#     pem_content: "{{ lookup('file','/secure/new/api.example.com.pem') }}"
+#     jks_src: "/secure/new/api.example.com.jks"
+
+- name: deploy(standalone) | stage root
+  set_fact:
+    __stage_root: "{{ deploy_stage_root | default('/tmp/venafi_deploy') }}"
+
+- name: deploy(standalone) | normalize inputs
+  set_fact:
+    __sd_items: >-
+      {{
+        (deploy_standalone_items | default([]))
+        if ((deploy_standalone_items | default([])) | length > 0)
+        else
+          (
+            ((deploy_cert | default('')) | length > 0)
+            | ternary(
+                [ {
+                    'cert': deploy_cert,
+                    'hosts': (deploy_hosts | default([])),
+                    'dir': (deploy_dir | default('')),
+                    'user': (deploy_user | default('')),
+                    'group': (deploy_group | default('')),
+                    'keystore_type': (deploy_keystore_type | default(['pem'])),
+                    'pem_content': (deploy_pem_content | default('')),
+                    'pem_src': (deploy_pem_src | default('')),
+                    'pfx_src': (deploy_pfx_src | default('')),
+                    'jks_src': (deploy_jks_src | default(''))
+                  } ],
+                [] )
+          )
+      }}
+
+- name: deploy(standalone) | assert items
+  assert:
+    that:
+      - __sd_items | length > 0
+    fail_msg: "deploy(standalone): provide deploy_standalone_items or legacy deploy_* vars."
+
+- name: deploy(standalone) | validate items
+  vars:
+    _types: "{{ item.keystore_type | default(['pem']) }}"
+    _pem_ok: "{{ (item.pem_content | default('') | length) > 0 or (item.pem_src | default('') | length) > 0 }}"
+  loop: "{{ __sd_items }}"
+  loop_control: { loop_var: item, label: "{{ item.cert | default('UNKNOWN') }}" }
+  assert:
+    that:
+      - (item.cert | default('') | length) > 0
+      - (item.hosts | default([]) | length) > 0
+      - (item.dir | default('') | length) > 0
+      - (item.user | default('') | length) > 0
+      - (item.group | default('') | length) > 0
+      - (_types | length) > 0
+      - (('pem' not in _types) or _pem_ok)
+      - (('pfx' not in _types) or ((item.pfx_src | default('') | length) > 0))
+      - (('jks' not in _types) or ((item.jks_src | default('') | length) > 0))
+
+- name: deploy(standalone) | ensure stage root
+  file:
+    path: "{{ __stage_root }}"
+    state: directory
+    mode: "0750"
+  delegate_to: localhost
+  run_once: true
+
+- name: deploy(standalone) | stage artifacts
+  loop: "{{ __sd_items }}"
+  loop_control: { loop_var: sd, label: "{{ sd.cert }}" }
+  block:
+    - file:
+        path: "{{ __stage_root }}/{{ sd.cert }}"
+        state: directory
+        mode: "0750"
+      delegate_to: localhost
+
+    - name: stage PEM (content)
+      when: "'pem' in (sd.keystore_type | default(['pem'])) and (sd.pem_content | default('') | length) > 0"
+      copy:
+        dest: "{{ __stage_root }}/{{ sd.cert }}/{{ sd.cert }}.pem"
+        content: "{{ sd.pem_content }}"
+        mode: "0640"
+      delegate_to: localhost
+
+    - name: stage PEM (src)
+      when: "'pem' in (sd.keystore_type | default(['pem'])) and (sd.pem_content | default('') | length) == 0"
+      copy:
+        src: "{{ sd.pem_src }}"
+        dest: "{{ __stage_root }}/{{ sd.cert }}/{{ sd.cert }}.pem"
+        mode: "0640"
+        remote_src: false
+      delegate_to: localhost
+
+    - name: stage PFX
+      when: "'pfx' in (sd.keystore_type | default([]))"
+      copy:
+        src: "{{ sd.pfx_src }}"
+        dest: "{{ __stage_root }}/{{ sd.cert }}/{{ sd.cert }}.pfx"
+        mode: "0640"
+        remote_src: false
+      delegate_to: localhost
+
+    - name: stage JKS
+      when: "'jks' in (sd.keystore_type | default([]))"
+      copy:
+        src: "{{ sd.jks_src }}"
+        dest: "{{ __stage_root }}/{{ sd.cert }}/{{ sd.cert }}.jks"
+        mode: "0640"
+        remote_src: false
+      delegate_to: localhost
+
+- name: deploy(standalone) | copy to targets
+  loop: "{{ __sd_items }}"
+  loop_control: { loop_var: sd, label: "{{ sd.cert }}" }
+  block:
+    - name: ensure dir on each host
+      loop: "{{ sd.hosts }}"
+      loop_control: { loop_var: h }
+      become: true
+      file:
+        path: "{{ sd.dir }}"
+        state: directory
+        owner: "{{ sd.user }}"
+        group: "{{ sd.group }}"
+        mode: "0750"
+      delegate_to: "{{ h }}"
+
+    - name: copy selected files
+      loop: "{{ sd.hosts }}"
+      loop_control: { loop_var: h }
+      block:
+        - vars:
+            _files:
+              - { name: "{{ sd.cert }}.pem", when: "{{ 'pem' in (sd.keystore_type | default(['pem'])) }}" }
+              - { name: "{{ sd.cert }}.pfx", when: "{{ 'pfx' in (sd.keystore_type | default([])) }}" }
+              - { name: "{{ sd.cert }}.jks", when: "{{ 'jks' in (sd.keystore_type | default([])) }}" }
+          loop: "{{ _files }}"
+          loop_control: { loop_var: f }
+          when: f.when | bool
+          become: true
+          copy:
+            src: "{{ __stage_root }}/{{ sd.cert }}/{{ f.name }}"
+            dest: "{{ sd.dir }}/{{ f.name }}"
+            owner: "{{ sd.user }}"
+            group: "{{ sd.group }}"
+            mode: "0640"
+          delegate_to: "{{ h }}"
+
+📨 tasks/renew_report.yml + templates/report_renew.html.j2
+
+(You already have the Outlook-friendly dark-blue table version. Keep as-is. The task typically does:)
+
+---
+- name: renew | build report context and send
+  vars:
+    __psvar: "{{ pipeline_stats_var }}"
+    __stat: "{{ ((hostvars.get('localhost', {})).get(__psvar, {})).get('renew', {}) }}"
+    __items_success: "{{ __stat | dict2items | selectattr('value.success','equalto', true) | list }}"
+    __items_fail: "{{ __stat | dict2items | rejectattr('value.success','equalto', true) | list }}"
+    __rr_total: "{{ (__items_success|length + __items_fail|length) }}"
+    __rr_ok: "{{ __items_success | length }}"
+    __rr_not_or_err: "{{ __items_fail | length }}"
+  mail:
+    host: "{{ smtp_host }}"
+    port: "{{ smtp_port }}"
+    to: "{{ user_email }}"
+    subject: "Venafi Renewal Report"
+    subtype: html
+    body: "{{ lookup('template','report_renew.html.j2') }}"
+  when: user_email | length > 0
+
+
+Your dry-run (precheck) email is similar with report_dry.html.j2.
+
+📘 README (summary)
+
+Role: venafi_cert_renew_pipeline
+Tags: precheck, renew, deploy
+Compatibility: Ansible 2.9 (pure Jinja, no external filter plugins)
+
+Stages & Modes
+
+Precheck
+
+precheck_mode: auto|stats|standalone (default auto)
+
+stats/plan: uses compiled_cert_plan or cert_names and venafi_policy_prefix.
+
+standalone: pass precheck_standalone_items (list) or legacy (precheck_cert*).
+
+Computes: serial, days_remaining, status (need to renew, expiring, no renewal needed).
+
+Saves to hostvars['localhost'][pipeline_stats_var]['precheck'][<cert>].
+
+Renew
+
+renew_mode: auto|stats|standalone (default auto)
+
+stats/plan: derives list from precheck or compiled plan; filters to need to renew unless renew_force=true. Early exits if nothing to renew.
+
+standalone: pass renew_standalone_items (list) or legacy (renew_cert*).
+
+Always saves pem, observed_before_*, new_*, success to ...['renew'][<cert>].
+
+Deploy
+
+deploy_mode: auto|stats|standalone (default auto)
+
+stats: deploys only successfully renewed certs. Requires cert_deploy_matrix[cert].hosts (+ optional per-cert overrides).
+
+standalone: pass artifacts + targets per cert with deploy_standalone_items (recommended) or legacy single-cert inputs.
+
+Copies to remote via SSH (delegate_to), idempotent permissions.
+
+Key Variables
+
+pipeline_stats_var (default venafi_pipeline_stats)
+
+venafi_policy_prefix (default /ved/policy/Automated/certs)
+
+renew_days (default 90) — precheck threshold
+
+expected_validity_days (default 730)
+
+vcert_bin, openssl_bin, keytool_bin
+
+Reporting: renew_report, smtp_host, smtp_port, user_email
+
+Deploy defaults: deploy_stage_root, deploy_user, deploy_group, deploy_dir, deploy_keystore_type
+
+cert_deploy_matrix (stats deploy):
+
+cert_deploy_matrix:
+  api.example.com:
+    hosts: ["web01","web02"]
+    dir: /opt/api-certs
+    user: svc_api
+    group: svc_api
+    keystore_type: ["pem","jks"]
+
+Wrapper role ihs_cert_renew (optional)
+
+Accepts your inventory-driven venafi_renew_certs (map or “list-of-one” style) and emits:
+
+compiled_cert_plan (per-cert: pickup_id, renew_days, keystore_type, deploy_*…)
+
+cert_names (list)
+
+Playbook calls the pipeline role with these two vars.
+
+Examples
+
+Precheck only (standalone)
+
+ansible-playbook playbooks/pipeline.yml -t precheck \
+  -e precheck_mode=standalone \
+  -e 'precheck_standalone_items=[{"cert":"api.example.com"},{"cert":"www.example.com","renew_days":60}]'
+
+
+Renew only (standalone)
+
+ansible-playbook playbooks/pipeline.yml -t renew \
+  -e renew_mode=standalone \
+  -e 'renew_standalone_items=[{"cert":"api.example.com","keystore_type":["pem","jks"],"deploy_dir":"/opt/api-certs","deploy_user":"svc_api","deploy_group":"svc_api"}]'
+
+
+Deploy only (standalone, recommended list)
+
+ansible-playbook playbooks/pipeline.yml -t deploy \
+  -e deploy_mode=standalone \
+  -e 'deploy_standalone_items=[{"cert":"api.example.com","hosts":["web01","web02"],"dir":"/opt/api-certs","user":"svc_api","group":"svc_api","keystore_type":["pem","jks"],"pem_content":"'"$(cat /secure/api.pem)"'","jks_src":"/secure/api.jks"}]'
+
+
+Full pipeline using stats/plan
+
+ansible-playbook playbooks/pipeline.yml -t precheck,renew,deploy
+
+Notes
+
+Removes any vcert: log lines before parsing PEM with OpenSSL.
+
+Precheck statuses have no gaps:
+
+<=renew_days → need to renew
+
+<=renew_days+30 → expiring
+
+otherwise → no renewal needed
+
+Renew early-exits if there are no need-to-renew certs in stats (unless renew_force=true).
+
+Deploy uses SSH with delegate_to — ensure remote hosts exist in inventory or create via add_host.
