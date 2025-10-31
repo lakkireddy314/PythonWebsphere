@@ -1,0 +1,57 @@
+# AIX-safe; works with /usr/bin/awk or /usr/bin/nawk
+grep -i '"message"[ \t]*:[ \t]*"Response"' /path/to/analytics.log \
+| awk '
+{
+  path=""; time="";
+
+  # ---- extract Path (case variants) ----
+  if (match($0, /"Path"[ \t]*:[ \t]*"[^"]+"/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^"Path"[ \t]*:[ \t]*"/,"",s); gsub(/"$/,"",s); path=s;
+  } else if (match($0, /"path"[ \t]*:[ \t]*"[^"]+"/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^"path"[ \t]*:[ \t]*"/,"",s); gsub(/"$/,"",s); path=s;
+  }
+
+  # ---- extract Execution_Time (common key variants) ----
+  if (match($0, /"Execution_Time"[ \t]*:[ \t]*"*[0-9]+"*/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^[^0-9]*/,"",s); gsub(/[^0-9]*$/,"",s); time=s;
+  } else if (match($0, /"Execution time"[ \t]*:[ \t]*"*[0-9]+"*/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^[^0-9]*/,"",s); gsub(/[^0-9]*$/,"",s); time=s;
+  } else if (match($0, /"Execution_time"[ \t]*:[ \t]*"*[0-9]+"*/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^[^0-9]*/,"",s); gsub(/[^0-9]*$/,"",s); time=s;
+  }
+
+  # ---- normalize the path to collapse unique IDs ----
+  if (path!="") {
+    # Specific rule: /v1/hits/STATEMENT/<anything> -> /v1/hits/STATEMENT/:id
+    if (path ~ /\/v1\/hits\/STATEMENT\//) {
+      sub(/\/v1\/hits\/STATEMENT\/[^\/]+/, "/v1/hits/STATEMENT/:id", path);
+    }
+    # Generic rules to reduce other unique segments (optional; keep or remove):
+    # collapse long hex/uuid-like segments
+    gsub(/\/[0-9A-Fa-f-]{16,}/, "/:id", path);
+    # collapse long mixed-alnum tokens
+    gsub(/\/[A-Za-z0-9_]{24,}/, "/:id", path);
+    # collapse numeric IDs with ≥6 digits
+    gsub(/\/[0-9]{6,}/, "/:num", path);
+  }
+
+  if (path!="" && time!="") {
+    n[path]++; a[path SUBSEP n[path]] = time+0; sum[path]+=time+0;
+  }
+}
+END{
+  # selection sort per path (portable)
+  for (p in n) {
+    for (i=1; i<=n[p]; i++) {
+      m=i;
+      for (j=i+1; j<=n[p]; j++) {
+        if ((a[p SUBSEP j]+0) < (a[p SUBSEP m]+0)) {
+          tmp=a[p SUBSEP m]; a[p SUBSEP m]=a[p SUBSEP j]; a[p SUBSEP j]=tmp;
+        }
+      }
+    }
+    idx=int(0.95*n[p]); if (idx<1) idx=1; if (idx>n[p]) idx=n[p];
+    p95=a[p SUBSEP idx]+0; avg=(sum[p]/n[p]);
+    printf "%-60s p95=%dms avg=%.1fms n=%d\n", p, p95, avg, n[p];
+  }
+}'
