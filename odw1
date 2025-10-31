@@ -1,51 +1,40 @@
-# AIX-compatible; prefers /usr/bin/nawk (falls back to awk)
-grep -i '"message"[[:space:]]*:[[:space:]]*"Response"' /path/to/analytics.log \
-| ${NAWK:-/usr/bin/nawk} '
-function get_path(   r){
-  # Try both "Path" and "path"
-  if (match($0, /"Path"[[:space:]]*:[[:space:]]*"([^"]+)"/, r)) return r[1];
-  if (match($0, /"path"[[:space:]]*:[[:space:]]*"([^"]+)"/, r)) return r[1];
-  return "";
-}
-function get_exec_time(   r){
-  # Handle common variants without case-insensitive regex flags
-  if (match($0, /"Execution_Time"[[:space:]]*:[[:space:]]*"*([0-9]+)"*/, r)) return r[1];
-  if (match($0, /"Execution time"[[:space:]]*:[[:space:]]*"*([0-9]+)"*/, r))   return r[1];
-  if (match($0, /"Execution_time"[[:space:]]*:[[:space:]]*"*([0-9]+)"*/, r))  return r[1];
-  return "";
-}
-function swap(path, i, j,   tmp){
-  tmp = A[path, i]; A[path, i] = A[path, j]; A[path, j] = tmp;
-}
-function sort_times(path,   i,j){
-  # Simple in-place selection sort (portable, fine for moderate N)
-  for (i = 1; i <= N[path]; i++){
-    m = i;
-    for (j = i+1; j <= N[path]; j++){
-      if (A[path, j] + 0 < A[path, m] + 0) m = j;
-    }
-    if (m != i) swap(path, i, m);
-  }
-}
+# AIX-safe; works with /usr/bin/awk or /usr/bin/nawk
+grep -i '"message"[ \t]*:[ \t]*"Response"' analytics.log \
+| awk '
 {
-  p = get_path();
-  t = get_exec_time();
-  if (p != "" && t != ""){
-    N[p]++; A[p, N[p]] = t + 0;
-    S[p] += t + 0;
+  path=""; time="";
+  # Extract Path (case variants)
+  if (match($0, /"Path"[ \t]*:[ \t]*"[^"]+"/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^"Path"[ \t]*:[ \t]*"/,"",s); gsub(/"$/,"",s); path=s;
+  } else if (match($0, /"path"[ \t]*:[ \t]*"[^"]+"/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^"path"[ \t]*:[ \t]*"/,"",s); gsub(/"$/,"",s); path=s;
+  }
+  # Extract Execution time (common key variants)
+  if (match($0, /"Execution_Time"[ \t]*:[ \t]*"*[0-9]+"*/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^[^0-9]*/,"",s); gsub(/[^0-9]*$/,"",s); time=s;
+  } else if (match($0, /"Execution time"[ \t]*:[ \t]*"*[0-9]+"*/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^[^0-9]*/,"",s); gsub(/[^0-9]*$/,"",s); time=s;
+  } else if (match($0, /"Execution_time"[ \t]*:[ \t]*"*[0-9]+"*/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^[^0-9]*/,"",s); gsub(/[^0-9]*$/,"",s); time=s;
+  }
+
+  if (path!="" && time!="") {
+    n[path]++; a[path SUBSEP n[path]] = time+0; sum[path]+=time+0;
   }
 }
 END{
-  for (p in N){
-    sort_times(p);
-    n = N[p];
-    # p95 index (1-based). Use floor(0.95*n); min 1.
-    idx = int(0.95 * n); if (idx < 1) idx = 1;
-    # Guard upper bound
-    if (idx > n) idx = n;
-    p95 = A[p, idx];
-    avg = (n ? S[p] / n : 0);
-    # Left-align path to 50 chars; print ms with integer p95 and 1-decimal avg
-    printf "%-50s p95=%dms avg=%.1fms n=%d\n", p, p95, avg, n;
+  for (p in n) {
+    # selection sort (portable) on a[p, i]
+    for (i=1; i<=n[p]; i++) {
+      m=i;
+      for (j=i+1; j<=n[p]; j++) {
+        if ((a[p SUBSEP j]+0) < (a[p SUBSEP m]+0)) {
+          tmp=a[p SUBSEP m]; a[p SUBSEP m]=a[p SUBSEP j]; a[p SUBSEP j]=tmp;
+        }
+      }
+    }
+    idx=int(0.95*n[p]); if (idx<1) idx=1; if (idx>n[p]) idx=n[p];
+    p95=a[p SUBSEP idx]+0; avg=(sum[p]/n[p]);
+    printf "%-50s p95=%dms avg=%.1fms n=%d\n", p, p95, avg, n[p];
   }
 }'
