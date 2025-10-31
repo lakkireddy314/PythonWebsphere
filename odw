@@ -1,20 +1,42 @@
-# adjust path to your analytics.log; handles Execution_Time or Execution_time casing
-grep -i '"message": "Response"' analytics.log \
-| awk '{
-  # pull Path and Execution time with loose matching
-  match($0, /"Path": *"([^"]+)"/, p);
-  match($0, /"Execution[_ ]?Time": *"([^"]+)"/i, t);
-  if (p[1] != "" && t[1] != "") { print p[1], t[1]; }
-}' \
-| sort -k1,1 \
-| awk '{
-  path=$1; time=$2; a[path][++n[path]]=time
+# AIX-safe; works with /usr/bin/awk or /usr/bin/nawk
+grep -i '"message"[ \t]*:[ \t]*"Response"' /path/to/analytics.log \
+| awk '
+{
+  path=""; time="";
+
+  # ---- extract Path (case variants) ----
+  if (match($0, /"Path"[ \t]*:[ \t]*"[^"]+"/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^"Path"[ \t]*:[ \t]*"/,"",s); gsub(/"$/,"",s); path=s;
+  } else if (match($0, /"path"[ \t]*:[ \t]*"[^"]+"/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^"path"[ \t]*:[ \t]*"/,"",s); gsub(/"$/,"",s); path=s;
+  }
+
+  # ---- extract Execution_Time (common key variants) ----
+  if (match($0, /"Execution_Time"[ \t]*:[ \t]*"*[0-9]+"*/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^[^0-9]*/,"",s); gsub(/[^0-9]*$/,"",s); time=s;
+  } else if (match($0, /"Execution time"[ \t]*:[ \t]*"*[0-9]+"*/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^[^0-9]*/,"",s); gsub(/[^0-9]*$/,"",s); time=s;
+  } else if (match($0, /"Execution_time"[ \t]*:[ \t]*"*[0-9]+"*/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^[^0-9]*/,"",s); gsub(/[^0-9]*$/,"",s); time=s;
+  }
+
+  # ---- normalize path: strip leading "/", uppercase ----
+  if (path!="") {
+    if (substr(path,1,1)=="/") path=substr(path,2);
+    path=toupper(path);
+  }
+
+  # ---- accept V1/HITS/STATMENT (typo) or V1/HITS/STATEMENT ----
+  if (path!="" && time!="") {
+    if ( index(path,"V1/HITS/STATMENT")==1 || index(path,"V1/HITS/STATEMENT")==1 ) {
+      sum+=time+0; n++;
+    }
+  }
 }
 END{
-  for (p in a){
-    n95=int(0.95*n[p]); if(n95<1) n95=1;
-    asort(a[p]); printf "%-50s p95=%dms avg=%.1fms n=%d\n", p, a[p][n95], (sum=0); 
-    for(i=1;i<=n[p];i++) sum+=a[p][i];
-    printf ""
+  if (n>0) {
+    printf "/v1/HITS/STATEMENT|STATMENT  avg=%.1fms  n=%d\n", (sum/n), n;
+  } else {
+    print "no matching v1/hits/STATMENT|STATEMENT entries found";
   }
 }'
