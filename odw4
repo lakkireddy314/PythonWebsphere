@@ -1,0 +1,39 @@
+# AIX-safe; works with /usr/bin/awk or /usr/bin/nawk
+grep -i '"message"[ \t]*:[ \t]*"Response"' 11.txt \
+| awk '
+{
+  path=""; time="";
+
+  # ---- extract Path (case variants) ----
+  if (match($0, /"Path"[ \t]*:[ \t]*"[^"]+"/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^"Path"[ \t]*:[ \t]*"/,"",s); gsub(/"$/,"",s); path=s;
+  } else if (match($0, /"path"[ \t]*:[ \t]*"[^"]+"/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^"path"[ \t]*:[ \t]*"/,"",s); gsub(/"$/,"",s); path=s;
+  }
+
+  # ---- extract Execution_Time (common key variants) ----
+  if (match($0, /"Execution_Time"[ \t]*:[ \t]*"*[0-9]+"*/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^[^0-9]*/,"",s); gsub(/[^0-9]*$/,"",s); time=s;
+  } else if (match($0, /"Execution time"[ \t]*:[ \t]*"*[0-9]+"*/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^[^0-9]*/,"",s); gsub(/[^0-9]*$/,"",s); time=s;
+  } else if (match($0, /"Execution_time"[ \t]*:[ \t]*"*[0-9]+"*/)) {
+    s=substr($0, RSTART, RLENGTH); gsub(/^[^0-9]*/,"",s); gsub(/[^0-9]*$/,"",s); time=s;
+  }
+
+  # ---- keep only paths that START with /v1/HITS/STATEMENT (case-insensitive) ----
+  if (path!="" && time!="") {
+    up=path;  # normalize case
+    # toupper is POSIX and present on AIX awk/nawk
+    up=toupper(up);
+    if (index(up, "/V1/HITS/STATEMENT")==1) {
+      sum+=time+0; n++;
+    }
+  }
+}
+END{
+  if (n>0) {
+    printf "/v1/HITS/STATEMENT  avg=%.1fms  n=%d\n", (sum/n), n;
+  } else {
+    print "no matching /v1/HITS/STATEMENT entries found";
+  }
+}'
