@@ -1,0 +1,20 @@
+# adjust path to your analytics.log; handles Execution_Time or Execution_time casing
+grep -i '"message": "Response"' analytics.log \
+| awk '{
+  # pull Path and Execution time with loose matching
+  match($0, /"Path": *"([^"]+)"/, p);
+  match($0, /"Execution[_ ]?Time": *"([^"]+)"/i, t);
+  if (p[1] != "" && t[1] != "") { print p[1], t[1]; }
+}' \
+| sort -k1,1 \
+| awk '{
+  path=$1; time=$2; a[path][++n[path]]=time
+}
+END{
+  for (p in a){
+    n95=int(0.95*n[p]); if(n95<1) n95=1;
+    asort(a[p]); printf "%-50s p95=%dms avg=%.1fms n=%d\n", p, a[p][n95], (sum=0); 
+    for(i=1;i<=n[p];i++) sum+=a[p][i];
+    printf ""
+  }
+}'
